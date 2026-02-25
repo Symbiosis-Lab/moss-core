@@ -6,6 +6,7 @@
 
 pub mod block_refs;
 pub mod callouts;
+pub mod embeds;
 pub mod fuzzy_path;
 pub mod wikilinks;
 
