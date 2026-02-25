@@ -1,0 +1,10 @@
+[package]
+name = "moss-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure Rust content processing for moss — zero I/O, zero async"
+
+[dependencies]
+pulldown-cmark = { version = "0.11", default-features = false }
+unicode-normalization = "0.1"
+percent-encoding = "2.3"
