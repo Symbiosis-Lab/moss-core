@@ -22,7 +22,7 @@ use crate::content_graph::ContentGraph;
 use crate::heading_anchor::obsidian_heading_anchor;
 
 use super::fuzzy_path::{relative_url, resolve_reference, ResolvedRef};
-use super::{parent_dir, Diagnostic, LinkType, OutgoingLink};
+use super::{Diagnostic, LinkType, OutgoingLink};
 
 /// Image file extensions recognized for embed syntax (`![[…]]`).
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
@@ -254,7 +254,9 @@ fn is_image_path(path: &str) -> bool {
 /// which is wrong for binary assets. This function computes a raw relative
 /// path preserving the filename and extension.
 fn relative_asset_url(from_path: &str, to_path: &str) -> String {
-    let from_dir = parent_dir(from_path);
+    // Use pretty URL directory (guide.md → "guide") so the relative path
+    // is correct when the page is served at guide/index.html.
+    let from_dir = super::fuzzy_path::to_pretty_url_dir(from_path);
     let from_parts: Vec<&str> = if from_dir.is_empty() {
         vec![]
     } else {
@@ -473,7 +475,7 @@ mod tests {
     fn test_basic_wikilink() {
         let graph = test_graph();
         let result = resolve_wikilinks("See [[guide]] for details.", &graph, "posts/hello.md");
-        assert_eq!(result.content, "See [guide](../guide/) for details.");
+        assert_eq!(result.content, "See [guide](../../guide/) for details.");
         assert!(result.diagnostics.is_empty());
     }
 
@@ -482,7 +484,7 @@ mod tests {
     fn test_wikilink_with_alias() {
         let graph = test_graph();
         let result = resolve_wikilinks("Read [[guide|the guide]].", &graph, "posts/hello.md");
-        assert_eq!(result.content, "Read [the guide](../guide/).");
+        assert_eq!(result.content, "Read [the guide](../../guide/).");
     }
 
     // 3. Wikilink with heading
@@ -493,7 +495,7 @@ mod tests {
             resolve_wikilinks("See [[guide#Getting Started]].", &graph, "posts/hello.md");
         assert_eq!(
             result.content,
-            "See [guide > Getting Started](../guide/#getting-started)."
+            "See [guide > Getting Started](../../guide/#getting-started)."
         );
     }
 
@@ -505,7 +507,7 @@ mod tests {
             resolve_wikilinks("See [[guide#^setup-step]].", &graph, "posts/hello.md");
         assert_eq!(
             result.content,
-            "See [guide > ^setup-step](../guide/#setup-step)."
+            "See [guide > ^setup-step](../../guide/#setup-step)."
         );
     }
 
@@ -520,7 +522,7 @@ mod tests {
         );
         assert_eq!(
             result.content,
-            "See [setup](../guide/#getting-started)."
+            "See [setup](../../guide/#getting-started)."
         );
     }
 
@@ -545,7 +547,7 @@ mod tests {
         let input = "Before.\n\n```\n[[guide]]\n```\n\nAfter [[guide]].";
         let result = resolve_wikilinks(input, &graph, "posts/hello.md");
         assert!(result.content.contains("```\n[[guide]]\n```"));
-        assert!(result.content.contains("After [guide](../guide/)."));
+        assert!(result.content.contains("After [guide](../../guide/)."));
     }
 
     // 8. Wikilink in inline code preserved
@@ -568,7 +570,7 @@ mod tests {
         );
         assert_eq!(
             result.content,
-            "See [guide](../guide/) and [disclaimer](../disclaimer/)."
+            "See [guide](../../guide/) and [disclaimer](../../disclaimer/)."
         );
         assert_eq!(result.outgoing_links.len(), 2);
     }
@@ -578,7 +580,7 @@ mod tests {
     fn test_image_embed() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg]]", &graph, "posts/hello.md");
-        assert_eq!(result.content, "![photo](../assets/photo.jpg)");
+        assert_eq!(result.content, "![photo](../../assets/photo.jpg)");
     }
 
     // 11. Markdown embed
@@ -640,7 +642,7 @@ mod tests {
         let input = "Before.\n\n~~~\n[[guide]]\n~~~\n\nAfter [[guide]].";
         let result = resolve_wikilinks(input, &graph, "posts/hello.md");
         assert!(result.content.contains("~~~\n[[guide]]\n~~~"));
-        assert!(result.content.contains("After [guide](../guide/)."));
+        assert!(result.content.contains("After [guide](../../guide/)."));
     }
 
     #[test]
@@ -707,7 +709,7 @@ mod tests {
         let graph = test_graph();
         let input = "See [[guide]].\n";
         let result = resolve_wikilinks(input, &graph, "posts/hello.md");
-        assert_eq!(result.content, "See [guide](../guide/).\n");
+        assert_eq!(result.content, "See [guide](../../guide/).\n");
     }
 
     #[test]

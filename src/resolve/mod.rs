@@ -238,7 +238,7 @@ mod tests {
         assert!(result.content_markdown.starts_with("---\ntitle: Test\n---\n"));
 
         // Wikilink resolved
-        assert!(result.content_markdown.contains("[guide > Setup](guide/#setup)"));
+        assert!(result.content_markdown.contains("[guide > Setup](../guide/#setup)"));
 
         // Block ref transformed
         assert!(result.content_markdown.contains("<span id=\"my-block\"></span>"));
@@ -288,7 +288,7 @@ mod tests {
 
         // The embedded content's wikilink [[guide]] should be resolved
         assert!(
-            result.content_markdown.contains("[guide](guide/)"),
+            result.content_markdown.contains("[guide](../guide/)"),
             "Expected resolved wikilink from embedded content, got: {}",
             result.content_markdown
         );

@@ -41,24 +41,28 @@ pub fn resolve_reference(reference: &str, graph: &ContentGraph, from_path: &str)
 ///
 /// - `"posts/hello.md"` becomes the URL `"posts/hello/"` (a directory)
 /// - `"posts/index.md"` becomes the URL `"posts/"` (the directory itself)
-/// - The returned URL is relative from `from_path`'s directory
+/// - The returned URL is relative from `from_path`'s **pretty URL directory**
+///   (e.g. `guide.md` is served from `guide/`, not root)
 ///
 /// # Examples
 ///
 /// ```
 /// use moss_core::resolve::fuzzy_path::relative_url;
 ///
-/// // Same directory
-/// assert_eq!(relative_url("posts/a.md", "posts/b.md"), "b/");
+/// // Same directory → sibling pages need ".."
+/// assert_eq!(relative_url("posts/a.md", "posts/b.md"), "../b/");
 ///
-/// // Parent directory
-/// assert_eq!(relative_url("posts/deep/a.md", "posts/b.md"), "../b/");
+/// // Nested file to parent directory
+/// assert_eq!(relative_url("posts/deep/a.md", "posts/b.md"), "../../b/");
 ///
 /// // Target is index.md (URL is the directory)
-/// assert_eq!(relative_url("posts/a.md", "posts/index.md"), "./");
+/// assert_eq!(relative_url("posts/a.md", "posts/index.md"), "../");
 /// ```
 pub fn relative_url(from_path: &str, to_path: &str) -> String {
-    let from_dir = parent_dir(from_path);
+    // Use the pretty URL directory of the source file, not the file's parent.
+    // A root-level `guide.md` is served from `guide/index.html`, so the
+    // browser's base directory is `guide/`, not the project root.
+    let from_dir = to_pretty_url_dir(from_path);
     let to_url_path = to_pretty_url_dir(to_path);
 
     // Split both into components
@@ -126,7 +130,7 @@ pub fn relative_url(from_path: &str, to_path: &str) -> String {
 /// - `"posts/hello.md"` -> `"posts/hello"`  (the URL becomes `posts/hello/`)
 /// - `"posts/index.md"` -> `"posts"`        (the URL becomes `posts/`)
 /// - `"index.md"`       -> `""`             (the URL becomes `/`)
-fn to_pretty_url_dir(path: &str) -> String {
+pub(crate) fn to_pretty_url_dir(path: &str) -> String {
     // Strip the file extension
     let without_ext = match path.rfind('.') {
         Some(pos) => &path[..pos],
@@ -224,47 +228,64 @@ mod tests {
     }
 
     // -- relative_url tests --
+    //
+    // Pretty URL layout:
+    //   guide.md    → served at guide/index.html    (browser dir: guide/)
+    //   posts/a.md  → served at posts/a/index.html  (browser dir: posts/a/)
+    //   index.md    → served at index.html           (browser dir: /)
+    //   posts/index.md → served at posts/index.html  (browser dir: posts/)
 
     #[test]
     fn test_relative_url_same_dir() {
-        // "posts/a.md" to "posts/b.md" → "b/"
-        assert_eq!(relative_url("posts/a.md", "posts/b.md"), "b/");
+        // "posts/a.md" (at posts/a/) to "posts/b.md" (at posts/b/) → "../b/"
+        assert_eq!(relative_url("posts/a.md", "posts/b.md"), "../b/");
     }
 
     #[test]
-    fn test_relative_url_parent() {
-        // "posts/deep/a.md" to "posts/b.md" → "../b/"
-        assert_eq!(relative_url("posts/deep/a.md", "posts/b.md"), "../b/");
+    fn test_relative_url_nested() {
+        // "posts/deep/a.md" (at posts/deep/a/) to "posts/b.md" (at posts/b/) → "../../b/"
+        assert_eq!(relative_url("posts/deep/a.md", "posts/b.md"), "../../b/");
     }
 
     #[test]
     fn test_relative_url_sibling_dir() {
-        // "blog/a.md" to "notes/b.md" → "../notes/b/"
-        assert_eq!(relative_url("blog/a.md", "notes/b.md"), "../notes/b/");
+        // "blog/a.md" (at blog/a/) to "notes/b.md" (at notes/b/) → "../../notes/b/"
+        assert_eq!(relative_url("blog/a.md", "notes/b.md"), "../../notes/b/");
     }
 
     #[test]
     fn test_relative_url_index() {
-        // URL to index.md is the directory itself
-        // "posts/a.md" to "posts/index.md" → "./"
-        assert_eq!(relative_url("posts/a.md", "posts/index.md"), "./");
+        // "posts/a.md" (at posts/a/) to "posts/index.md" (at posts/) → "../"
+        assert_eq!(relative_url("posts/a.md", "posts/index.md"), "../");
 
-        // "blog/a.md" to "posts/index.md" → "../posts/"
-        assert_eq!(relative_url("blog/a.md", "posts/index.md"), "../posts/");
+        // "blog/a.md" (at blog/a/) to "posts/index.md" (at posts/) → "../../posts/"
+        assert_eq!(relative_url("blog/a.md", "posts/index.md"), "../../posts/");
 
-        // root index: "posts/a.md" to "index.md" → "../"
-        assert_eq!(relative_url("posts/a.md", "index.md"), "../");
+        // root index: "posts/a.md" (at posts/a/) to "index.md" (at /) → "../../"
+        assert_eq!(relative_url("posts/a.md", "index.md"), "../../");
     }
 
     #[test]
     fn test_relative_url_root_to_nested() {
-        // "index.md" to "posts/hello.md" → "posts/hello/"
+        // "index.md" (at /) to "posts/hello.md" (at posts/hello/) → "posts/hello/"
         assert_eq!(relative_url("index.md", "posts/hello.md"), "posts/hello/");
     }
 
     #[test]
     fn test_relative_url_nested_to_root() {
-        // "posts/hello.md" to "about.md" → "../about/"
-        assert_eq!(relative_url("posts/hello.md", "about.md"), "../about/");
+        // "posts/hello.md" (at posts/hello/) to "about.md" (at about/) → "../../about/"
+        assert_eq!(relative_url("posts/hello.md", "about.md"), "../../about/");
+    }
+
+    #[test]
+    fn test_relative_url_root_level_file() {
+        // "guide.md" (at guide/) to "notes/daily.md" (at notes/daily/) → "../notes/daily/"
+        assert_eq!(relative_url("guide.md", "notes/daily.md"), "../notes/daily/");
+    }
+
+    #[test]
+    fn test_relative_url_index_from_dir() {
+        // "posts/index.md" (at posts/) to "posts/a.md" (at posts/a/) → "a/"
+        assert_eq!(relative_url("posts/index.md", "posts/a.md"), "a/");
     }
 }
