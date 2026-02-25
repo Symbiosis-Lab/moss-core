@@ -98,8 +98,9 @@ pub fn transform_callouts(content: &str) -> String {
             // Build the body content, preserving inner lines verbatim.
             let body = body_lines.join("\n");
 
+            let escaped_title = html_escape(&display_title);
             output.push_str(&format!(
-                "<div class=\"callout callout-{callout_type}\">\n  <div class=\"callout-title\">{display_title}</div>\n  <div class=\"callout-content\">\n{body}\n  </div>\n</div>\n"
+                "<div class=\"callout callout-{callout_type}\">\n  <div class=\"callout-title\">{escaped_title}</div>\n  <div class=\"callout-content\">\n{body}\n  </div>\n</div>\n"
             ));
         } else {
             output.push_str(line);
@@ -149,6 +150,18 @@ fn parse_callout_header(line: &str, supported_types: &[&str]) -> Option<(String,
     };
 
     Some((type_lower, title))
+}
+
+/// Escape HTML special characters in a string.
+///
+/// Replaces `&`, `<`, `>`, and `"` with their corresponding HTML entities to
+/// prevent XSS when interpolating user-supplied text into HTML attributes or
+/// element content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Capitalise the first character of a string.
@@ -269,5 +282,31 @@ mod tests {
         assert!(output.contains("<div class=\"callout-title\">No Body</div>"));
         // Body section should exist but be empty (just whitespace/newlines).
         assert!(output.contains("<div class=\"callout-content\">"));
+    }
+
+    #[test]
+    fn test_callout_title_html_escaped() {
+        // HTML special characters in the title must be escaped to prevent XSS.
+        let input = "> [!warning] Use <script> & \"quotes\"\n> Body text.";
+        let output = transform_callouts(input);
+        assert!(
+            output.contains("Use &lt;script&gt; &amp; &quot;quotes&quot;"),
+            "HTML special chars in title must be escaped, got: {}",
+            output,
+        );
+        // Must NOT contain the raw unescaped characters in the title div.
+        assert!(!output.contains("<div class=\"callout-title\">Use <script>"));
+    }
+
+    #[test]
+    fn test_html_escape_helper() {
+        assert_eq!(html_escape("safe text"), "safe text");
+        assert_eq!(html_escape("<b>bold</b>"), "&lt;b&gt;bold&lt;/b&gt;");
+        assert_eq!(html_escape("a & b"), "a &amp; b");
+        assert_eq!(html_escape("say \"hi\""), "say &quot;hi&quot;");
+        assert_eq!(
+            html_escape("<script>alert(\"xss\");</script>"),
+            "&lt;script&gt;alert(&quot;xss&quot;);&lt;/script&gt;"
+        );
     }
 }
