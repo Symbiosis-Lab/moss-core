@@ -22,7 +22,7 @@ use crate::content_graph::ContentGraph;
 use crate::heading_anchor::obsidian_heading_anchor;
 
 use super::fuzzy_path::{relative_url, resolve_reference, ResolvedRef};
-use super::{Diagnostic, LinkType, OutgoingLink};
+use super::{parent_dir, Diagnostic, LinkType, OutgoingLink};
 
 /// Image file extensions recognized for embed syntax (`![[…]]`).
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
@@ -295,14 +295,6 @@ fn relative_asset_url(from_path: &str, to_path: &str) -> String {
     }
 }
 
-/// Extract the parent directory from a path.
-fn parent_dir(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(pos) => &path[..pos],
-        None => "",
-    }
-}
-
 /// Resolve a standard `[[…]]` wikilink and return its markdown replacement.
 fn resolve_wikilink(
     inner: &str,
@@ -343,9 +335,15 @@ fn resolve_wikilink(
                 link_type: LinkType::Wikilink,
             });
 
-            let url = relative_url(from_path, &target_path);
             let anchor = build_anchor(section);
-            format!("[{}]({}{})", display_text, url, anchor)
+
+            if file_part.is_empty() {
+                // Same-file link: use just the anchor (e.g. `#heading`)
+                format!("[{}]({})", display_text, anchor)
+            } else {
+                let url = relative_url(from_path, &target_path);
+                format!("[{}]({}{})", display_text, url, anchor)
+            }
         }
         ResolvedRef::Unresolved => {
             diagnostics.push(Diagnostic {
@@ -657,8 +655,8 @@ mod tests {
     fn test_empty_wikilink() {
         let graph = test_graph();
         let result = resolve_wikilinks("See [[]].", &graph, "posts/hello.md");
-        // Empty inner text resolves to from_path (same-file link via relative_url)
-        assert_eq!(result.content, "See [](hello/).");
+        // Empty inner text: file_part is empty, no section, produces same-file link
+        assert_eq!(result.content, "See []().");
     }
 
     #[test]

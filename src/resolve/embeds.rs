@@ -24,6 +24,7 @@ const EMBED_UNRESOLVED_PREFIX: &str = "<!-- moss-embed-unresolved:";
 const EMBED_SUFFIX: &str = " -->";
 
 /// The result of resolving embed placeholders in a document.
+#[derive(Debug)]
 pub struct EmbedResult {
     /// The content with embed placeholders replaced by inlined file content.
     pub content: String,
@@ -35,11 +36,25 @@ pub struct EmbedResult {
 
 /// Resolve embed placeholders by inlining target file content.
 ///
+/// Convenience wrapper that creates the visited set internally.
+/// Use [`resolve_embeds_with_visited`] if you need to supply your own set
+/// (e.g. to pre-seed cycle detection from an outer context).
+pub fn resolve_embeds(
+    content: &str,
+    from_path: &str,
+    file_reader: &dyn Fn(&str) -> Option<String>,
+) -> EmbedResult {
+    let mut visited = HashSet::new();
+    resolve_embeds_inner(content, from_path, file_reader, &mut visited, 0)
+}
+
+/// Resolve embed placeholders with an externally-managed visited set.
+///
 /// `file_reader` is a closure that reads a file by its relative path.
 /// This keeps moss-core I/O-free — the caller provides the reader.
 ///
 /// `visited` tracks paths in the current embed chain for cycle detection.
-pub fn resolve_embeds(
+pub fn resolve_embeds_with_visited(
     content: &str,
     from_path: &str,
     file_reader: &dyn Fn(&str) -> Option<String>,
@@ -335,8 +350,7 @@ mod tests {
         );
 
         let content = "Before.\n<!-- moss-embed:note.md -->\nAfter.";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert_eq!(result.content, "Before.\nHello from note.\nAfter.");
         assert!(result.diagnostics.is_empty());
@@ -352,8 +366,7 @@ mod tests {
         );
 
         let content = "<!-- moss-embed:guide.md#getting-started -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert!(result.content.contains("## Getting Started"));
         assert!(result.content.contains("Start here."));
@@ -371,8 +384,7 @@ mod tests {
         );
 
         let content = "<!-- moss-embed:guide.md#nonexistent -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         // Full body inlined when heading not found.
         assert!(result.content.contains("Intro text."));
@@ -393,8 +405,7 @@ mod tests {
         );
 
         let content = "<!-- moss-embed:a.md -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         // A's content should be inlined (including B's content), but the
         // circular reference back to A should produce a diagnostic.
@@ -421,8 +432,7 @@ mod tests {
         files.insert("file12.md".to_string(), "End.".to_string());
 
         let content = "<!-- moss-embed:file0.md -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         // Should have a depth-exceeded diagnostic.
         let depth_diag = result
@@ -441,8 +451,7 @@ mod tests {
         let files = HashMap::new();
 
         let content = "<!-- moss-embed:missing.md -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert_eq!(result.diagnostics.len(), 1);
         assert!(result.diagnostics[0].message.contains("not found"));
@@ -455,8 +464,7 @@ mod tests {
         let files = HashMap::new();
 
         let content = "Before.\n<!-- moss-embed-unresolved:some-ref -->\nAfter.";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert!(result
             .content
@@ -478,8 +486,7 @@ mod tests {
         files.insert("b.md".to_string(), "B content.".to_string());
 
         let content = "<!-- moss-embed:a.md -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert!(result.content.contains("A content."));
         assert!(result.content.contains("B content."));
@@ -496,8 +503,7 @@ mod tests {
         files.insert("b.md".to_string(), "B content.".to_string());
 
         let content = "<!-- moss-embed:a.md -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         // index.md -> a.md, a.md -> b.md
         assert!(
@@ -521,8 +527,7 @@ mod tests {
         );
 
         let content = "<!-- moss-embed:plain.md -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert_eq!(result.content, "Just plain content.\nSecond line.");
         assert!(result.diagnostics.is_empty());
@@ -535,8 +540,7 @@ mod tests {
         files.insert("two.md".to_string(), "Content two.".to_string());
 
         let content = "<!-- moss-embed:one.md -->\n<!-- moss-embed:two.md -->";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert!(result.content.contains("Content one."));
         assert!(result.content.contains("Content two."));
@@ -549,8 +553,7 @@ mod tests {
         files.insert("note.md".to_string(), "Note content.".to_string());
 
         let content = "Paragraph before.\n\n<!-- moss-embed:note.md -->\n\nParagraph after.";
-        let mut visited = HashSet::new();
-        let result = resolve_embeds(content, "index.md", &mock_reader(&files), &mut visited);
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert!(result.content.contains("Paragraph before."));
         assert!(result.content.contains("Note content."));

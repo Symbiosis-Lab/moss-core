@@ -6,6 +6,8 @@
 
 use crate::content_graph::ContentGraph;
 
+use super::parent_dir;
+
 /// The result of resolving a reference against the content graph.
 #[derive(Debug, PartialEq, Clone)]
 pub enum ResolvedRef {
@@ -117,15 +119,6 @@ pub fn relative_url(from_path: &str, to_path: &str) -> String {
     }
 
     result
-}
-
-/// Extract the parent directory from a path.
-/// `"posts/hello.md"` -> `"posts"`, `"hello.md"` -> `""`.
-fn parent_dir(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(pos) => &path[..pos],
-        None => "",
-    }
 }
 
 /// Convert a source file path to its pretty URL directory path.

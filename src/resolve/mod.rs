@@ -36,3 +36,13 @@ pub struct Diagnostic {
     pub source_path: String,
     pub reference: String,
 }
+
+/// Extract the parent directory from a `/`-separated path.
+///
+/// `"posts/hello.md"` -> `"posts"`, `"hello.md"` -> `""`.
+pub(crate) fn parent_dir(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(pos) => &path[..pos],
+        None => "",
+    }
+}

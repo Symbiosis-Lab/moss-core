@@ -216,6 +216,13 @@ impl ContentGraphBuilder {
     /// `"posts/hello.md"`). `slug` is the URL slug for this file.
     pub fn add_file(&mut self, relative_path: &str, slug: &str) {
         let norm = normalize_path(relative_path);
+
+        // Skip duplicates: if this normalized path is already registered, don't
+        // add another entry to `files` or `filename_index`.
+        if self.path_index.contains_key(&norm) {
+            return;
+        }
+
         let idx = self.files.len();
 
         // Build filename stem index

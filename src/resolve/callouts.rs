@@ -30,25 +30,37 @@ pub fn transform_callouts(content: &str) -> String {
     let mut output = String::with_capacity(content.len());
     let mut i = 0;
     let mut in_code_block = false;
+    let mut fence_char = ' ';
 
     while i < lines.len() {
         let line = lines[i];
-
-        // Track fenced code blocks — three backticks or tildes open/close them.
         let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_code_block = !in_code_block;
+
+        // --- Fenced code block tracking (matches wikilinks.rs pattern) ---
+        if in_code_block {
+            let closes = trimmed.starts_with(fence_char)
+                && trimmed.chars().take(3).all(|c| c == fence_char)
+                && trimmed.trim_matches(fence_char).trim().is_empty();
+            if closes {
+                in_code_block = false;
+            }
             output.push_str(line);
             output.push('\n');
             i += 1;
             continue;
         }
 
-        if in_code_block {
-            output.push_str(line);
-            output.push('\n');
-            i += 1;
-            continue;
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            let candidate_char = trimmed.chars().next().unwrap();
+            let rest = &trimmed[3..];
+            if !rest.contains(candidate_char) {
+                fence_char = candidate_char;
+                in_code_block = true;
+                output.push_str(line);
+                output.push('\n');
+                i += 1;
+                continue;
+            }
         }
 
         // Check whether this line is a callout header: `> [!type]` or `> [!type] Title`
