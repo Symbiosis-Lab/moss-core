@@ -7,6 +7,7 @@
 pub mod block_refs;
 pub mod callouts;
 pub mod fuzzy_path;
+pub mod wikilinks;
 
 /// A link going out from a document.
 #[derive(Debug, Clone)]
