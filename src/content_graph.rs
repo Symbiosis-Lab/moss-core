@@ -60,6 +60,42 @@ fn common_prefix_len(a: &[&str], b: &[&str]) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Slug generation
+// ---------------------------------------------------------------------------
+
+/// Generate a URL slug from a relative file path.
+///
+/// Strips the file extension, normalizes separators to `/`, and lowercases.
+/// Examples:
+/// - `"posts/Hello World.md"` -> `"posts/hello-world"`
+/// - `"guides/Setup.md"` -> `"guides/setup"`
+/// - `"image.png"` -> `"image"`
+/// - `"deep/path/to/file.txt"` -> `"deep/path/to/file"`
+pub fn generate_slug(relative_path: &str) -> String {
+    // Normalize separators
+    let normalized = relative_path.replace('\\', "/");
+
+    // Strip extension
+    let without_ext = match normalized.rfind('.') {
+        Some(dot_pos) => {
+            // Only strip if the dot is in the filename part (after last /)
+            let last_slash = normalized.rfind('/').unwrap_or(0);
+            if dot_pos > last_slash {
+                &normalized[..dot_pos]
+            } else {
+                &normalized
+            }
+        }
+        None => &normalized,
+    };
+
+    // Lowercase and replace spaces with hyphens
+    without_ext
+        .to_lowercase()
+        .replace(' ', "-")
+}
+
+// ---------------------------------------------------------------------------
 // ContentGraph — the immutable, queryable index
 // ---------------------------------------------------------------------------
 
@@ -515,6 +551,41 @@ mod tests {
         assert_eq!(
             g.resolve_path("caf\u{0065}\u{0301}.md", ""),
             Some("caf\u{00e9}.md".into())
+        );
+    }
+
+    // generate_slug tests
+    #[test]
+    fn test_generate_slug_strips_extension() {
+        assert_eq!(generate_slug("posts/hello.md"), "posts/hello");
+        assert_eq!(generate_slug("image.png"), "image");
+    }
+
+    #[test]
+    fn test_generate_slug_lowercases() {
+        assert_eq!(generate_slug("Posts/Hello.md"), "posts/hello");
+    }
+
+    #[test]
+    fn test_generate_slug_replaces_spaces() {
+        assert_eq!(generate_slug("posts/Hello World.md"), "posts/hello-world");
+    }
+
+    #[test]
+    fn test_generate_slug_normalizes_backslashes() {
+        assert_eq!(generate_slug("posts\\hello.md"), "posts/hello");
+    }
+
+    #[test]
+    fn test_generate_slug_no_extension() {
+        assert_eq!(generate_slug("readme"), "readme");
+    }
+
+    #[test]
+    fn test_generate_slug_deep_path() {
+        assert_eq!(
+            generate_slug("deep/path/to/file.txt"),
+            "deep/path/to/file"
         );
     }
 }
