@@ -1,1 +1,513 @@
-// Placeholder — implemented in Task 2
+//! In-memory index of content files, headings, and block IDs.
+//!
+//! `ContentGraph` is the read-only query structure built by `ContentGraphBuilder`.
+//! It supports Obsidian-style fuzzy path resolution: exact path, filename-only,
+//! folder notes, and ambiguity tiebreaking by longest common directory prefix.
+//!
+//! Pure Rust, zero I/O.
+
+use std::collections::HashMap;
+use unicode_normalization::UnicodeNormalization;
+
+// ---------------------------------------------------------------------------
+// Path normalization helpers
+// ---------------------------------------------------------------------------
+
+/// NFC-normalize and lowercase a single path component.
+fn normalize_component(s: &str) -> String {
+    s.nfc().collect::<String>().to_lowercase()
+}
+
+/// NFC-normalize and lowercase every component of a `/`-separated path.
+/// Also normalises backslashes to forward slashes and collapses runs of
+/// separators.
+fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/")
+        .split('/')
+        .filter(|c| !c.is_empty())
+        .map(normalize_component)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Extract the filename stem (no extension) from a normalized path.
+fn filename_stem(normalized: &str) -> &str {
+    let filename = normalized.rsplit('/').next().unwrap_or(normalized);
+    match filename.rfind('.') {
+        Some(pos) if pos > 0 => &filename[..pos],
+        _ => filename,
+    }
+}
+
+/// Extract the filename (with extension) from a path.
+fn filename_with_ext(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Return the directory prefix components of a path as a Vec.
+fn dir_components(path: &str) -> Vec<&str> {
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() <= 1 {
+        vec![]
+    } else {
+        parts[..parts.len() - 1].to_vec()
+    }
+}
+
+/// Count the length of the longest common prefix between two component lists.
+fn common_prefix_len(a: &[&str], b: &[&str]) -> usize {
+    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+}
+
+// ---------------------------------------------------------------------------
+// ContentGraph — the immutable, queryable index
+// ---------------------------------------------------------------------------
+
+/// An in-memory index of all content files, headings, and block IDs.
+///
+/// Created via [`ContentGraphBuilder::build`]. All lookups are
+/// case-insensitive (NFC-normalized, lowercased).
+#[derive(Debug, Clone)]
+pub struct ContentGraph {
+    /// All file paths (normalized), in insertion order.
+    files: Vec<String>,
+
+    /// Normalized filename stem (no extension, lowercase) -> list of file indices.
+    filename_index: HashMap<String, Vec<usize>>,
+
+    /// Normalized full path -> file index.
+    path_index: HashMap<String, usize>,
+
+    /// Normalized full path -> slug.
+    slug_map: HashMap<String, String>,
+
+    /// Normalized full path -> Vec<(heading_text, anchor_id)>.
+    headings: HashMap<String, Vec<(String, String)>>,
+
+    /// Normalized full path -> Vec<block_id>.
+    blocks: HashMap<String, Vec<String>>,
+}
+
+impl ContentGraph {
+    /// Resolve an Obsidian-style `reference` to a normalized path in this graph.
+    ///
+    /// Resolution chain (first match wins):
+    /// 1. Exact normalized path
+    /// 2. Exact + `.md`
+    /// 3. Filename match (case-insensitive, without extension)
+    /// 4. Filename + `.md` match
+    /// 5. Folder note: `reference/index.md` or `reference/<reference>.md`
+    ///
+    /// When multiple candidates match (e.g. same filename in different dirs),
+    /// the candidate sharing the longest common directory prefix with
+    /// `from_path` wins.
+    pub fn resolve_path(&self, reference: &str, from_path: &str) -> Option<String> {
+        let norm_ref = normalize_path(reference);
+        let norm_from = normalize_path(from_path);
+
+        // 1. Exact path match
+        if self.path_index.contains_key(&norm_ref) {
+            return Some(self.files[self.path_index[&norm_ref]].clone());
+        }
+
+        // 2. Exact + .md
+        let with_md = format!("{}.md", norm_ref);
+        if self.path_index.contains_key(&with_md) {
+            return Some(self.files[self.path_index[&with_md]].clone());
+        }
+
+        // 3/4. Filename match (stem, case-insensitive)
+        let ref_stem = normalize_component(
+            filename_stem(filename_with_ext(&norm_ref)),
+        );
+        if let Some(candidates) = self.filename_index.get(&ref_stem) {
+            if candidates.len() == 1 {
+                return Some(self.files[candidates[0]].clone());
+            }
+            // Ambiguity tiebreaker: longest common directory prefix with from_path
+            let from_dirs = dir_components(&norm_from);
+            let best = candidates
+                .iter()
+                .copied()
+                .max_by_key(|&idx| {
+                    let candidate_dirs = dir_components(&self.files[idx]);
+                    common_prefix_len(&candidate_dirs, &from_dirs)
+                });
+            if let Some(idx) = best {
+                return Some(self.files[idx].clone());
+            }
+        }
+
+        // 5. Folder note: reference/index.md
+        let folder_index = format!("{}/index.md", norm_ref);
+        if self.path_index.contains_key(&folder_index) {
+            return Some(self.files[self.path_index[&folder_index]].clone());
+        }
+
+        // 5b. Folder note: reference/<stem>.md  (self-named)
+        let self_named = {
+            let leaf = norm_ref.rsplit('/').next().unwrap_or(&norm_ref);
+            format!("{}/{}.md", norm_ref, leaf)
+        };
+        if self.path_index.contains_key(&self_named) {
+            return Some(self.files[self.path_index[&self_named]].clone());
+        }
+
+        None
+    }
+
+    /// Check whether the file at `path` has a heading with the given `anchor`.
+    pub fn has_heading(&self, path: &str, anchor: &str) -> bool {
+        let norm = normalize_path(path);
+        let anchor_lower = normalize_component(anchor);
+        self.headings
+            .get(&norm)
+            .map_or(false, |hs| hs.iter().any(|(_, a)| *a == anchor_lower))
+    }
+
+    /// Check whether the file at `path` has a block with the given `block_id`.
+    pub fn has_block(&self, path: &str, block_id: &str) -> bool {
+        let norm = normalize_path(path);
+        let id_lower = normalize_component(block_id);
+        self.blocks
+            .get(&norm)
+            .map_or(false, |bs| bs.iter().any(|b| *b == id_lower))
+    }
+
+    /// Return the slug for the given path, if registered.
+    pub fn get_slug(&self, path: &str) -> Option<&str> {
+        let norm = normalize_path(path);
+        self.slug_map.get(&norm).map(|s| s.as_str())
+    }
+
+    /// All file paths in insertion order.
+    pub fn all_files(&self) -> &[String] {
+        &self.files
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ContentGraphBuilder
+// ---------------------------------------------------------------------------
+
+/// Incrementally builds a [`ContentGraph`].
+///
+/// Call `add_file`, `add_headings`, `add_blocks` as content is scanned,
+/// then `build()` to obtain the immutable graph.
+#[derive(Debug, Default)]
+pub struct ContentGraphBuilder {
+    files: Vec<String>,
+    filename_index: HashMap<String, Vec<usize>>,
+    path_index: HashMap<String, usize>,
+    slug_map: HashMap<String, String>,
+    headings: HashMap<String, Vec<(String, String)>>,
+    blocks: HashMap<String, Vec<String>>,
+}
+
+impl ContentGraphBuilder {
+    /// Create a new, empty builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a content file.
+    ///
+    /// `relative_path` is the path relative to the source root (e.g.
+    /// `"posts/hello.md"`). `slug` is the URL slug for this file.
+    pub fn add_file(&mut self, relative_path: &str, slug: &str) {
+        let norm = normalize_path(relative_path);
+        let idx = self.files.len();
+
+        // Build filename stem index
+        let stem = filename_stem(&norm).to_owned();
+        self.filename_index.entry(stem).or_default().push(idx);
+
+        // Build path index
+        self.path_index.insert(norm.clone(), idx);
+
+        // Slug map
+        self.slug_map.insert(norm.clone(), slug.to_owned());
+
+        // Store normalized path
+        self.files.push(norm);
+    }
+
+    /// Register headings for a file. Each entry is `(heading_text, anchor_id)`.
+    pub fn add_headings(&mut self, relative_path: &str, entries: Vec<(String, String)>) {
+        let norm = normalize_path(relative_path);
+        let normalized_entries = entries
+            .into_iter()
+            .map(|(text, anchor)| (text, normalize_component(&anchor)))
+            .collect();
+        self.headings.insert(norm, normalized_entries);
+    }
+
+    /// Register block IDs for a file.
+    pub fn add_blocks(&mut self, relative_path: &str, ids: Vec<String>) {
+        let norm = normalize_path(relative_path);
+        let normalized_ids = ids.into_iter().map(|id| normalize_component(&id)).collect();
+        self.blocks.insert(norm, normalized_ids);
+    }
+
+    /// Consume the builder and produce an immutable [`ContentGraph`].
+    pub fn build(self) -> ContentGraph {
+        ContentGraph {
+            files: self.files,
+            filename_index: self.filename_index,
+            path_index: self.path_index,
+            slug_map: self.slug_map,
+            headings: self.headings,
+            blocks: self.blocks,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Convenience: build a graph with common test files.
+    fn sample_graph() -> ContentGraph {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("posts/hello.md", "/posts/hello");
+        b.add_file("posts/world.md", "/posts/world");
+        b.add_file("guides/hello.md", "/guides/hello");
+        b.add_file("projects/index.md", "/projects");
+        b.add_file("notes/daily/daily.md", "/notes/daily");
+        b.add_headings(
+            "posts/hello.md",
+            vec![
+                ("Introduction".into(), "introduction".into()),
+                ("Getting Started".into(), "getting-started".into()),
+            ],
+        );
+        b.add_blocks(
+            "posts/hello.md",
+            vec!["abc123".into(), "def456".into()],
+        );
+        b.build()
+    }
+
+    // 1. Basic file addition and resolution
+    #[test]
+    fn test_builder_adds_file() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("notes/first.md", "/notes/first");
+        let g = b.build();
+
+        assert_eq!(g.all_files(), &["notes/first.md"]);
+        assert_eq!(
+            g.resolve_path("notes/first.md", ""),
+            Some("notes/first.md".into())
+        );
+    }
+
+    // 2. Case-insensitive filename lookup
+    #[test]
+    fn test_filename_index_case_insensitive() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("Notes/MyFile.md", "/notes/myfile");
+        let g = b.build();
+
+        // Lookup with different casing
+        assert_eq!(
+            g.resolve_path("myfile", ""),
+            Some("notes/myfile.md".into())
+        );
+        assert_eq!(
+            g.resolve_path("MYFILE", ""),
+            Some("notes/myfile.md".into())
+        );
+        assert_eq!(
+            g.resolve_path("MyFile", ""),
+            Some("notes/myfile.md".into())
+        );
+    }
+
+    // 3. Lookup without .md extension
+    #[test]
+    fn test_filename_index_without_extension() {
+        let g = sample_graph();
+
+        // "world" (no extension) should find "posts/world.md"
+        assert_eq!(
+            g.resolve_path("world", ""),
+            Some("posts/world.md".into())
+        );
+    }
+
+    // 4. Ambiguous filename resolved by longest common directory prefix
+    #[test]
+    fn test_ambiguous_resolved_by_common_prefix() {
+        let g = sample_graph();
+
+        // "hello" is ambiguous: posts/hello.md vs guides/hello.md
+        // from "posts/other.md" -> posts/hello.md should win
+        assert_eq!(
+            g.resolve_path("hello", "posts/other.md"),
+            Some("posts/hello.md".into())
+        );
+
+        // from "guides/other.md" -> guides/hello.md should win
+        assert_eq!(
+            g.resolve_path("hello", "guides/other.md"),
+            Some("guides/hello.md".into())
+        );
+    }
+
+    // 5. Heading query
+    #[test]
+    fn test_headings_registered() {
+        let g = sample_graph();
+
+        assert!(g.has_heading("posts/hello.md", "introduction"));
+        assert!(g.has_heading("posts/hello.md", "getting-started"));
+        // Case-insensitive
+        assert!(g.has_heading("posts/hello.md", "Introduction"));
+        // Non-existent heading
+        assert!(!g.has_heading("posts/hello.md", "nonexistent"));
+        // Non-existent file
+        assert!(!g.has_heading("nope.md", "introduction"));
+    }
+
+    // 6. Block ID query
+    #[test]
+    fn test_blocks_registered() {
+        let g = sample_graph();
+
+        assert!(g.has_block("posts/hello.md", "abc123"));
+        assert!(g.has_block("posts/hello.md", "def456"));
+        // Case-insensitive
+        assert!(g.has_block("posts/hello.md", "ABC123"));
+        // Non-existent block
+        assert!(!g.has_block("posts/hello.md", "zzz"));
+        // Non-existent file
+        assert!(!g.has_block("nope.md", "abc123"));
+    }
+
+    // 7. Folder note resolution: [[projects]] -> projects/index.md
+    #[test]
+    fn test_folder_note_resolution() {
+        let g = sample_graph();
+
+        assert_eq!(
+            g.resolve_path("projects", ""),
+            Some("projects/index.md".into())
+        );
+    }
+
+    // 7b. Self-named folder note: [[daily]] -> notes/daily/daily.md
+    #[test]
+    fn test_self_named_folder_note_resolution() {
+        // "daily" as a filename stem appears in the filename index,
+        // so it resolves via step 3 rather than step 5.
+        let g = sample_graph();
+
+        assert_eq!(
+            g.resolve_path("daily", ""),
+            Some("notes/daily/daily.md".into())
+        );
+    }
+
+    // 7c. Self-named folder note via path
+    #[test]
+    fn test_self_named_folder_note_via_path() {
+        let mut b = ContentGraphBuilder::new();
+        // Only register the self-named note, no filename stem shortcut
+        b.add_file("archive/archive.md", "/archive");
+        let g = b.build();
+
+        // Path-based reference should find it via the folder-note fallback
+        assert_eq!(
+            g.resolve_path("archive", ""),
+            Some("archive/archive.md".into())
+        );
+    }
+
+    // 8. Unresolved returns None
+    #[test]
+    fn test_unresolved_returns_none() {
+        let g = sample_graph();
+
+        assert_eq!(g.resolve_path("nonexistent", ""), None);
+        assert_eq!(g.resolve_path("posts/missing.md", ""), None);
+    }
+
+    // 9. Exact relative path wins over filename
+    #[test]
+    fn test_exact_path_match() {
+        let g = sample_graph();
+
+        // Exact path should resolve directly, even though "hello" is ambiguous
+        assert_eq!(
+            g.resolve_path("guides/hello.md", "posts/other.md"),
+            Some("guides/hello.md".into())
+        );
+    }
+
+    // 10. Partial path match: "posts/hello" matches "posts/hello.md"
+    #[test]
+    fn test_partial_path_match() {
+        let g = sample_graph();
+
+        assert_eq!(
+            g.resolve_path("posts/hello", ""),
+            Some("posts/hello.md".into())
+        );
+        assert_eq!(
+            g.resolve_path("posts/world", ""),
+            Some("posts/world.md".into())
+        );
+    }
+
+    // Slug lookup
+    #[test]
+    fn test_get_slug() {
+        let g = sample_graph();
+
+        assert_eq!(g.get_slug("posts/hello.md"), Some("/posts/hello"));
+        assert_eq!(g.get_slug("Posts/Hello.md"), Some("/posts/hello"));
+        assert_eq!(g.get_slug("nope.md"), None);
+    }
+
+    // all_files preserves insertion order
+    #[test]
+    fn test_all_files_order() {
+        let g = sample_graph();
+
+        assert_eq!(
+            g.all_files(),
+            &[
+                "posts/hello.md",
+                "posts/world.md",
+                "guides/hello.md",
+                "projects/index.md",
+                "notes/daily/daily.md",
+            ]
+        );
+    }
+
+    // Unicode normalization (NFC)
+    #[test]
+    fn test_unicode_normalization() {
+        let mut b = ContentGraphBuilder::new();
+        // e + combining acute accent (NFD)
+        b.add_file("caf\u{0065}\u{0301}.md", "/cafe");
+        let g = b.build();
+
+        // Lookup with NFC form (precomposed e-acute)
+        assert_eq!(
+            g.resolve_path("caf\u{00e9}.md", ""),
+            Some("caf\u{00e9}.md".into())
+        );
+        // Lookup with NFD form
+        assert_eq!(
+            g.resolve_path("caf\u{0065}\u{0301}.md", ""),
+            Some("caf\u{00e9}.md".into())
+        );
+    }
+}
