@@ -21,7 +21,7 @@
 use crate::content_graph::ContentGraph;
 use crate::heading_anchor::obsidian_heading_anchor;
 
-use super::fuzzy_path::{relative_url, resolve_reference, ResolvedRef};
+use super::fuzzy_path::{relative_asset_path, relative_url, resolve_reference, ResolvedRef};
 use super::{Diagnostic, LinkType, OutgoingLink};
 
 /// Image file extensions recognized for embed syntax (`![[…]]`).
@@ -248,62 +248,6 @@ fn is_image_path(path: &str) -> bool {
     }
 }
 
-/// Compute the relative URL for a non-pretty-URL asset (images, etc.).
-///
-/// `relative_url` applies pretty URL formatting (strips extension, adds `/`),
-/// which is wrong for binary assets. This function computes a raw relative
-/// path preserving the filename and extension.
-///
-/// We use the *filesystem* parent directory (e.g. `posts/hello.md` -> `posts`)
-/// rather than the pretty-URL directory (`posts/hello`). The extra `../` needed
-/// for pretty-URL nesting is added later by `adjust_relative_paths_for_pretty_urls`
-/// in the Tauri compile layer, which processes all `src` attributes in non-index
-/// files. Using `to_pretty_url_dir` here would double-count that adjustment.
-fn relative_asset_url(from_path: &str, to_path: &str) -> String {
-    // Use the filesystem parent directory, NOT the pretty-URL directory.
-    // The pretty-URL `../` adjustment is handled downstream by
-    // `adjust_relative_paths_for_pretty_urls`.
-    let from_dir = super::parent_dir(from_path);
-    let from_parts: Vec<&str> = if from_dir.is_empty() {
-        vec![]
-    } else {
-        from_dir.split('/').collect()
-    };
-
-    let to_parts: Vec<&str> = if to_path.is_empty() {
-        vec![]
-    } else {
-        to_path.split('/').collect()
-    };
-
-    let common = from_parts
-        .iter()
-        .zip(to_parts.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let ups = from_parts.len() - common;
-    let remaining = &to_parts[common..];
-
-    let mut result = String::new();
-    for _ in 0..ups {
-        result.push_str("../");
-    }
-    for (i, part) in remaining.iter().enumerate() {
-        if i > 0 {
-            result.push('/');
-        }
-        result.push_str(part);
-    }
-
-    if result.is_empty() {
-        // Same directory, just the filename
-        to_path.rsplit('/').next().unwrap_or(to_path).to_string()
-    } else {
-        result
-    }
-}
-
 /// Resolve a standard `[[…]]` wikilink and return its markdown replacement.
 fn resolve_wikilink(
     inner: &str,
@@ -399,7 +343,7 @@ fn resolve_embed(
             if is_image_path(&target_path) {
                 // Image embed: produce ![alt](url)
                 let alt = file_stem(&target_path);
-                let url = relative_asset_url(from_path, &target_path);
+                let url = relative_asset_path(from_path, &target_path);
                 format!("![{}]({})", alt, url)
             } else {
                 // Markdown embed: produce <!-- moss-embed:path -->

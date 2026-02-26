@@ -125,6 +125,59 @@ pub fn relative_url(from_path: &str, to_path: &str) -> String {
     result
 }
 
+/// Compute a relative path from `from_path`'s parent directory to `to_path`,
+/// preserving the target filename and extension.
+///
+/// Unlike [`relative_url`], which uses pretty-URL directories, this function
+/// uses the *filesystem* parent directory (e.g. `posts/hello.md` -> `posts`).
+/// The extra `../` needed for pretty-URL nesting is added later by
+/// `adjust_relative_paths_for_pretty_urls` in the Tauri compile layer.
+/// Using `to_pretty_url_dir` here would double-count that adjustment.
+///
+/// Use this for binary assets (images, fonts, etc.) and any reference that
+/// should keep its file extension in the URL.
+pub(crate) fn relative_asset_path(from_path: &str, to_path: &str) -> String {
+    let from_dir = parent_dir(from_path);
+    let from_parts: Vec<&str> = if from_dir.is_empty() {
+        vec![]
+    } else {
+        from_dir.split('/').collect()
+    };
+
+    let to_parts: Vec<&str> = if to_path.is_empty() {
+        vec![]
+    } else {
+        to_path.split('/').collect()
+    };
+
+    let common = from_parts
+        .iter()
+        .zip(to_parts.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let ups = from_parts.len() - common;
+    let remaining = &to_parts[common..];
+
+    let mut result = String::new();
+    for _ in 0..ups {
+        result.push_str("../");
+    }
+    for (i, part) in remaining.iter().enumerate() {
+        if i > 0 {
+            result.push('/');
+        }
+        result.push_str(part);
+    }
+
+    if result.is_empty() {
+        // Same directory, just the filename
+        to_path.rsplit('/').next().unwrap_or(to_path).to_string()
+    } else {
+        result
+    }
+}
+
 /// Convert a source file path to its pretty URL directory path.
 ///
 /// - `"posts/hello.md"` -> `"posts/hello"`  (the URL becomes `posts/hello/`)

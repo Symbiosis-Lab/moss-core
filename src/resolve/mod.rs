@@ -11,6 +11,7 @@ pub mod block_refs;
 pub mod callouts;
 pub mod embeds;
 pub mod fuzzy_path;
+pub mod markdown_refs;
 pub mod wikilinks;
 
 /// A link going out from a document.
@@ -62,6 +63,7 @@ pub struct ResolveResult {
 /// 2. Resolve wikilinks (first pass) -- standard `[[…]]` and `![[…]]` to markdown links / embed markers
 /// 3. Resolve embed placeholders -- inline `<!-- moss-embed:… -->` markers with file content
 /// 4. Resolve wikilinks (second pass) -- catch wikilinks introduced by embedded content
+/// 4.5. Resolve bare filenames in standard markdown images -- `![](photo.jpg)` to resolved paths
 /// 5. Transform block references -- `^id` markers to HTML anchors
 /// 6. Transform callouts -- `> [!type]` to HTML divs
 /// 7. Rejoin frontmatter + resolved body
@@ -89,8 +91,14 @@ pub fn resolve_content(
     outgoing_links.extend(wikilink_pass2.outgoing_links);
     diagnostics.extend(wikilink_pass2.diagnostics);
 
+    // Step 4.5: Resolve bare filenames in standard markdown images.
+    let md_ref_result =
+        markdown_refs::resolve_markdown_refs(&wikilink_pass2.content, graph, source_path);
+    outgoing_links.extend(md_ref_result.outgoing_links);
+    diagnostics.extend(md_ref_result.diagnostics);
+
     // Step 5: Transform block references.
-    let (block_result, block_ids) = block_refs::transform_block_refs(&wikilink_pass2.content);
+    let (block_result, block_ids) = block_refs::transform_block_refs(&md_ref_result.content);
 
     // Step 6: Transform callouts.
     let callout_result = callouts::transform_callouts(&block_result);
@@ -365,5 +373,50 @@ mod tests {
             "Expected embed dep (disclaimer.md, note.md), got: {:?}",
             result.embed_deps
         );
+    }
+
+    // ----- Integration test for markdown image bare-filename resolution -----
+
+    #[test]
+    fn test_bare_filename_image_resolved_in_pipeline() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("guide.md", "guide");
+        b.add_file("note.md", "note");
+        b.add_file("assets/photo.jpg", "photo");
+        b.add_headings(
+            "guide.md",
+            vec![("Setup".into(), "setup".into())],
+        );
+        b.add_blocks("guide.md", vec!["key-point".into()]);
+        let graph = b.build();
+        let files = HashMap::new();
+
+        let input = "---\ntitle: Test\n---\n![My Image](photo.jpg)\n\nSome text.";
+        let result = resolve_content("articles/post.md", input, &graph, &mock_reader(&files));
+
+        // Frontmatter preserved
+        assert!(result.content_markdown.starts_with("---\ntitle: Test\n---\n"));
+
+        // Bare filename resolved to correct relative path
+        assert!(
+            result.content_markdown.contains("![My Image](../assets/photo.jpg)"),
+            "Expected resolved image path, got: {}",
+            result.content_markdown
+        );
+
+        // Outgoing link tracked
+        let standard_links: Vec<_> = result
+            .outgoing_links
+            .iter()
+            .filter(|l| l.link_type == LinkType::Standard)
+            .collect();
+        assert_eq!(
+            standard_links.len(),
+            1,
+            "Expected 1 standard outgoing link, got {}: {:?}",
+            standard_links.len(),
+            standard_links
+        );
+        assert_eq!(standard_links[0].target_path, "assets/photo.jpg");
     }
 }
