@@ -253,10 +253,17 @@ fn is_image_path(path: &str) -> bool {
 /// `relative_url` applies pretty URL formatting (strips extension, adds `/`),
 /// which is wrong for binary assets. This function computes a raw relative
 /// path preserving the filename and extension.
+///
+/// We use the *filesystem* parent directory (e.g. `posts/hello.md` -> `posts`)
+/// rather than the pretty-URL directory (`posts/hello`). The extra `../` needed
+/// for pretty-URL nesting is added later by `adjust_relative_paths_for_pretty_urls`
+/// in the Tauri compile layer, which processes all `src` attributes in non-index
+/// files. Using `to_pretty_url_dir` here would double-count that adjustment.
 fn relative_asset_url(from_path: &str, to_path: &str) -> String {
-    // Use pretty URL directory (guide.md → "guide") so the relative path
-    // is correct when the page is served at guide/index.html.
-    let from_dir = super::fuzzy_path::to_pretty_url_dir(from_path);
+    // Use the filesystem parent directory, NOT the pretty-URL directory.
+    // The pretty-URL `../` adjustment is handled downstream by
+    // `adjust_relative_paths_for_pretty_urls`.
+    let from_dir = super::parent_dir(from_path);
     let from_parts: Vec<&str> = if from_dir.is_empty() {
         vec![]
     } else {
@@ -580,7 +587,7 @@ mod tests {
     fn test_image_embed() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg]]", &graph, "posts/hello.md");
-        assert_eq!(result.content, "![photo](../../assets/photo.jpg)");
+        assert_eq!(result.content, "![photo](../assets/photo.jpg)");
     }
 
     // 11. Markdown embed
