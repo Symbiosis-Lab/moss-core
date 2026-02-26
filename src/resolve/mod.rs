@@ -375,6 +375,29 @@ mod tests {
         );
     }
 
+    // ----- Regression test for deeply-nested Unicode paths (#342) -----
+
+    #[test]
+    fn test_deeply_nested_unicode_bare_filename() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("assets/d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg", "d9512f2d");
+        b.add_file("articles/\u{65e0}\u{7528}\u{4e4b}\u{65c5}/\u{771f}\u{6b63}\u{7684}\u{65c5}\u{7a0b}.md", "articles/\u{65e0}\u{7528}\u{4e4b}\u{65c5}/\u{771f}\u{6b63}\u{7684}\u{65c5}\u{7a0b}");
+        let graph = b.build();
+        let files = HashMap::new();
+
+        let input = "---\ndate: 2025-12-03\n---\n![](d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg)\n\nSome text.";
+        let result = resolve_content(
+            "articles/\u{65e0}\u{7528}\u{4e4b}\u{65c5}/\u{771f}\u{6b63}\u{7684}\u{65c5}\u{7a0b}.md",
+            input, &graph, &mock_reader(&files)
+        );
+
+        assert!(
+            result.content_markdown.contains("../../assets/d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg"),
+            "Expected resolved path with ../../assets/, got: {}",
+            result.content_markdown
+        );
+    }
+
     // ----- Integration test for markdown image bare-filename resolution -----
 
     #[test]
