@@ -6,3 +6,12 @@ description = "Pure Rust content processing for moss — zero I/O, zero async"
 
 [dependencies]
 unicode-normalization = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+specta = { version = "=2.0.0-rc.20", features = ["derive"], optional = true }
+
+[features]
+default = []
+# Enable specta::Type derives for Tauri command boundary types.
+specta = ["dep:specta"]

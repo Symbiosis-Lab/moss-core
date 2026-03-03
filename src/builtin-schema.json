@@ -1,0 +1,88 @@
+{
+  "generator": "moss",
+  "version": "1.0",
+  "frontmatter": {
+    "fields": {
+      "title": {
+        "type": "string",
+        "widget": "text-input",
+        "required": true,
+        "description": "Page title"
+      },
+      "date": {
+        "type": "string",
+        "widget": "date-picker",
+        "format": "date",
+        "description": "Publication date (YYYY-MM-DD)"
+      },
+      "weight": {
+        "type": "integer",
+        "widget": "number-input",
+        "description": "Sort weight for ordering"
+      },
+      "slug": {
+        "type": "string",
+        "widget": "text-input",
+        "description": "URL slug override"
+      },
+      "cover": {
+        "type": "string",
+        "widget": "file-picker",
+        "description": "Cover image path"
+      },
+      "nav": {
+        "type": "string",
+        "widget": "text-input",
+        "description": "Navigation label override"
+      },
+      "draft": {
+        "type": "boolean",
+        "widget": "checkbox",
+        "description": "Mark as draft (excluded from build)"
+      },
+      "unlisted": {
+        "type": "boolean",
+        "widget": "checkbox",
+        "description": "Exclude from listings but still accessible"
+      },
+      "flatten": {
+        "type": "boolean",
+        "widget": "checkbox",
+        "description": "Flatten children into parent listing"
+      },
+      "list_style": {
+        "type": "string",
+        "widget": "select",
+        "enum_values": ["compact", "expanded"],
+        "description": "Listing display style"
+      },
+      "also_in": {
+        "type": "array",
+        "widget": "tag-input",
+        "items": {
+          "type": "string"
+        },
+        "description": "Cross-list this page in other sections"
+      },
+      "lang": {
+        "type": "string",
+        "widget": "text-input",
+        "description": "Language code (e.g. en, zh)"
+      },
+      "translation_key": {
+        "type": "string",
+        "widget": "text-input",
+        "description": "Key to link translations of the same content"
+      },
+      "order": {
+        "type": "integer",
+        "widget": "number-input",
+        "description": "Explicit ordering value"
+      }
+    }
+  },
+  "shortcodes": {
+    "delimiters": [":::", ":::"],
+    "definitions": {}
+  }
+}
