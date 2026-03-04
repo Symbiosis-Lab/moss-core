@@ -45,16 +45,53 @@
         "widget": "checkbox",
         "description": "Exclude from listings but still accessible"
       },
-      "flatten": {
-        "type": "boolean",
-        "widget": "checkbox",
-        "description": "Flatten children into parent listing"
+      "description": {
+        "type": "string",
+        "widget": "textarea",
+        "description": "Page excerpt for SEO meta, og:description, and list previews"
       },
-      "list_style": {
+      "tags": {
+        "type": "array",
+        "widget": "tag-input",
+        "items": { "type": "string" },
+        "description": "Content tags for organization"
+      },
+      "children": {
         "type": "string",
         "widget": "select",
-        "enum_values": ["compact", "expanded"],
-        "description": "Listing display style"
+        "enum_values": ["below", "sidebar", "hidden"],
+        "default": "below",
+        "description": "Where child pages appear relative to content"
+      },
+      "children_style": {
+        "type": "string",
+        "widget": "select",
+        "enum_values": ["list", "card"],
+        "default": "list",
+        "description": "How child pages are rendered"
+      },
+      "children_depth": {
+        "type": "string",
+        "widget": "select",
+        "enum_values": ["direct", "all"],
+        "default": "direct",
+        "description": "Whether to include only immediate children or all descendants"
+      },
+      "series": {
+        "type": "array",
+        "widget": "tag-input",
+        "items": { "type": "string" },
+        "description": "Declares children as sequential series. Use true for weight-based ordering, or a list of wikilinks for explicit order."
+      },
+      "breadcrumb": {
+        "type": "boolean",
+        "widget": "checkbox",
+        "description": "Override site-wide breadcrumb setting for this page"
+      },
+      "cascade": {
+        "type": "object",
+        "widget": "code-editor",
+        "description": "Frontmatter values to push to all descendant pages"
       },
       "also_in": {
         "type": "array",
@@ -73,11 +110,6 @@
         "type": "string",
         "widget": "text-input",
         "description": "Key to link translations of the same content"
-      },
-      "order": {
-        "type": "integer",
-        "widget": "number-input",
-        "description": "Explicit ordering value"
       }
     }
   },
