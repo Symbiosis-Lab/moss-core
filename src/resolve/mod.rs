@@ -103,9 +103,13 @@ pub fn resolve_content(
     // Step 6: Transform callouts.
     let callout_result = callouts::transform_callouts(&block_result);
 
-    // Step 7: Rejoin frontmatter + resolved body.
+    // Step 7: Resolve frontmatter wikilinks + rejoin with resolved body.
     let content_markdown = match frontmatter {
-        Some(fm) => format!("{}{}", fm, callout_result),
+        Some(fm) => {
+            let resolved_fm = resolve_frontmatter_wikilinks(fm, graph, source_path);
+            diagnostics.extend(resolved_fm.diagnostics);
+            format!("{}{}", resolved_fm.content, callout_result)
+        }
         None => callout_result,
     };
 
@@ -116,6 +120,100 @@ pub fn resolve_content(
         block_ids,
         embed_deps,
     }
+}
+
+/// Result of resolving wikilinks in frontmatter text.
+#[derive(Debug)]
+pub struct FrontmatterResolveResult {
+    /// The frontmatter text with `[[wikilinks]]` replaced by resolved paths.
+    pub content: String,
+    /// Diagnostics for unresolved references.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Resolve `[[wikilink]]` patterns in frontmatter text to content graph paths.
+///
+/// Unlike body wikilink resolution (which produces markdown links like
+/// `[text](url)`), this function replaces `[[ref]]` with just the resolved
+/// path string.  Surrounding quotes are preserved.
+///
+/// # Examples
+///
+/// - `sidebar: "[[news]]"` → `sidebar: "news.md"` (or resolved path)
+/// - `sidebar: [[news]]` → `sidebar: news.md`
+/// - `cover: "[[photo.jpg]]"` → `cover: "assets/photo.jpg"`
+/// - Unresolved: `[[missing]]` → `missing` (brackets stripped, diagnostic emitted)
+///
+/// The input `frontmatter` should include the delimiter(s) (e.g. `---`).
+/// Wikilinks in delimiter lines are not expected but won't cause issues.
+pub fn resolve_frontmatter_wikilinks(
+    frontmatter: &str,
+    graph: &ContentGraph,
+    source_path: &str,
+) -> FrontmatterResolveResult {
+    let mut diagnostics = Vec::new();
+    let mut result = String::with_capacity(frontmatter.len());
+    let bytes = frontmatter.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Look for `[[`
+        if i + 1 < len && bytes[i] == b'[' && bytes[i + 1] == b'[' {
+            // Find closing `]]`
+            if let Some(close_pos) = find_closing_brackets(bytes, i + 2) {
+                let inner = &frontmatter[i + 2..close_pos];
+
+                // Resolve the reference via the content graph
+                let resolved_path = match graph.resolve_path(inner, source_path) {
+                    Some(path) => path,
+                    None => {
+                        diagnostics.push(Diagnostic {
+                            message: format!(
+                                "Unresolved frontmatter wikilink: [[{}]]",
+                                inner
+                            ),
+                            source_path: source_path.to_string(),
+                            reference: inner.to_string(),
+                        });
+                        // Strip brackets, use the inner text as-is
+                        inner.to_string()
+                    }
+                };
+
+                result.push_str(&resolved_path);
+                i = close_pos + 2; // skip past `]]`
+            } else {
+                // No closing `]]` found — emit the `[` as-is
+                result.push('[');
+                i += 1;
+            }
+        } else {
+            result.push(frontmatter[i..].chars().next().unwrap());
+            i += frontmatter[i..].chars().next().unwrap().len_utf8();
+        }
+    }
+
+    FrontmatterResolveResult {
+        content: result,
+        diagnostics,
+    }
+}
+
+/// Find the position of the first `]]` in `bytes` starting from `start`.
+/// Returns the byte index of the first `]` in the `]]` pair, or `None`.
+fn find_closing_brackets(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut j = start;
+    while j + 1 < bytes.len() {
+        if bytes[j] == b']' && bytes[j + 1] == b']' {
+            return Some(j);
+        }
+        // Don't cross newline boundaries for safety, but wikilinks
+        // in frontmatter values shouldn't span lines. Allow it anyway
+        // since YAML values can be on one line.
+        j += 1;
+    }
+    None
 }
 
 /// Scan `content` starting from byte offset `scan_start` for the first
@@ -539,10 +637,145 @@ mod tests {
         assert_eq!(standard_links[0].target_path, "assets/photo.jpg");
     }
 
-    // ----- Regression: simplified frontmatter wikilinks must not be resolved -----
+    // ----- resolve_frontmatter_wikilinks unit tests -----
+
+    fn fm_test_graph() -> ContentGraph {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "index");
+        b.add_file("news.md", "news");
+        b.add_file("news/index.md", "news-index");
+        b.add_file("assets/photo.jpg", "photo");
+        b.add_file("posts/ch-1.md", "ch-1");
+        b.add_file("posts/ch-2.md", "ch-2");
+        b.build()
+    }
 
     #[test]
-    fn test_simplified_frontmatter_wikilink_not_resolved() {
+    fn test_fm_wikilink_basic_quoted() {
+        let graph = fm_test_graph();
+        let fm = "---\nsidebar: \"[[news]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, "---\nsidebar: \"news.md\"\n---\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_wikilink_unquoted() {
+        let graph = fm_test_graph();
+        let fm = "---\nsidebar: [[news]]\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, "---\nsidebar: news.md\n---\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_wikilink_cover_image() {
+        let graph = fm_test_graph();
+        let fm = "---\ncover: \"[[photo.jpg]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, "---\ncover: \"assets/photo.jpg\"\n---\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_wikilink_folder_note() {
+        // [[news]] when news/index.md exists should resolve to folder note path.
+        // But news.md also exists and is an exact stem match, so it resolves to news.md.
+        // Let's build a graph where only the folder note exists.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "index");
+        b.add_file("news/index.md", "news-index");
+        let graph = b.build();
+
+        let fm = "---\nsidebar: \"[[news]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, "---\nsidebar: \"news/index.md\"\n---\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_wikilink_array_items() {
+        let graph = fm_test_graph();
+        let fm = "---\nseries: [\"[[ch-1]]\", \"[[ch-2]]\"]\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(
+            result.content,
+            "---\nseries: [\"posts/ch-1.md\", \"posts/ch-2.md\"]\n---\n"
+        );
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_wikilink_unresolved() {
+        let graph = fm_test_graph();
+        let fm = "---\nsidebar: \"[[missing]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        // Brackets stripped, inner text used as fallback
+        assert_eq!(result.content, "---\nsidebar: \"missing\"\n---\n");
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].reference, "missing");
+        assert_eq!(result.diagnostics[0].source_path, "index.md");
+        assert!(result.diagnostics[0].message.contains("[[missing]]"));
+    }
+
+    #[test]
+    fn test_fm_wikilink_multiple() {
+        let graph = fm_test_graph();
+        let fm = "---\nsidebar: \"[[news]]\"\ncover: \"[[photo.jpg]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(
+            result.content,
+            "---\nsidebar: \"news.md\"\ncover: \"assets/photo.jpg\"\n---\n"
+        );
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_no_wikilinks() {
+        let graph = fm_test_graph();
+        let fm = "---\ntitle: Hello\ntags:\n  - rust\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, fm);
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_simplified_frontmatter_wikilink() {
+        let graph = fm_test_graph();
+        // Simplified frontmatter (no opening ---)
+        let fm = "sidebar: \"[[news]]\"\nchildren: false\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, "sidebar: \"news.md\"\nchildren: false\n---\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_unclosed_wikilink_preserved() {
+        let graph = fm_test_graph();
+        let fm = "---\nsidebar: \"[[unclosed\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        // No closing ]] — the [[ is preserved as-is
+        assert_eq!(result.content, "---\nsidebar: \"[[unclosed\"\n---\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_mixed_resolved_and_unresolved() {
+        let graph = fm_test_graph();
+        let fm = "---\nsidebar: \"[[news]]\"\nrelated: \"[[missing]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(
+            result.content,
+            "---\nsidebar: \"news.md\"\nrelated: \"missing\"\n---\n"
+        );
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].reference, "missing");
+    }
+
+    // ----- Frontmatter wikilinks are now resolved to paths -----
+
+    #[test]
+    fn test_simplified_frontmatter_wikilink_resolved_to_path() {
         let mut b = ContentGraphBuilder::new();
         b.add_file("index.md", "index");
         b.add_file("news.md", "news");
@@ -550,18 +783,18 @@ mod tests {
         let files = HashMap::new();
 
         // Simplified frontmatter (no leading ---) with a wikilink in sidebar value.
-        // The wikilink in frontmatter must NOT be resolved.
+        // The wikilink in frontmatter IS now resolved — to a path, not a markdown link.
         let input = "children: false\nsidebar: \"[[news]]\"\nuid: a48746ca\n---\n\n# Welcome\n\nBody with [[news]] link.";
         let result = resolve_content("index.md", input, &graph, &mock_reader(&files));
 
-        // Frontmatter must be preserved exactly (wikilink untouched).
+        // Frontmatter wikilink [[news]] resolved to path "news.md", quotes preserved.
         assert!(
-            result.content_markdown.starts_with("children: false\nsidebar: \"[[news]]\"\nuid: a48746ca\n---\n"),
-            "Simplified frontmatter was corrupted: {}",
+            result.content_markdown.starts_with("children: false\nsidebar: \"news.md\"\nuid: a48746ca\n---\n"),
+            "Frontmatter wikilink not resolved to path: {}",
             result.content_markdown
         );
 
-        // Body wikilink [[news]] SHOULD be resolved.
+        // Body wikilink [[news]] SHOULD be resolved to a markdown link.
         // Both files are at root, so relative path is `news/` (not `../news/`).
         assert!(
             result.content_markdown.contains("[news](news/)"),
