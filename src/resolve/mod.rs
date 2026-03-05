@@ -118,43 +118,76 @@ pub fn resolve_content(
     }
 }
 
-/// Split content into (frontmatter_including_delimiters, body).
-///
-/// If content starts with `---\n`, finds the closing `---\n` and splits there.
-/// The frontmatter portion includes both delimiters and the trailing newline
-/// after the closing `---`. Returns `(None, full_content)` if no frontmatter.
-fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    if !content.starts_with("---") {
-        return (None, content);
-    }
-
-    // Find end of the opening `---` line.
-    let after_opening = match content.find('\n') {
-        Some(pos) => pos + 1,
-        None => return (None, content),
-    };
-
-    // Search for a closing `---` line in the remainder.
-    let rest = &content[after_opening..];
+/// Scan `content` starting from byte offset `scan_start` for the first
+/// standalone `---` line.  Returns the byte position just past the
+/// delimiter (including its trailing newline, if present).
+fn find_delimiter(content: &str, scan_start: usize) -> Option<usize> {
+    let rest = &content[scan_start..];
     let mut offset = 0;
     for line in rest.lines() {
         if line.trim() == "---" {
-            // Found closing delimiter. Include through the end of this line.
-            let close_abs = after_opening + offset + line.len();
-            // Include the newline after the closing `---` if present.
-            let split_pos = if close_abs < content.len() && content.as_bytes()[close_abs] == b'\n'
-            {
-                close_abs + 1
+            let close_abs = scan_start + offset + line.len();
+            return if close_abs < content.len() && content.as_bytes()[close_abs] == b'\n' {
+                Some(close_abs + 1)
             } else {
-                close_abs
+                Some(close_abs)
             };
-            return (Some(&content[..split_pos]), &content[split_pos..]);
         }
         offset += line.len() + 1; // +1 for '\n'
     }
+    None
+}
 
-    // No closing delimiter found — treat entire content as body.
-    (None, content)
+/// Split content into (frontmatter_including_delimiters, body).
+///
+/// Supports two frontmatter formats:
+///
+/// **Standard YAML** — content starts with `---\n`:
+/// ```text
+/// ---
+/// title: Hello
+/// ---
+/// Body here.
+/// ```
+///
+/// **Simplified** — content does NOT start with `---`, but contains a
+/// standalone `---` line that separates frontmatter from body:
+/// ```text
+/// children: false
+/// sidebar: "[[news]]"
+/// ---
+///
+/// # Page Title
+/// ```
+///
+/// In both cases the frontmatter portion includes the delimiter(s) and
+/// any trailing newline after the closing `---`.  Returns
+/// `(None, full_content)` when no frontmatter is detected.
+fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
+    if content.starts_with("---") {
+        // --- Standard YAML frontmatter ---
+
+        // Find end of the opening `---` line.
+        let after_opening = match content.find('\n') {
+            Some(pos) => pos + 1,
+            None => return (None, content),
+        };
+
+        // Search for a closing `---` line in the remainder.
+        match find_delimiter(content, after_opening) {
+            Some(split_pos) => (Some(&content[..split_pos]), &content[split_pos..]),
+            None => (None, content), // No closing delimiter — treat entire content as body.
+        }
+    } else {
+        // --- Simplified frontmatter ---
+        // Look for the first standalone `---` line.  Everything up to and
+        // including that line (plus its trailing newline) is frontmatter;
+        // everything after is body.
+        match find_delimiter(content, 0) {
+            Some(split_pos) => (Some(&content[..split_pos]), &content[split_pos..]),
+            None => (None, content), // No `---` found at all — no frontmatter.
+        }
+    }
 }
 
 /// Extract the parent directory from a `/`-separated path.
@@ -229,6 +262,69 @@ mod tests {
         let (fm, body) = split_frontmatter(input);
         assert!(fm.is_none());
         assert_eq!(body, input);
+    }
+
+    // ----- split_frontmatter: simplified frontmatter tests -----
+
+    #[test]
+    fn test_split_simplified_frontmatter() {
+        // Simplified format: no opening `---`, frontmatter lines before a `---` delimiter.
+        let input = "sidebar: [[news]]\n---\n\n# Hello";
+        let (fm, body) = split_frontmatter(input);
+        assert_eq!(fm, Some("sidebar: [[news]]\n---\n"));
+        assert_eq!(body, "\n# Hello");
+    }
+
+    #[test]
+    fn test_split_simplified_preserves_body() {
+        let input = "children: false\nuid: a48746ca\n---\n\n# Page Title\n\nBody content here\n";
+        let (fm, body) = split_frontmatter(input);
+        assert_eq!(fm, Some("children: false\nuid: a48746ca\n---\n"));
+        assert_eq!(body, "\n# Page Title\n\nBody content here\n");
+    }
+
+    #[test]
+    fn test_split_no_delimiter() {
+        // No `---` at all — everything is body, no frontmatter.
+        let input = "Just some content\nwith multiple lines\nbut no delimiter";
+        let (fm, body) = split_frontmatter(input);
+        assert!(fm.is_none());
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn test_split_simplified_with_quoted_wikilink() {
+        let input = "sidebar: \"[[news]]\"\n---\nBody text";
+        let (fm, body) = split_frontmatter(input);
+        assert_eq!(fm, Some("sidebar: \"[[news]]\"\n---\n"));
+        assert_eq!(body, "Body text");
+    }
+
+    #[test]
+    fn test_split_simplified_empty_body() {
+        // Simplified frontmatter with nothing after the delimiter.
+        let input = "title: Test\n---\n";
+        let (fm, body) = split_frontmatter(input);
+        assert_eq!(fm, Some("title: Test\n---\n"));
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn test_split_simplified_delimiter_at_eof_no_newline() {
+        // Simplified frontmatter where `---` is the last line with no trailing newline.
+        let input = "title: Test\n---";
+        let (fm, body) = split_frontmatter(input);
+        assert_eq!(fm, Some("title: Test\n---"));
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn test_split_simplified_multiple_dashes_in_body() {
+        // Only the FIRST `---` should be treated as the delimiter.
+        let input = "title: Test\n---\n\nSome body\n---\nMore body";
+        let (fm, body) = split_frontmatter(input);
+        assert_eq!(fm, Some("title: Test\n---\n"));
+        assert_eq!(body, "\nSome body\n---\nMore body");
     }
 
     // ----- Integration tests for resolve_content -----
@@ -441,5 +537,36 @@ mod tests {
             standard_links
         );
         assert_eq!(standard_links[0].target_path, "assets/photo.jpg");
+    }
+
+    // ----- Regression: simplified frontmatter wikilinks must not be resolved -----
+
+    #[test]
+    fn test_simplified_frontmatter_wikilink_not_resolved() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "index");
+        b.add_file("news.md", "news");
+        let graph = b.build();
+        let files = HashMap::new();
+
+        // Simplified frontmatter (no leading ---) with a wikilink in sidebar value.
+        // The wikilink in frontmatter must NOT be resolved.
+        let input = "children: false\nsidebar: \"[[news]]\"\nuid: a48746ca\n---\n\n# Welcome\n\nBody with [[news]] link.";
+        let result = resolve_content("index.md", input, &graph, &mock_reader(&files));
+
+        // Frontmatter must be preserved exactly (wikilink untouched).
+        assert!(
+            result.content_markdown.starts_with("children: false\nsidebar: \"[[news]]\"\nuid: a48746ca\n---\n"),
+            "Simplified frontmatter was corrupted: {}",
+            result.content_markdown
+        );
+
+        // Body wikilink [[news]] SHOULD be resolved.
+        // Both files are at root, so relative path is `news/` (not `../news/`).
+        assert!(
+            result.content_markdown.contains("[news](news/)"),
+            "Expected body wikilink to be resolved, got: {}",
+            result.content_markdown
+        );
     }
 }
