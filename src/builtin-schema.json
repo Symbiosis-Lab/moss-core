@@ -57,11 +57,15 @@
         "description": "Content tags for organization"
       },
       "children": {
+        "type": "boolean",
+        "widget": "checkbox",
+        "default": true,
+        "description": "Whether to render child pages below content (true = show, false = hide)"
+      },
+      "sidebar": {
         "type": "string",
-        "widget": "select",
-        "enum_values": ["below", "sidebar", "hidden"],
-        "default": "below",
-        "description": "Where child pages appear relative to content"
+        "widget": "text-input",
+        "description": "Wikilink to folder whose children appear in sidebar (e.g. [[News]])"
       },
       "children_style": {
         "type": "string",

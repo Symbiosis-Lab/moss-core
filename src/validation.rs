@@ -362,16 +362,16 @@ mod tests {
         let schema = builtin_schema();
         let fm = make_fm(&[
             ("title", str_val("Test")),
-            ("children", str_val("inline")), // not in ["below", "sidebar", "hidden"]
+            ("children_style", str_val("grid")), // not in ["list", "card"]
         ]);
 
         let diags = validate_frontmatter(&fm, &schema);
         let enum_errs: Vec<_> = diags
             .iter()
-            .filter(|d| d.severity == Severity::Error && d.message.contains("children"))
+            .filter(|d| d.severity == Severity::Error && d.message.contains("children_style"))
             .collect();
         assert_eq!(enum_errs.len(), 1);
-        assert!(enum_errs[0].message.contains("inline"));
+        assert!(enum_errs[0].message.contains("grid"));
     }
 
     #[test]
@@ -379,13 +379,13 @@ mod tests {
         let schema = builtin_schema();
         let fm = make_fm(&[
             ("title", str_val("Test")),
-            ("children", str_val("below")),
+            ("children_style", str_val("list")),
         ]);
 
         let diags = validate_frontmatter(&fm, &schema);
         let enum_errs: Vec<_> = diags
             .iter()
-            .filter(|d| d.severity == Severity::Error && d.message.contains("children"))
+            .filter(|d| d.severity == Severity::Error && d.message.contains("children_style"))
             .collect();
         assert!(enum_errs.is_empty());
     }

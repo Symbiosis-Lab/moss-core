@@ -173,8 +173,8 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 19 fields defined in builtin-schema.json
-        assert_eq!(schema.frontmatter.fields.len(), 19);
+        // 20 fields defined in builtin-schema.json (19 original + sidebar)
+        assert_eq!(schema.frontmatter.fields.len(), 20);
     }
 
     #[test]
@@ -187,12 +187,22 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_schema_children_enum() {
+    fn test_builtin_schema_children_boolean() {
+        // D1: `children` is boolean — answers "render children or not?"
         let schema = builtin_schema();
         let children = schema.frontmatter.fields.get("children").expect("children field");
-        assert_eq!(children.widget, Some(Widget::Select));
-        let values = children.enum_values.as_ref().expect("enum_values");
-        assert_eq!(values, &["below", "sidebar", "hidden"]);
+        assert_eq!(children.field_type, FieldType::Boolean, "children should be boolean");
+        assert_eq!(children.widget, Some(Widget::Checkbox), "children should use checkbox widget");
+        assert!(children.enum_values.is_none(), "children should not have enum_values");
+    }
+
+    #[test]
+    fn test_builtin_schema_sidebar_field() {
+        // sidebar: wikilink string for folder whose children appear in sidebar
+        let schema = builtin_schema();
+        let sidebar = schema.frontmatter.fields.get("sidebar").expect("sidebar field");
+        assert_eq!(sidebar.field_type, FieldType::String, "sidebar should be string");
+        assert_eq!(sidebar.widget, Some(Widget::TextInput), "sidebar should use text-input widget");
     }
 
     #[test]
