@@ -189,8 +189,9 @@ pub fn resolve_frontmatter_wikilinks(
                 i += 1;
             }
         } else {
-            result.push(frontmatter[i..].chars().next().unwrap());
-            i += frontmatter[i..].chars().next().unwrap().len_utf8();
+            let ch = frontmatter[i..].chars().next().unwrap();
+            result.push(ch);
+            i += ch.len_utf8();
         }
     }
 
@@ -208,9 +209,8 @@ fn find_closing_brackets(bytes: &[u8], start: usize) -> Option<usize> {
         if bytes[j] == b']' && bytes[j + 1] == b']' {
             return Some(j);
         }
-        // Don't cross newline boundaries for safety, but wikilinks
-        // in frontmatter values shouldn't span lines. Allow it anyway
-        // since YAML values can be on one line.
+        // Wikilinks in frontmatter values are expected to be on a single line.
+        // We allow multi-line scanning for robustness.
         j += 1;
     }
     None
