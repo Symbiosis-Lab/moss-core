@@ -89,6 +89,7 @@ pub enum Widget {
     Select,
     TagInput,
     FilePicker,
+    CodeEditor,
 }
 
 /// Shortcode schema: delimiters and named definitions.
@@ -172,8 +173,8 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 14 fields defined in builtin-schema.json
-        assert_eq!(schema.frontmatter.fields.len(), 14);
+        // 19 fields defined in builtin-schema.json
+        assert_eq!(schema.frontmatter.fields.len(), 19);
     }
 
     #[test]
@@ -186,12 +187,12 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_schema_list_style_enum() {
+    fn test_builtin_schema_children_enum() {
         let schema = builtin_schema();
-        let ls = schema.frontmatter.fields.get("list_style").expect("list_style field");
-        assert_eq!(ls.widget, Some(Widget::Select));
-        let values = ls.enum_values.as_ref().expect("enum_values");
-        assert_eq!(values, &["compact", "expanded"]);
+        let children = schema.frontmatter.fields.get("children").expect("children field");
+        assert_eq!(children.widget, Some(Widget::Select));
+        let values = children.enum_values.as_ref().expect("enum_values");
+        assert_eq!(values, &["below", "sidebar", "hidden"]);
     }
 
     #[test]
@@ -207,7 +208,7 @@ mod tests {
     #[test]
     fn test_builtin_schema_boolean_fields() {
         let schema = builtin_schema();
-        for name in &["draft", "unlisted", "flatten"] {
+        for name in &["draft", "unlisted", "breadcrumb"] {
             let field = schema.frontmatter.fields.get(*name)
                 .unwrap_or_else(|| panic!("{} field missing", name));
             assert_eq!(field.field_type, FieldType::Boolean, "{} should be boolean", name);
@@ -218,7 +219,7 @@ mod tests {
     #[test]
     fn test_builtin_schema_integer_fields() {
         let schema = builtin_schema();
-        for name in &["weight", "order"] {
+        for name in &["weight"] {
             let field = schema.frontmatter.fields.get(*name)
                 .unwrap_or_else(|| panic!("{} field missing", name));
             assert_eq!(field.field_type, FieldType::Integer, "{} should be integer", name);

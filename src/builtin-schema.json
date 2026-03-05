@@ -47,7 +47,7 @@
       },
       "description": {
         "type": "string",
-        "widget": "textarea",
+        "widget": "text-area",
         "description": "Page excerpt for SEO meta, og:description, and list previews"
       },
       "tags": {

@@ -11,6 +11,9 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 specta = { version = "=2.0.0-rc.20", features = ["derive"], optional = true }
 
+[build-dependencies]
+serde_json = "1.0"
+
 [features]
 default = []
 # Enable specta::Type derives for Tauri command boundary types.

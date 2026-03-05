@@ -362,16 +362,16 @@ mod tests {
         let schema = builtin_schema();
         let fm = make_fm(&[
             ("title", str_val("Test")),
-            ("list_style", str_val("grid")), // not in ["compact", "expanded"]
+            ("children", str_val("inline")), // not in ["below", "sidebar", "hidden"]
         ]);
 
         let diags = validate_frontmatter(&fm, &schema);
         let enum_errs: Vec<_> = diags
             .iter()
-            .filter(|d| d.severity == Severity::Error && d.message.contains("list_style"))
+            .filter(|d| d.severity == Severity::Error && d.message.contains("children"))
             .collect();
         assert_eq!(enum_errs.len(), 1);
-        assert!(enum_errs[0].message.contains("grid"));
+        assert!(enum_errs[0].message.contains("inline"));
     }
 
     #[test]
@@ -379,13 +379,13 @@ mod tests {
         let schema = builtin_schema();
         let fm = make_fm(&[
             ("title", str_val("Test")),
-            ("list_style", str_val("compact")),
+            ("children", str_val("below")),
         ]);
 
         let diags = validate_frontmatter(&fm, &schema);
         let enum_errs: Vec<_> = diags
             .iter()
-            .filter(|d| d.severity == Severity::Error && d.message.contains("list_style"))
+            .filter(|d| d.severity == Severity::Error && d.message.contains("children"))
             .collect();
         assert!(enum_errs.is_empty());
     }
@@ -483,7 +483,6 @@ mod tests {
         let fm = make_fm(&[
             ("title", str_val("Test")),
             ("weight", int_val(10)),
-            ("order", int_val(1)),
         ]);
 
         let diags = validate_frontmatter(&fm, &schema);
