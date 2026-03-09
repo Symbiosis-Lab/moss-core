@@ -74,6 +74,12 @@
         "default": "list",
         "description": "How child pages are rendered"
       },
+      "children_group": {
+        "type": "string",
+        "widget": "select",
+        "enum_values": ["year", "none"],
+        "description": "How children are grouped: year (default for list) or none (default for card)"
+      },
       "children_depth": {
         "type": "string",
         "widget": "select",
