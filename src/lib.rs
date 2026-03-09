@@ -4,6 +4,7 @@
 //! All filesystem access happens in the Tauri layer.
 
 pub mod content_graph;
+pub mod home;
 pub mod frontmatter;
 pub mod heading_anchor;
 pub mod resolve;

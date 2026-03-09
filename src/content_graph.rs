@@ -174,10 +174,12 @@ impl ContentGraph {
             }
         }
 
-        // 5. Folder note: reference/index.md
-        let folder_index = format!("{}/index.md", norm_ref);
-        if self.path_index.contains_key(&folder_index) {
-            return Some(self.files[self.path_index[&folder_index]].clone());
+        // 5. Folder note: try all recognized home file stems in priority order
+        for stem in crate::home::INDEX_STEMS {
+            let folder_index = format!("{}/{}.md", norm_ref, stem);
+            if self.path_index.contains_key(&folder_index) {
+                return Some(self.files[self.path_index[&folder_index]].clone());
+            }
         }
 
         // 5b. Folder note: reference/<stem>.md  (self-named)
