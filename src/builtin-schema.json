@@ -92,6 +92,11 @@
         "widget": "checkbox",
         "description": "Override site-wide breadcrumb setting for this page"
       },
+      "footer": {
+        "type": "boolean",
+        "widget": "checkbox",
+        "description": "Show as a link in the site footer"
+      },
       "cascade": {
         "type": "object",
         "widget": "code-editor",
