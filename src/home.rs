@@ -91,45 +91,11 @@ pub fn detect_home_file_in_folder<'a>(
 
 /// Find the home file among a list of filenames in a single folder.
 ///
-/// Takes bare filenames (not full paths) and returns the winning filename
-/// based on `INDEX_STEMS` priority. Only considers `.md` files for non-`index`
-/// stems; `index` also matches `.pages` and `.docx`.
-///
-/// Returns `None` if no home file candidate is found.
-///
-/// This is a pure function — no I/O. The caller is responsible for listing
-/// files from the filesystem and passing them in.
+/// Convenience wrapper around [`detect_home_file_in_folder`] without
+/// folder-name context. Self-named folder notes won't be recognized;
+/// use `detect_home_file_in_folder` when the folder name is available.
 pub fn detect_home_file<'a>(filenames: &[&'a str]) -> Option<&'a str> {
-    // Priority 1: index stems × .md (first stem match wins)
-    for stem in INDEX_STEMS {
-        let target_md = format!("{}.md", stem);
-        if let Some(&f) = filenames.iter().find(|f| f.to_lowercase() == target_md) {
-            return Some(f);
-        }
-    }
-
-    // Priority 2: index stem × non-markdown extensions
-    for ext in &["pages", "docx"] {
-        let target = format!("index.{}", ext);
-        if let Some(&f) = filenames.iter().find(|f| f.to_lowercase() == target) {
-            return Some(f);
-        }
-    }
-
-    // Priority 3: first document file alphabetically
-    let mut doc_files: Vec<&&str> = filenames
-        .iter()
-        .filter(|f| {
-            let lower = f.to_lowercase();
-            lower.ends_with(".md")
-                || lower.ends_with(".pages")
-                || lower.ends_with(".docx")
-                || lower.ends_with(".doc")
-        })
-        .collect();
-    doc_files.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-
-    doc_files.first().map(|f| **f)
+    detect_home_file_in_folder(filenames, "")
 }
 
 #[cfg(test)]
