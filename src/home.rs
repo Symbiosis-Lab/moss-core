@@ -38,6 +38,57 @@ pub fn is_index_stem(stem: &str) -> bool {
     INDEX_STEMS.contains(&stem.to_lowercase().as_str())
 }
 
+/// Find the home file among filenames, with folder-name awareness.
+///
+/// Like [`detect_home_file`], but also recognizes self-named folder notes
+/// (e.g., `recipes.md` inside a folder named `recipes`). Priority order:
+///
+/// 1. INDEX_STEMS × .md (index.md > readme.md > _index.md > main.md)
+/// 2. index.{pages,docx}
+/// 3. Self-named: `foldername.md` (where foldername matches parent folder)
+/// 4. First document alphabetically
+pub fn detect_home_file_in_folder<'a>(
+    filenames: &[&'a str],
+    folder_name: &str,
+) -> Option<&'a str> {
+    // Priority 1: index stems × .md
+    for stem in INDEX_STEMS {
+        let target_md = format!("{}.md", stem);
+        if let Some(&f) = filenames.iter().find(|f| f.to_lowercase() == target_md) {
+            return Some(f);
+        }
+    }
+
+    // Priority 2: index × non-markdown
+    for ext in &["pages", "docx"] {
+        let target = format!("index.{}", ext);
+        if let Some(&f) = filenames.iter().find(|f| f.to_lowercase() == target) {
+            return Some(f);
+        }
+    }
+
+    // Priority 3: self-named folder note
+    let self_named = format!("{}.md", folder_name.to_lowercase());
+    if let Some(&f) = filenames.iter().find(|f| f.to_lowercase() == self_named) {
+        return Some(f);
+    }
+
+    // Priority 4: first document alphabetically
+    let mut doc_files: Vec<&&str> = filenames
+        .iter()
+        .filter(|f| {
+            let lower = f.to_lowercase();
+            lower.ends_with(".md")
+                || lower.ends_with(".pages")
+                || lower.ends_with(".docx")
+                || lower.ends_with(".doc")
+        })
+        .collect();
+    doc_files.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+
+    doc_files.first().map(|f| **f)
+}
+
 /// Find the home file among a list of filenames in a single folder.
 ///
 /// Takes bare filenames (not full paths) and returns the winning filename
@@ -167,5 +218,64 @@ mod tests {
     fn test_detect_home_empty_list() {
         let files: Vec<&str> = vec![];
         assert_eq!(detect_home_file(&files), None);
+    }
+
+    // --- detect_home_file_in_folder ---
+
+    #[test]
+    fn test_detect_self_named_folder_note() {
+        let files = vec!["recipes.md", "pasta.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "recipes"),
+            Some("recipes.md")
+        );
+    }
+
+    #[test]
+    fn test_index_beats_self_named() {
+        let files = vec!["recipes.md", "index.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "recipes"),
+            Some("index.md")
+        );
+    }
+
+    #[test]
+    fn test_self_named_case_insensitive() {
+        let files = vec!["Recipes.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "recipes"),
+            Some("Recipes.md")
+        );
+    }
+
+    #[test]
+    fn test_readme_beats_self_named() {
+        let files = vec!["recipes.md", "readme.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "recipes"),
+            Some("readme.md")
+        );
+    }
+
+    #[test]
+    fn test_self_named_beats_alphabetical_fallback() {
+        // Without folder context, "about.md" wins alphabetically.
+        // With folder context, "recipes.md" wins as self-named.
+        let files = vec!["about.md", "recipes.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "recipes"),
+            Some("recipes.md")
+        );
+    }
+
+    #[test]
+    fn test_in_folder_delegates_to_detect_home_file_for_index_stems() {
+        // When index stems exist, folder name doesn't matter
+        let files = vec!["index.md", "other.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "myfolder"),
+            Some("index.md")
+        );
     }
 }

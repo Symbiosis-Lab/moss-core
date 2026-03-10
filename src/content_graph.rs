@@ -590,4 +590,35 @@ mod tests {
             "deep/path/to/file"
         );
     }
+
+    // When both index.md and self-named exist, filename stem match (step 3)
+    // resolves "recipes" to recipes/recipes.md (unique stem match).
+    // This is correct: the self-named note IS the folder's page in Obsidian links.
+    #[test]
+    fn test_resolve_self_named_via_filename_stem() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("recipes/index.md", "/recipes");
+        b.add_file("recipes/recipes.md", "/recipes/recipes");
+        let g = b.build();
+
+        // "recipes" matches filename stem "recipes" → recipes/recipes.md (step 3)
+        assert_eq!(
+            g.resolve_path("recipes", "other.md"),
+            Some("recipes/recipes.md".into())
+        );
+    }
+
+    // When only index.md exists (no self-named), folder note fallback (step 5) works
+    #[test]
+    fn test_resolve_folder_note_fallback_to_index() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("recipes/index.md", "/recipes");
+        b.add_file("recipes/pasta.md", "/recipes/pasta");
+        let g = b.build();
+
+        assert_eq!(
+            g.resolve_path("recipes", "other.md"),
+            Some("recipes/index.md".into())
+        );
+    }
 }
