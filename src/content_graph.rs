@@ -152,6 +152,29 @@ impl ContentGraph {
             return Some(self.files[self.path_index[&with_md]].clone());
         }
 
+        // 2b. Suffix match for partial paths (Obsidian shortest-path resolution).
+        // e.g. "游记/index.md" matches "文字/游记/index.md"
+        if norm_ref.contains('/') {
+            let suffix = format!("/{}", norm_ref);
+            let candidates: Vec<usize> = self.files.iter().enumerate()
+                .filter(|(_, f)| normalize_path(f).ends_with(&suffix))
+                .map(|(i, _)| i)
+                .collect();
+            if candidates.len() == 1 {
+                return Some(self.files[candidates[0]].clone());
+            }
+            if candidates.len() > 1 {
+                let from_dirs = dir_components(&norm_from);
+                let best = candidates.iter().copied().max_by_key(|&idx| {
+                    let candidate_dirs = dir_components(&self.files[idx]);
+                    common_prefix_len(&candidate_dirs, &from_dirs)
+                });
+                if let Some(idx) = best {
+                    return Some(self.files[idx].clone());
+                }
+            }
+        }
+
         // 3/4. Filename match (stem, case-insensitive)
         let ref_stem = normalize_component(
             filename_stem(filename_with_ext(&norm_ref)),
@@ -619,6 +642,41 @@ mod tests {
         assert_eq!(
             g.resolve_path("recipes", "other.md"),
             Some("recipes/index.md".into())
+        );
+    }
+
+    // Suffix match: partial path resolves when a deeper file ends with the reference
+    #[test]
+    fn test_suffix_match_partial_path() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("文字/游记/index.md", "/文字/游记");
+        b.add_file("index.md", "/");
+        let g = b.build();
+
+        // "游记/index.md" doesn't exist at root, but "文字/游记/index.md" ends with it
+        assert_eq!(
+            g.resolve_path("游记/index.md", "index.md"),
+            Some("文字/游记/index.md".into())
+        );
+    }
+
+    // Suffix match with ambiguity uses from_path tiebreaker
+    #[test]
+    fn test_suffix_match_ambiguous_uses_tiebreaker() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("a/游记/index.md", "/a/游记");
+        b.add_file("b/游记/index.md", "/b/游记");
+        let g = b.build();
+
+        // From "a/other.md", should prefer "a/游记/index.md"
+        assert_eq!(
+            g.resolve_path("游记/index.md", "a/other.md"),
+            Some("a/游记/index.md".into())
+        );
+        // From "b/other.md", should prefer "b/游记/index.md"
+        assert_eq!(
+            g.resolve_path("游记/index.md", "b/other.md"),
+            Some("b/游记/index.md".into())
         );
     }
 }
