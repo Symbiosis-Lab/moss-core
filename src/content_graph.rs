@@ -154,23 +154,45 @@ impl ContentGraph {
 
         // 2b. Suffix match for partial paths (Obsidian shortest-path resolution).
         // e.g. "游记/index.md" matches "文字/游记/index.md"
+        // Also handles vault-root prefix: "刘果/交互实验/index.md" → try
+        // progressively shorter sub-paths until a match is found.
         if norm_ref.contains('/') {
-            let suffix = format!("/{}", norm_ref);
-            let candidates: Vec<usize> = self.files.iter().enumerate()
-                .filter(|(_, f)| normalize_path(f).ends_with(&suffix))
-                .map(|(i, _)| i)
-                .collect();
-            if candidates.len() == 1 {
-                return Some(self.files[candidates[0]].clone());
-            }
-            if candidates.len() > 1 {
-                let from_dirs = dir_components(&norm_from);
-                let best = candidates.iter().copied().max_by_key(|&idx| {
-                    let candidate_dirs = dir_components(&self.files[idx]);
-                    common_prefix_len(&candidate_dirs, &from_dirs)
-                });
-                if let Some(idx) = best {
-                    return Some(self.files[idx].clone());
+            let parts: Vec<&str> = norm_ref.split('/').collect();
+            // start=0 tries the full path as suffix; start=1.. strips leading components
+            for start in 0..parts.len().saturating_sub(1) {
+                let subpath = parts[start..].join("/");
+                if !subpath.contains('/') {
+                    break; // Single component — handled by filename stem match below
+                }
+
+                // Try exact match on the sub-path
+                if self.path_index.contains_key(&subpath) {
+                    return Some(self.files[self.path_index[&subpath]].clone());
+                }
+                // Try exact + .md
+                let with_md = format!("{}.md", subpath);
+                if self.path_index.contains_key(&with_md) {
+                    return Some(self.files[self.path_index[&with_md]].clone());
+                }
+
+                // Try suffix match (sub-path as suffix of a longer graph path)
+                let suffix = format!("/{}", subpath);
+                let candidates: Vec<usize> = self.files.iter().enumerate()
+                    .filter(|(_, f)| normalize_path(f).ends_with(&suffix))
+                    .map(|(i, _)| i)
+                    .collect();
+                if candidates.len() == 1 {
+                    return Some(self.files[candidates[0]].clone());
+                }
+                if candidates.len() > 1 {
+                    let from_dirs = dir_components(&norm_from);
+                    let best = candidates.iter().copied().max_by_key(|&idx| {
+                        let candidate_dirs = dir_components(&self.files[idx]);
+                        common_prefix_len(&candidate_dirs, &from_dirs)
+                    });
+                    if let Some(idx) = best {
+                        return Some(self.files[idx].clone());
+                    }
                 }
             }
         }
@@ -686,16 +708,49 @@ mod tests {
         );
     }
 
-    // Multi-component path with index stem should NOT fall back to arbitrary index.md
+    // Vault-root prefix: "刘果/交互实验/index.md" should resolve to "交互实验/index.md"
+    // by stripping the leading component that doesn't match any graph path.
+    // This matches Obsidian's behavior where vault name can prefix markdown links.
     #[test]
-    fn test_multicomponent_index_path_no_false_match() {
+    fn test_vault_root_prefix_resolves_correctly() {
         let mut b = ContentGraphBuilder::new();
         b.add_file("交互实验/index.md", "/交互实验");
         b.add_file("文字/分布式信息网络/index.md", "/文字/分布式信息网络");
         let g = b.build();
 
-        // "刘果/交互实验/index.md" has a wrong prefix — should return None,
-        // not an arbitrary index.md like 文字/分布式信息网络/index.md
-        assert_eq!(g.resolve_path("刘果/交互实验/index.md", ""), None);
+        // Should resolve to 交互实验/index.md, NOT 文字/分布式信息网络/index.md
+        assert_eq!(
+            g.resolve_path("刘果/交互实验/index.md", ""),
+            Some("交互实验/index.md".into())
+        );
+    }
+
+    // Progressive sub-path stripping with non-index files
+    #[test]
+    fn test_vault_root_prefix_non_index() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("posts/hello.md", "/posts/hello");
+        b.add_file("guides/hello.md", "/guides/hello");
+        let g = b.build();
+
+        // "mysite/posts/hello.md" should resolve to "posts/hello.md"
+        assert_eq!(
+            g.resolve_path("mysite/posts/hello.md", ""),
+            Some("posts/hello.md".into())
+        );
+    }
+
+    // Progressive sub-path: deeper nesting still works
+    #[test]
+    fn test_vault_root_prefix_deep_nesting() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("文字/游记/index.md", "/文字/游记");
+        let g = b.build();
+
+        // "vault/文字/游记/index.md" should find "文字/游记/index.md"
+        assert_eq!(
+            g.resolve_path("vault/文字/游记/index.md", ""),
+            Some("文字/游记/index.md".into())
+        );
     }
 }
