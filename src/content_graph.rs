@@ -176,24 +176,30 @@ impl ContentGraph {
         }
 
         // 3/4. Filename match (stem, case-insensitive)
+        // Skip stem matching when the reference is a multi-component path with an
+        // index stem — falling back to just "index" would match every index.md in
+        // the vault and return an arbitrary wrong result.
         let ref_stem = normalize_component(
             filename_stem(filename_with_ext(&norm_ref)),
         );
-        if let Some(candidates) = self.filename_index.get(&ref_stem) {
-            if candidates.len() == 1 {
-                return Some(self.files[candidates[0]].clone());
-            }
-            // Ambiguity tiebreaker: longest common directory prefix with from_path
-            let from_dirs = dir_components(&norm_from);
-            let best = candidates
-                .iter()
-                .copied()
-                .max_by_key(|&idx| {
-                    let candidate_dirs = dir_components(&self.files[idx]);
-                    common_prefix_len(&candidate_dirs, &from_dirs)
-                });
-            if let Some(idx) = best {
-                return Some(self.files[idx].clone());
+        let skip_stem = norm_ref.contains('/') && crate::home::is_index_stem(&ref_stem);
+        if !skip_stem {
+            if let Some(candidates) = self.filename_index.get(&ref_stem) {
+                if candidates.len() == 1 {
+                    return Some(self.files[candidates[0]].clone());
+                }
+                // Ambiguity tiebreaker: longest common directory prefix with from_path
+                let from_dirs = dir_components(&norm_from);
+                let best = candidates
+                    .iter()
+                    .copied()
+                    .max_by_key(|&idx| {
+                        let candidate_dirs = dir_components(&self.files[idx]);
+                        common_prefix_len(&candidate_dirs, &from_dirs)
+                    });
+                if let Some(idx) = best {
+                    return Some(self.files[idx].clone());
+                }
             }
         }
 
@@ -678,5 +684,18 @@ mod tests {
             g.resolve_path("游记/index.md", "b/other.md"),
             Some("b/游记/index.md".into())
         );
+    }
+
+    // Multi-component path with index stem should NOT fall back to arbitrary index.md
+    #[test]
+    fn test_multicomponent_index_path_no_false_match() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("交互实验/index.md", "/交互实验");
+        b.add_file("文字/分布式信息网络/index.md", "/文字/分布式信息网络");
+        let g = b.build();
+
+        // "刘果/交互实验/index.md" has a wrong prefix — should return None,
+        // not an arbitrary index.md like 文字/分布式信息网络/index.md
+        assert_eq!(g.resolve_path("刘果/交互实验/index.md", ""), None);
     }
 }
