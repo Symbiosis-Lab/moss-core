@@ -70,7 +70,7 @@
       "children_style": {
         "type": "string",
         "widget": "select",
-        "enum_values": ["list", "card"],
+        "enum_values": ["list", "summary"],
         "default": "list",
         "description": "How child pages are rendered"
       },

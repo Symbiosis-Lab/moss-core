@@ -362,7 +362,7 @@ mod tests {
         let schema = builtin_schema();
         let fm = make_fm(&[
             ("title", str_val("Test")),
-            ("children_style", str_val("grid")), // not in ["list", "card"]
+            ("children_style", str_val("grid")), // not in ["list", "summary"]
         ]);
 
         let diags = validate_frontmatter(&fm, &schema);
@@ -388,6 +388,39 @@ mod tests {
             .filter(|d| d.severity == Severity::Error && d.message.contains("children_style"))
             .collect();
         assert!(enum_errs.is_empty());
+    }
+
+    #[test]
+    fn test_enum_summary_valid() {
+        let schema = builtin_schema();
+        let fm = make_fm(&[
+            ("title", str_val("Test")),
+            ("children_style", str_val("summary")),
+        ]);
+
+        let diags = validate_frontmatter(&fm, &schema);
+        let enum_errs: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("children_style"))
+            .collect();
+        assert!(enum_errs.is_empty());
+    }
+
+    #[test]
+    fn test_enum_card_now_invalid() {
+        let schema = builtin_schema();
+        let fm = make_fm(&[
+            ("title", str_val("Test")),
+            ("children_style", str_val("card")), // was valid, now invalid
+        ]);
+
+        let diags = validate_frontmatter(&fm, &schema);
+        let enum_errs: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("children_style"))
+            .collect();
+        assert_eq!(enum_errs.len(), 1);
+        assert!(enum_errs[0].message.contains("card"));
     }
 
     #[test]

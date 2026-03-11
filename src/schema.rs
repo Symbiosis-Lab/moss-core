@@ -173,8 +173,8 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 20 fields defined in builtin-schema.json (19 original + sidebar)
-        assert_eq!(schema.frontmatter.fields.len(), 20);
+        // 22 fields defined in builtin-schema.json
+        assert_eq!(schema.frontmatter.fields.len(), 22);
     }
 
     #[test]
