@@ -38,6 +38,17 @@ pub fn is_index_stem(stem: &str) -> bool {
     INDEX_STEMS.contains(&stem.to_lowercase().as_str())
 }
 
+/// Check if a file stem acts as a home/index file in a given folder context.
+///
+/// Returns true if the stem is a recognized index stem (index, readme, etc.)
+/// OR if it matches the parent folder name (self-named folder note).
+/// Matching is case-insensitive.
+pub fn is_home_file(stem: &str, parent_folder_name: &str) -> bool {
+    is_index_stem(stem)
+        || (!parent_folder_name.is_empty()
+            && stem.to_lowercase() == parent_folder_name.to_lowercase())
+}
+
 /// Find the home file among filenames, with folder-name awareness.
 ///
 /// Like [`detect_home_file`], but also recognizes self-named folder notes
@@ -233,6 +244,39 @@ mod tests {
             detect_home_file_in_folder(&files, "recipes"),
             Some("recipes.md")
         );
+    }
+
+    // --- is_home_file ---
+
+    #[test]
+    fn test_is_home_file_index_stem() {
+        assert!(is_home_file("index", "anything"));
+        assert!(is_home_file("readme", "anything"));
+    }
+
+    #[test]
+    fn test_is_home_file_self_named() {
+        assert!(is_home_file("recipes", "recipes"));
+        assert!(is_home_file("刘果", "刘果"));
+    }
+
+    #[test]
+    fn test_is_home_file_self_named_case_insensitive() {
+        assert!(is_home_file("Recipes", "recipes"));
+        assert!(is_home_file("recipes", "Recipes"));
+    }
+
+    #[test]
+    fn test_is_home_file_no_match() {
+        assert!(!is_home_file("about", "recipes"));
+        assert!(!is_home_file("about", ""));
+    }
+
+    #[test]
+    fn test_is_home_file_empty_folder_name() {
+        // Empty folder name should not match anything except index stems
+        assert!(is_home_file("index", ""));
+        assert!(!is_home_file("about", ""));
     }
 
     #[test]
