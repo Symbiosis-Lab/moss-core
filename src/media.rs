@@ -109,7 +109,7 @@ impl Position {
 // ---------------------------------------------------------------------------
 
 /// Parsed display attributes for a media reference.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MediaAttrs {
     pub fit: Option<Fit>,
     pub position: Option<Position>,
