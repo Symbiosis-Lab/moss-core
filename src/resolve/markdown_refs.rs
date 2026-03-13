@@ -12,6 +12,7 @@
 //! Content inside fenced code blocks and inline code spans is left untouched.
 
 use crate::content_graph::ContentGraph;
+use crate::media::parse_media_attrs;
 
 use super::fuzzy_path::{relative_asset_path, resolve_reference, ResolvedRef};
 use super::{Diagnostic, LinkType, OutgoingLink};
@@ -198,8 +199,11 @@ fn process_line(
         if chars[i] == '!' && i + 1 < len && chars[i + 1] == '[' {
             // Try to parse ![alt](url)
             if let Some((end, alt, url)) = parse_markdown_image(&chars, i) {
-                if is_bare_filename(&url) {
-                    match resolve_reference(&url, graph, from_path) {
+                let (path_part, attrs_str) = crate::media::split_pipe(&url);
+                let attrs = parse_media_attrs(attrs_str);
+
+                if is_bare_filename(path_part) {
+                    match resolve_reference(path_part, graph, from_path) {
                         ResolvedRef::Found(target_path) => {
                             outgoing_links.push(OutgoingLink {
                                 target_path: target_path.clone(),
@@ -207,21 +211,44 @@ fn process_line(
                                 link_type: LinkType::Standard,
                             });
                             let resolved_url = relative_asset_path(from_path, &target_path);
-                            result.push_str(&format!("![{}]({})", alt, resolved_url));
+                            if let Some(style) = attrs.to_inline_style() {
+                                result.push_str(&format!(
+                                    "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
+                                    resolved_url, alt, style
+                                ));
+                            } else {
+                                result.push_str(&format!("![{}]({})", alt, resolved_url));
+                            }
                             i = end;
                             continue;
                         }
                         ResolvedRef::Unresolved => {
                             // Leave unchanged — could be a same-directory file
-                            // Push the original text
-                            result.push_str(&format!("![{}]({})", alt, url));
+                            // But still apply attrs if present
+                            if let Some(style) = attrs.to_inline_style() {
+                                result.push_str(&format!(
+                                    "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
+                                    path_part, alt, style
+                                ));
+                            } else {
+                                result.push_str(&format!("![{}]({})", alt, url));
+                            }
                             i = end;
                             continue;
                         }
                     }
                 } else {
-                    // Not a bare filename — leave unchanged
-                    result.push_str(&format!("![{}]({})", alt, url));
+                    // Not a bare filename
+                    if let Some(style) = attrs.to_inline_style() {
+                        // Has pipe attrs — output HTML with style
+                        result.push_str(&format!(
+                            "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
+                            path_part, alt, style
+                        ));
+                    } else {
+                        // No attrs — pass through unchanged (use original url to preserve any query/fragment)
+                        result.push_str(&format!("![{}]({})", alt, url));
+                    }
                     i = end;
                     continue;
                 }
@@ -575,5 +602,95 @@ mod tests {
         assert!(!is_bare_filename("mailto:test@example.com"));
         assert!(!is_bare_filename("photo")); // no extension
         assert!(!is_bare_filename(".hidden")); // dot at position 0
+    }
+
+    // --- Pipe attr tests ---
+
+    #[test]
+    fn test_bare_filename_with_contain_attr() {
+        let graph = test_graph();
+        let input = "![](photo.jpg|contain)";
+        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"../assets/photo.jpg\" alt=\"\" style=\"object-fit:contain\" />"
+        );
+    }
+
+    #[test]
+    fn test_bare_filename_with_position_attr() {
+        let graph = test_graph();
+        let input = "![My Photo](photo.jpg|left)";
+        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"../assets/photo.jpg\" alt=\"My Photo\" style=\"object-position:left\" />"
+        );
+    }
+
+    #[test]
+    fn test_bare_filename_with_fit_and_position() {
+        let graph = test_graph();
+        let input = "![](photo.jpg|contain left)";
+        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"../assets/photo.jpg\" alt=\"\" style=\"object-fit:contain;object-position:left\" />"
+        );
+    }
+
+    #[test]
+    fn test_bare_filename_no_attrs_unchanged() {
+        let graph = test_graph();
+        let input = "![](photo.jpg)";
+        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        // Same as before — no pipe, no change
+        assert_eq!(result.content, "![](../assets/photo.jpg)");
+    }
+
+    #[test]
+    fn test_relative_path_with_attrs() {
+        let graph = test_graph();
+        let input = "![](./photo.jpg|left)";
+        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        // Not bare filename, but has attrs — output HTML
+        assert_eq!(
+            result.content,
+            "<img src=\"./photo.jpg\" alt=\"\" style=\"object-position:left\" />"
+        );
+    }
+
+    #[test]
+    fn test_path_with_separator_and_attrs() {
+        let graph = test_graph();
+        let input = "![](assets/photo.jpg|contain)";
+        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"assets/photo.jpg\" alt=\"\" style=\"object-fit:contain\" />"
+        );
+    }
+
+    #[test]
+    fn test_external_url_with_attrs_unchanged() {
+        let graph = test_graph();
+        let input = "![](https://example.com/photo.jpg|left)";
+        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        // External URL with pipe — apply attrs
+        assert_eq!(
+            result.content,
+            "<img src=\"https://example.com/photo.jpg\" alt=\"\" style=\"object-position:left\" />"
+        );
+    }
+
+    #[test]
+    fn test_unresolved_bare_with_attrs() {
+        let graph = test_graph();
+        let input = "![](nonexistent.jpg|left)";
+        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"nonexistent.jpg\" alt=\"\" style=\"object-position:left\" />"
+        );
     }
 }
