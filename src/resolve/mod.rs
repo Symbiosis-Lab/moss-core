@@ -167,20 +167,36 @@ pub fn resolve_frontmatter_wikilinks(
             if let Some(close_pos) = find_closing_brackets(bytes, i + 2) {
                 let inner = &frontmatter[i + 2..close_pos];
 
-                // Resolve the reference via the content graph
-                let resolved_path = match graph.resolve_path(inner, source_path) {
-                    Some(path) => path,
+                // Split on | to separate path from display attrs
+                // (pipe is also the Obsidian alias separator)
+                let (ref_part, attrs_part) = crate::media::split_pipe(inner);
+
+                // Resolve only the path part via the content graph
+                let resolved_path = match graph.resolve_path(ref_part, source_path) {
+                    Some(mut path) => {
+                        // Rejoin with |attrs if present
+                        if !attrs_part.is_empty() {
+                            path.push('|');
+                            path.push_str(attrs_part);
+                        }
+                        path
+                    }
                     None => {
                         diagnostics.push(Diagnostic {
                             message: format!(
                                 "Unresolved frontmatter wikilink: [[{}]]",
-                                inner
+                                ref_part
                             ),
                             source_path: source_path.to_string(),
-                            reference: inner.to_string(),
+                            reference: ref_part.to_string(),
                         });
-                        // Strip brackets, use the inner text as-is
-                        inner.to_string()
+                        // Strip brackets, use the path text as-is, preserve attrs
+                        let mut fallback = ref_part.to_string();
+                        if !attrs_part.is_empty() {
+                            fallback.push('|');
+                            fallback.push_str(attrs_part);
+                        }
+                        fallback
                     }
                 };
 
@@ -773,6 +789,65 @@ mod tests {
         );
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].reference, "missing");
+    }
+
+    // ----- Pipe-aware frontmatter wikilink resolution -----
+
+    #[test]
+    fn test_fm_wikilink_cover_with_pipe_attrs() {
+        // [[photo.jpg|left]] should resolve the path part and preserve |left
+        let graph = fm_test_graph();
+        let fm = "---\ncover: \"[[photo.jpg|left]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, "---\ncover: \"assets/photo.jpg|left\"\n---\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_wikilink_cover_with_multiple_attrs() {
+        // [[photo.jpg|cover left]] should resolve path and preserve |cover left
+        let graph = fm_test_graph();
+        let fm = "---\ncover: \"[[photo.jpg|cover left]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(
+            result.content,
+            "---\ncover: \"assets/photo.jpg|cover left\"\n---\n"
+        );
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_wikilink_no_attrs_unchanged() {
+        // [[photo.jpg]] without pipe should work exactly as before
+        let graph = fm_test_graph();
+        let fm = "---\ncover: \"[[photo.jpg]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, "---\ncover: \"assets/photo.jpg\"\n---\n");
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_fm_wikilink_pipe_attrs_unresolved() {
+        // [[missing.jpg|left]] — unresolved, but pipe attrs still preserved
+        let graph = fm_test_graph();
+        let fm = "---\ncover: \"[[missing.jpg|left]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(result.content, "---\ncover: \"missing.jpg|left\"\n---\n");
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].reference, "missing.jpg");
+    }
+
+    #[test]
+    fn test_fm_wikilink_pipe_attrs_with_fit_and_position() {
+        // [[photo.jpg|contain top-right]] — two attr keywords
+        let graph = fm_test_graph();
+        let fm = "---\ncover: \"[[photo.jpg|contain top-right]]\"\n---\n";
+        let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
+        assert_eq!(
+            result.content,
+            "---\ncover: \"assets/photo.jpg|contain top-right\"\n---\n"
+        );
+        assert!(result.diagnostics.is_empty());
     }
 
     // ----- Frontmatter wikilinks are now resolved to paths -----
