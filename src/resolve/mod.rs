@@ -161,11 +161,15 @@ pub fn resolve_frontmatter_wikilinks(
     let mut i = 0;
 
     while i < len {
-        // Look for `[[`
-        if i + 1 < len && bytes[i] == b'[' && bytes[i + 1] == b'[' {
+        // Look for `![[` (embed wikilink) or `[[` (regular wikilink)
+        // Embed prefix `!` is consumed — both resolve to the same path.
+        let is_embed = i + 2 < len && bytes[i] == b'!' && bytes[i + 1] == b'[' && bytes[i + 2] == b'[';
+        let is_wikilink = !is_embed && i + 1 < len && bytes[i] == b'[' && bytes[i + 1] == b'[';
+        if is_embed || is_wikilink {
+            let bracket_start = if is_embed { i + 3 } else { i + 2 };
             // Find closing `]]`
-            if let Some(close_pos) = find_closing_brackets(bytes, i + 2) {
-                let inner = &frontmatter[i + 2..close_pos];
+            if let Some(close_pos) = find_closing_brackets(bytes, bracket_start) {
+                let inner = &frontmatter[bracket_start..close_pos];
 
                 // Split on | to separate path from display attrs
                 // (pipe is also the Obsidian alias separator)
@@ -203,9 +207,14 @@ pub fn resolve_frontmatter_wikilinks(
                 result.push_str(&resolved_path);
                 i = close_pos + 2; // skip past `]]`
             } else {
-                // No closing `]]` found — emit the `[` as-is
-                result.push('[');
-                i += 1;
+                // No closing `]]` found — emit the opening chars as-is
+                if is_embed {
+                    result.push_str("![[");
+                    i += 3;
+                } else {
+                    result.push('[');
+                    i += 1;
+                }
             }
         } else {
             let ch = frontmatter[i..].chars().next().unwrap();
@@ -877,6 +886,46 @@ mod tests {
         assert!(
             result.content_markdown.contains("[news](news/)"),
             "Expected body wikilink to be resolved, got: {}",
+            result.content_markdown
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_embed_wikilink_stripped() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "index");
+        b.add_file("photos/hero.jpg", "hero");
+        let graph = b.build();
+        let files = HashMap::new();
+
+        // Embed wikilink ![[hero.jpg]] in frontmatter cover — the ! prefix should be consumed.
+        let input = "cover: \"![[hero.jpg]]\"\n---\n\n# Page";
+        let result = resolve_content("index.md", input, &graph, &mock_reader(&files));
+
+        // Should resolve to path without ! prefix
+        assert!(
+            result.content_markdown.starts_with("cover: \"photos/hero.jpg\"\n---"),
+            "Embed wikilink ! prefix not stripped: {}",
+            result.content_markdown
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_embed_wikilink_with_attrs() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "index");
+        b.add_file("photos/hero.jpg", "hero");
+        let graph = b.build();
+        let files = HashMap::new();
+
+        // Embed wikilink with display attrs: ![[hero.jpg|cover left]]
+        let input = "cover: \"![[hero.jpg|cover left]]\"\n---\n\n# Page";
+        let result = resolve_content("index.md", input, &graph, &mock_reader(&files));
+
+        // Should resolve path and preserve attrs
+        assert!(
+            result.content_markdown.starts_with("cover: \"photos/hero.jpg|cover left\"\n---"),
+            "Embed wikilink with attrs not resolved correctly: {}",
             result.content_markdown
         );
     }
