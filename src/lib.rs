@@ -7,6 +7,7 @@ pub mod content_graph;
 pub mod home;
 pub mod frontmatter;
 pub mod heading_anchor;
+pub mod media;
 pub mod resolve;
 pub mod schema;
 pub mod validation;
