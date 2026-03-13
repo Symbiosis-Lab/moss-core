@@ -163,6 +163,8 @@ pub fn resolve_frontmatter_wikilinks(
     while i < len {
         // Look for `![[` (embed wikilink) or `[[` (regular wikilink)
         // Embed prefix `!` is consumed — both resolve to the same path.
+        // For embeds `![[path|attrs]]`, pipe content = display params (preserved).
+        // For links `[[path|alias]]`, pipe content = alias text (discarded per Obsidian convention).
         let is_embed = i + 2 < len && bytes[i] == b'!' && bytes[i + 1] == b'[' && bytes[i + 2] == b'[';
         let is_wikilink = !is_embed && i + 1 < len && bytes[i] == b'[' && bytes[i + 1] == b'[';
         if is_embed || is_wikilink {
@@ -171,15 +173,15 @@ pub fn resolve_frontmatter_wikilinks(
             if let Some(close_pos) = find_closing_brackets(bytes, bracket_start) {
                 let inner = &frontmatter[bracket_start..close_pos];
 
-                // Split on | to separate path from display attrs
-                // (pipe is also the Obsidian alias separator)
+                // Split on | to separate path from pipe content
                 let (ref_part, attrs_part) = crate::media::split_pipe(inner);
 
                 // Resolve only the path part via the content graph
                 let resolved_path = match graph.resolve_path(ref_part, source_path) {
                     Some(mut path) => {
-                        // Rejoin with |attrs if present
-                        if !attrs_part.is_empty() {
+                        // Only preserve pipe attrs for embed syntax (![[...|attrs]])
+                        // For regular wikilinks ([[...|alias]]), discard the alias
+                        if is_embed && !attrs_part.is_empty() {
                             path.push('|');
                             path.push_str(attrs_part);
                         }
@@ -194,9 +196,10 @@ pub fn resolve_frontmatter_wikilinks(
                             source_path: source_path.to_string(),
                             reference: ref_part.to_string(),
                         });
-                        // Strip brackets, use the path text as-is, preserve attrs
+                        // Strip brackets, use the path text as-is
                         let mut fallback = ref_part.to_string();
-                        if !attrs_part.is_empty() {
+                        // Only preserve attrs for embed syntax
+                        if is_embed && !attrs_part.is_empty() {
                             fallback.push('|');
                             fallback.push_str(attrs_part);
                         }
@@ -803,20 +806,20 @@ mod tests {
     // ----- Pipe-aware frontmatter wikilink resolution -----
 
     #[test]
-    fn test_fm_wikilink_cover_with_pipe_attrs() {
-        // [[photo.jpg|left]] should resolve the path part and preserve |left
+    fn test_fm_wikilink_alias_discarded() {
+        // [[photo.jpg|left]] — pipe content is alias (Obsidian convention), discarded
         let graph = fm_test_graph();
         let fm = "---\ncover: \"[[photo.jpg|left]]\"\n---\n";
         let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
-        assert_eq!(result.content, "---\ncover: \"assets/photo.jpg|left\"\n---\n");
+        assert_eq!(result.content, "---\ncover: \"assets/photo.jpg\"\n---\n");
         assert!(result.diagnostics.is_empty());
     }
 
     #[test]
-    fn test_fm_wikilink_cover_with_multiple_attrs() {
-        // [[photo.jpg|cover left]] should resolve path and preserve |cover left
+    fn test_fm_embed_wikilink_with_attrs() {
+        // ![[photo.jpg|cover left]] — embed syntax preserves display params
         let graph = fm_test_graph();
-        let fm = "---\ncover: \"[[photo.jpg|cover left]]\"\n---\n";
+        let fm = "---\ncover: \"![[photo.jpg|cover left]]\"\n---\n";
         let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
         assert_eq!(
             result.content,
@@ -836,21 +839,21 @@ mod tests {
     }
 
     #[test]
-    fn test_fm_wikilink_pipe_attrs_unresolved() {
-        // [[missing.jpg|left]] — unresolved, but pipe attrs still preserved
+    fn test_fm_wikilink_alias_unresolved_discarded() {
+        // [[missing.jpg|left]] — unresolved, alias still discarded
         let graph = fm_test_graph();
         let fm = "---\ncover: \"[[missing.jpg|left]]\"\n---\n";
         let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
-        assert_eq!(result.content, "---\ncover: \"missing.jpg|left\"\n---\n");
+        assert_eq!(result.content, "---\ncover: \"missing.jpg\"\n---\n");
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].reference, "missing.jpg");
     }
 
     #[test]
-    fn test_fm_wikilink_pipe_attrs_with_fit_and_position() {
-        // [[photo.jpg|contain top-right]] — two attr keywords
+    fn test_fm_embed_wikilink_with_fit_and_position() {
+        // ![[photo.jpg|contain top-right]] — embed syntax preserves both keywords
         let graph = fm_test_graph();
-        let fm = "---\ncover: \"[[photo.jpg|contain top-right]]\"\n---\n";
+        let fm = "---\ncover: \"![[photo.jpg|contain top-right]]\"\n---\n";
         let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
         assert_eq!(
             result.content,
@@ -926,6 +929,26 @@ mod tests {
         assert!(
             result.content_markdown.starts_with("cover: \"photos/hero.jpg|cover left\"\n---"),
             "Embed wikilink with attrs not resolved correctly: {}",
+            result.content_markdown
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_link_wikilink_alias_discarded() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "index");
+        b.add_file("photos/hero.jpg", "hero");
+        let graph = b.build();
+        let files = HashMap::new();
+
+        // Regular wikilink [[hero.jpg|My Hero]] — pipe content is alias, should be discarded
+        let input = "cover: \"[[hero.jpg|My Hero]]\"\n---\n\n# Page";
+        let result = resolve_content("index.md", input, &graph, &mock_reader(&files));
+
+        // Should resolve path but discard alias (Obsidian convention: pipe = alias in [[...]])
+        assert!(
+            result.content_markdown.starts_with("cover: \"photos/hero.jpg\"\n---"),
+            "Link wikilink alias should be discarded, got: {}",
             result.content_markdown
         );
     }
