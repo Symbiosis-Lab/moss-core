@@ -229,6 +229,75 @@ pub fn parse_media_attrs(raw: &str) -> MediaAttrs {
     MediaAttrs { fit, position }
 }
 
+/// Return `true` if every token in `text` is a recognized display keyword.
+///
+/// Handles single-token keywords (`"left"`, `"contain"`) and two-word position
+/// keywords (`"top left"`).  An empty string returns `false`.
+pub fn is_all_display_keywords(text: &str) -> bool {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < tokens.len() {
+        // Try combining current token with next for two-word positions.
+        if i + 1 < tokens.len() {
+            let combined = format!("{} {}", tokens[i], tokens[i + 1]);
+            if Position::from_keyword(&combined).is_some() {
+                i += 2;
+                continue;
+            }
+        }
+
+        if Fit::from_keyword(tokens[i]).is_some() {
+            i += 1;
+            continue;
+        }
+
+        if Position::from_keyword(tokens[i]).is_some() {
+            i += 1;
+            continue;
+        }
+
+        return false;
+    }
+
+    true
+}
+
+/// Escape a string for safe use inside an HTML attribute value.
+///
+/// Replaces `&`, `"`, `<`, and `>` with their HTML entities.
+pub fn html_escape_attr(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Format an `<img>` tag with optional inline style from [`MediaAttrs`].
+///
+/// All attribute values are HTML-escaped.
+pub fn format_img_tag(src: &str, alt: &str, attrs: &MediaAttrs) -> String {
+    let escaped_src = html_escape_attr(src);
+    let escaped_alt = html_escape_attr(alt);
+    match attrs.to_inline_style() {
+        Some(style) => format!(
+            "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
+            escaped_src, escaped_alt, style
+        ),
+        None => format!("<img src=\"{}\" alt=\"{}\" />", escaped_src, escaped_alt),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
@@ -707,5 +776,89 @@ mod tests {
         let result = resolve_media_ref("  photo.jpg  | cover ", "posts/hello.md", &graph);
         assert_eq!(result.path, "images/photo.jpg");
         assert_eq!(result.attrs.fit, Some(Fit::Cover));
+    }
+
+    // -- is_all_display_keywords -------------------------------------------
+
+    #[test]
+    fn test_is_all_display_keywords_positions() {
+        assert!(is_all_display_keywords("left"));
+        assert!(is_all_display_keywords("right"));
+        assert!(is_all_display_keywords("center"));
+        assert!(is_all_display_keywords("top"));
+        assert!(is_all_display_keywords("bottom"));
+        assert!(is_all_display_keywords("top left"));
+        assert!(is_all_display_keywords("bottom right"));
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_fits() {
+        assert!(is_all_display_keywords("cover"));
+        assert!(is_all_display_keywords("contain"));
+        assert!(is_all_display_keywords("fill"));
+        assert!(is_all_display_keywords("none"));
+        assert!(is_all_display_keywords("scale-down"));
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_combined() {
+        assert!(is_all_display_keywords("contain left"));
+        assert!(is_all_display_keywords("cover top left"));
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_rejects_non_keywords() {
+        assert!(!is_all_display_keywords("A beautiful sunset"));
+        assert!(!is_all_display_keywords("left side"));
+        assert!(!is_all_display_keywords(""));
+        assert!(!is_all_display_keywords("   "));
+    }
+
+    // -- html_escape_attr --------------------------------------------------
+
+    #[test]
+    fn test_html_escape_attr_basic() {
+        assert_eq!(html_escape_attr("hello"), "hello");
+        assert_eq!(html_escape_attr("a&b"), "a&amp;b");
+        assert_eq!(html_escape_attr("a\"b"), "a&quot;b");
+        assert_eq!(html_escape_attr("a<b>c"), "a&lt;b&gt;c");
+    }
+
+    // -- format_img_tag ----------------------------------------------------
+
+    #[test]
+    fn test_format_img_tag_with_style() {
+        let attrs = MediaAttrs {
+            fit: Some(Fit::Contain),
+            position: Some(Position::Left),
+        };
+        assert_eq!(
+            format_img_tag("photo.jpg", "alt text", &attrs),
+            "<img src=\"photo.jpg\" alt=\"alt text\" style=\"object-fit:contain;object-position:left\" />"
+        );
+    }
+
+    #[test]
+    fn test_format_img_tag_no_style() {
+        let attrs = MediaAttrs {
+            fit: None,
+            position: None,
+        };
+        assert_eq!(
+            format_img_tag("photo.jpg", "alt", &attrs),
+            "<img src=\"photo.jpg\" alt=\"alt\" />"
+        );
+    }
+
+    #[test]
+    fn test_format_img_tag_escapes_attributes() {
+        let attrs = MediaAttrs {
+            fit: None,
+            position: Some(Position::Left),
+        };
+        assert_eq!(
+            format_img_tag("img\"bad.jpg", "a\"<b>", &attrs),
+            "<img src=\"img&quot;bad.jpg\" alt=\"a&quot;&lt;b&gt;\" style=\"object-position:left\" />"
+        );
     }
 }

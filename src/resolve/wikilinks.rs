@@ -20,7 +20,7 @@
 
 use crate::content_graph::ContentGraph;
 use crate::heading_anchor::obsidian_heading_anchor;
-use crate::media::{parse_media_attrs, Fit, Position};
+use crate::media::{format_img_tag, is_all_display_keywords, parse_media_attrs};
 
 use super::fuzzy_path::{relative_asset_path, relative_url, resolve_reference, ResolvedRef};
 use super::{Diagnostic, LinkType, OutgoingLink};
@@ -249,46 +249,6 @@ fn is_image_path(path: &str) -> bool {
     }
 }
 
-/// Return `true` if every token in `text` is a recognized display keyword.
-///
-/// Handles single-token keywords (`"left"`, `"contain"`) and two-word position
-/// keywords (`"top left"`).  An empty string returns `false`.
-fn is_all_display_keywords(text: &str) -> bool {
-    let tokens: Vec<&str> = text.split_whitespace().collect();
-    if tokens.is_empty() {
-        return false;
-    }
-
-    let mut i = 0;
-    while i < tokens.len() {
-        // Try combining current token with next for two-word positions.
-        if i + 1 < tokens.len() {
-            let combined = format!("{} {}", tokens[i], tokens[i + 1]);
-            if Position::from_keyword(&combined).is_some() {
-                i += 2;
-                continue;
-            }
-        }
-
-        // Single-token fit keyword.
-        if Fit::from_keyword(tokens[i]).is_some() {
-            i += 1;
-            continue;
-        }
-
-        // Single-token position keyword.
-        if Position::from_keyword(tokens[i]).is_some() {
-            i += 1;
-            continue;
-        }
-
-        // Unrecognized token — not all keywords.
-        return false;
-    }
-
-    true
-}
-
 /// Resolve a standard `[[…]]` wikilink and return its markdown replacement.
 fn resolve_wikilink(
     inner: &str,
@@ -388,8 +348,7 @@ fn resolve_embed(
                         // Alias is entirely display keywords → output raw HTML <img> with style.
                         let alt = file_stem(&target_path);
                         let attrs = parse_media_attrs(alias_text);
-                        let style = attrs.to_inline_style().unwrap_or_default();
-                        format!("<img src=\"{}\" alt=\"{}\" style=\"{}\" />", url, alt, style)
+                        format_img_tag(&url, &alt, &attrs)
                     }
                     Some(alias_text) => {
                         // Alias is plain text → use as alt text.

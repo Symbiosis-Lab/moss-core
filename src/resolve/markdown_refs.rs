@@ -12,7 +12,7 @@
 //! Content inside fenced code blocks and inline code spans is left untouched.
 
 use crate::content_graph::ContentGraph;
-use crate::media::parse_media_attrs;
+use crate::media::{format_img_tag, parse_media_attrs};
 
 use super::fuzzy_path::{relative_asset_path, resolve_reference, ResolvedRef};
 use super::{Diagnostic, LinkType, OutgoingLink};
@@ -211,11 +211,8 @@ fn process_line(
                                 link_type: LinkType::Standard,
                             });
                             let resolved_url = relative_asset_path(from_path, &target_path);
-                            if let Some(style) = attrs.to_inline_style() {
-                                result.push_str(&format!(
-                                    "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
-                                    resolved_url, alt, style
-                                ));
+                            if !attrs.is_empty() {
+                                result.push_str(&format_img_tag(&resolved_url, &alt, &attrs));
                             } else {
                                 result.push_str(&format!("![{}]({})", alt, resolved_url));
                             }
@@ -225,11 +222,8 @@ fn process_line(
                         ResolvedRef::Unresolved => {
                             // Leave unchanged — could be a same-directory file
                             // But still apply attrs if present
-                            if let Some(style) = attrs.to_inline_style() {
-                                result.push_str(&format!(
-                                    "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
-                                    path_part, alt, style
-                                ));
+                            if !attrs.is_empty() {
+                                result.push_str(&format_img_tag(path_part, &alt, &attrs));
                             } else {
                                 result.push_str(&format!("![{}]({})", alt, url));
                             }
@@ -239,12 +233,9 @@ fn process_line(
                     }
                 } else {
                     // Not a bare filename
-                    if let Some(style) = attrs.to_inline_style() {
+                    if !attrs.is_empty() {
                         // Has pipe attrs — output HTML with style
-                        result.push_str(&format!(
-                            "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
-                            path_part, alt, style
-                        ));
+                        result.push_str(&format_img_tag(path_part, &alt, &attrs));
                     } else {
                         // No attrs — pass through unchanged (use original url to preserve any query/fragment)
                         result.push_str(&format!("![{}]({})", alt, url));
