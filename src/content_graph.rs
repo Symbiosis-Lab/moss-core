@@ -324,8 +324,8 @@ impl ContentGraphBuilder {
         // Slug map
         self.slug_map.insert(norm.clone(), slug.to_owned());
 
-        // Store normalized path
-        self.files.push(norm);
+        // Store original path (preserve casing for filesystem operations)
+        self.files.push(relative_path.to_string());
     }
 
     /// Register headings for a file. Each entry is `(heading_text, anchor_id)`.
@@ -409,18 +409,18 @@ mod tests {
         b.add_file("Notes/MyFile.md", "/notes/myfile");
         let g = b.build();
 
-        // Lookup with different casing
+        // Lookup with different casing — should return original path
         assert_eq!(
             g.resolve_path("myfile", ""),
-            Some("notes/myfile.md".into())
+            Some("Notes/MyFile.md".into())
         );
         assert_eq!(
             g.resolve_path("MYFILE", ""),
-            Some("notes/myfile.md".into())
+            Some("Notes/MyFile.md".into())
         );
         assert_eq!(
             g.resolve_path("MyFile", ""),
-            Some("notes/myfile.md".into())
+            Some("Notes/MyFile.md".into())
         );
     }
 
@@ -595,15 +595,15 @@ mod tests {
         b.add_file("caf\u{0065}\u{0301}.md", "/cafe");
         let g = b.build();
 
-        // Lookup with NFC form (precomposed e-acute)
+        // Lookup with NFC form (precomposed e-acute) — returns original NFD form
         assert_eq!(
             g.resolve_path("caf\u{00e9}.md", ""),
-            Some("caf\u{00e9}.md".into())
+            Some("caf\u{0065}\u{0301}.md".into())
         );
-        // Lookup with NFD form
+        // Lookup with NFD form — returns original NFD form
         assert_eq!(
             g.resolve_path("caf\u{0065}\u{0301}.md", ""),
-            Some("caf\u{00e9}.md".into())
+            Some("caf\u{0065}\u{0301}.md".into())
         );
     }
 
@@ -751,6 +751,38 @@ mod tests {
         assert_eq!(
             g.resolve_path("vault/文字/游记/index.md", ""),
             Some("文字/游记/index.md".into())
+        );
+    }
+
+    // resolve_path preserves original casing of stored file paths
+    #[test]
+    fn test_resolve_path_preserves_original_case() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("音乐/Winter-Song.mov", "音乐/winter-song");
+        let g = b.build();
+
+        // Lookup with different casing should return original path
+        assert_eq!(
+            g.resolve_path("winter-song.mov", ""),
+            Some("音乐/Winter-Song.mov".into())
+        );
+        assert_eq!(
+            g.resolve_path("Winter-Song.mov", ""),
+            Some("音乐/Winter-Song.mov".into())
+        );
+    }
+
+    // all_files preserves original casing
+    #[test]
+    fn test_all_files_preserves_original_case() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("Notes/MyFile.md", "/notes/myfile");
+        b.add_file("Posts/Hello-World.md", "/posts/hello-world");
+        let g = b.build();
+
+        assert_eq!(
+            g.all_files(),
+            &["Notes/MyFile.md", "Posts/Hello-World.md"]
         );
     }
 }
