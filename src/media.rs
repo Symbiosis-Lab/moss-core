@@ -145,8 +145,9 @@ impl MediaAttrs {
 // ---------------------------------------------------------------------------
 
 /// A fully resolved media reference: path + display attributes.
+/// Not yet consumed outside tests — kept `pub(crate)` until a real caller exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedMedia {
+pub(crate) struct ResolvedMedia {
     /// Root-relative path (no leading `/`) or external URL.
     pub path: String,
     /// Parsed display attributes.
@@ -316,7 +317,7 @@ fn is_external(path: &str) -> bool {
 /// - Root-relative paths (leading `/`) have the slash stripped.
 /// - Everything else is resolved via [`ContentGraph::resolve_path`], falling
 ///   back to the raw path if unresolved.
-pub fn resolve_media_ref(raw: &str, source_path: &str, graph: &ContentGraph) -> ResolvedMedia {
+pub(crate) fn resolve_media_ref(raw: &str, source_path: &str, graph: &ContentGraph) -> ResolvedMedia {
     let inner = strip_wikilink(raw);
     let (path_part, attrs_str) = split_pipe(inner);
     let path_trimmed = path_part.trim();
