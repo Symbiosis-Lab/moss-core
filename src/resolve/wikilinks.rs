@@ -20,6 +20,7 @@
 
 use crate::content_graph::ContentGraph;
 use crate::heading_anchor::obsidian_heading_anchor;
+use crate::media::{parse_media_attrs, Fit, Position};
 
 use super::fuzzy_path::{relative_asset_path, relative_url, resolve_reference, ResolvedRef};
 use super::{Diagnostic, LinkType, OutgoingLink};
@@ -248,6 +249,46 @@ fn is_image_path(path: &str) -> bool {
     }
 }
 
+/// Return `true` if every token in `text` is a recognized display keyword.
+///
+/// Handles single-token keywords (`"left"`, `"contain"`) and two-word position
+/// keywords (`"top left"`).  An empty string returns `false`.
+fn is_all_display_keywords(text: &str) -> bool {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < tokens.len() {
+        // Try combining current token with next for two-word positions.
+        if i + 1 < tokens.len() {
+            let combined = format!("{} {}", tokens[i], tokens[i + 1]);
+            if Position::from_keyword(&combined).is_some() {
+                i += 2;
+                continue;
+            }
+        }
+
+        // Single-token fit keyword.
+        if Fit::from_keyword(tokens[i]).is_some() {
+            i += 1;
+            continue;
+        }
+
+        // Single-token position keyword.
+        if Position::from_keyword(tokens[i]).is_some() {
+            i += 1;
+            continue;
+        }
+
+        // Unrecognized token — not all keywords.
+        return false;
+    }
+
+    true
+}
+
 /// Resolve a standard `[[…]]` wikilink and return its markdown replacement.
 fn resolve_wikilink(
     inner: &str,
@@ -324,7 +365,7 @@ fn resolve_embed(
     outgoing_links: &mut Vec<OutgoingLink>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> String {
-    let (file_part, section, _alias) = parse_wikilink_inner(inner);
+    let (file_part, section, alias) = parse_wikilink_inner(inner);
 
     let resolved = if file_part.is_empty() {
         ResolvedRef::Found(from_path.to_string())
@@ -341,10 +382,25 @@ fn resolve_embed(
             });
 
             if is_image_path(&target_path) {
-                // Image embed: produce ![alt](url)
-                let alt = file_stem(&target_path);
                 let url = relative_asset_path(from_path, &target_path);
-                format!("![{}]({})", alt, url)
+                match alias {
+                    Some(alias_text) if is_all_display_keywords(alias_text) => {
+                        // Alias is entirely display keywords → output raw HTML <img> with style.
+                        let alt = file_stem(&target_path);
+                        let attrs = parse_media_attrs(alias_text);
+                        let style = attrs.to_inline_style().unwrap_or_default();
+                        format!("<img src=\"{}\" alt=\"{}\" style=\"{}\" />", url, alt, style)
+                    }
+                    Some(alias_text) => {
+                        // Alias is plain text → use as alt text.
+                        format!("![{}]({})", alias_text, url)
+                    }
+                    None => {
+                        // No alias → use filename stem as alt (existing behavior).
+                        let alt = file_stem(&target_path);
+                        format!("![{}]({})", alt, url)
+                    }
+                }
             } else {
                 // Markdown embed: produce <!-- moss-embed:path -->
                 let anchor = build_anchor(section);
@@ -534,6 +590,66 @@ mod tests {
         assert_eq!(result.content, "![photo](../assets/photo.jpg)");
     }
 
+    // 10a. Image embed with position keyword → raw HTML <img> with style
+    #[test]
+    fn test_image_embed_position_keyword() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg|left]]", &graph, "posts/hello.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"../assets/photo.jpg\" alt=\"photo\" style=\"object-position:left\" />"
+        );
+    }
+
+    // 10b. Image embed with fit keyword → raw HTML <img> with style
+    #[test]
+    fn test_image_embed_fit_keyword() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg|contain]]", &graph, "posts/hello.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"../assets/photo.jpg\" alt=\"photo\" style=\"object-fit:contain\" />"
+        );
+    }
+
+    // 10c. Image embed with fit + position keywords → combined style
+    #[test]
+    fn test_image_embed_fit_and_position_keywords() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg|contain left]]", &graph, "posts/hello.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"../assets/photo.jpg\" alt=\"photo\" style=\"object-fit:contain;object-position:left\" />"
+        );
+    }
+
+    // 10d. Image embed with two-word position keyword → combined style
+    #[test]
+    fn test_image_embed_two_word_position_keyword() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg|top left]]", &graph, "posts/hello.md");
+        assert_eq!(
+            result.content,
+            "<img src=\"../assets/photo.jpg\" alt=\"photo\" style=\"object-position:top left\" />"
+        );
+    }
+
+    // 10e. Image embed with non-keyword alias → plain markdown with alias as alt text
+    #[test]
+    fn test_image_embed_alt_text() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg|A beautiful sunset]]", &graph, "posts/hello.md");
+        assert_eq!(result.content, "![A beautiful sunset](../assets/photo.jpg)");
+    }
+
+    // 10f. Image embed with mixed alias (one known + one unknown token) → alt text
+    #[test]
+    fn test_image_embed_mixed_alias_as_alt_text() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg|left side]]", &graph, "posts/hello.md");
+        assert_eq!(result.content, "![left side](../assets/photo.jpg)");
+    }
+
     // 11. Markdown embed
     #[test]
     fn test_markdown_embed() {
@@ -669,5 +785,50 @@ mod tests {
         let result =
             resolve_wikilinks("Use ``[[guide]]`` syntax.", &graph, "posts/hello.md");
         assert_eq!(result.content, "Use ``[[guide]]`` syntax.");
+    }
+
+    // -- is_all_display_keywords tests --
+
+    #[test]
+    fn test_is_all_display_keywords_single_position() {
+        assert!(is_all_display_keywords("left"));
+        assert!(is_all_display_keywords("right"));
+        assert!(is_all_display_keywords("center"));
+        assert!(is_all_display_keywords("top"));
+        assert!(is_all_display_keywords("bottom"));
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_single_fit() {
+        assert!(is_all_display_keywords("cover"));
+        assert!(is_all_display_keywords("contain"));
+        assert!(is_all_display_keywords("fill"));
+        assert!(is_all_display_keywords("none"));
+        assert!(is_all_display_keywords("scale-down"));
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_combined() {
+        assert!(is_all_display_keywords("contain left"));
+        assert!(is_all_display_keywords("cover right"));
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_two_word_position() {
+        assert!(is_all_display_keywords("top left"));
+        assert!(is_all_display_keywords("bottom right"));
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_not_keywords() {
+        assert!(!is_all_display_keywords("A beautiful sunset"));
+        assert!(!is_all_display_keywords("left side")); // "side" is unknown
+        assert!(!is_all_display_keywords("my photo caption"));
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_empty() {
+        assert!(!is_all_display_keywords(""));
+        assert!(!is_all_display_keywords("   "));
     }
 }
