@@ -152,17 +152,7 @@ fn parse_callout_header(line: &str, supported_types: &[&str]) -> Option<(String,
     Some((type_lower, title))
 }
 
-/// Escape HTML special characters in a string.
-///
-/// Replaces `&`, `<`, `>`, and `"` with their corresponding HTML entities to
-/// prevent XSS when interpolating user-supplied text into HTML attributes or
-/// element content.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
+use crate::media::html_escape;
 
 /// Capitalise the first character of a string.
 fn capitalize(s: &str) -> String {

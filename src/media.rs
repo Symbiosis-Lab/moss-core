@@ -267,15 +267,16 @@ pub fn is_all_display_keywords(text: &str) -> bool {
     true
 }
 
-/// Escape a string for safe use inside an HTML attribute value.
+/// Escape a string for safe use in HTML text or attribute values.
 ///
-/// Replaces `&`, `"`, `<`, and `>` with their HTML entities.
-pub fn html_escape_attr(s: &str) -> String {
+/// Replaces `&`, `"`, `'`, `<`, and `>` with their HTML entities.
+pub fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
             '&' => out.push_str("&amp;"),
             '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             _ => out.push(ch),
@@ -288,8 +289,8 @@ pub fn html_escape_attr(s: &str) -> String {
 ///
 /// All attribute values are HTML-escaped.
 pub fn format_img_tag(src: &str, alt: &str, attrs: &MediaAttrs) -> String {
-    let escaped_src = html_escape_attr(src);
-    let escaped_alt = html_escape_attr(alt);
+    let escaped_src = html_escape(src);
+    let escaped_alt = html_escape(alt);
     match attrs.to_inline_style() {
         Some(style) => format!(
             "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
@@ -805,6 +806,8 @@ mod tests {
     fn test_is_all_display_keywords_combined() {
         assert!(is_all_display_keywords("contain left"));
         assert!(is_all_display_keywords("cover top left"));
+        assert!(is_all_display_keywords("cover top-right"));
+        assert!(is_all_display_keywords("scale-down bottom-left"));
     }
 
     #[test]
@@ -815,14 +818,19 @@ mod tests {
         assert!(!is_all_display_keywords("   "));
     }
 
-    // -- html_escape_attr --------------------------------------------------
+    // -- html_escape --------------------------------------------------
 
     #[test]
-    fn test_html_escape_attr_basic() {
-        assert_eq!(html_escape_attr("hello"), "hello");
-        assert_eq!(html_escape_attr("a&b"), "a&amp;b");
-        assert_eq!(html_escape_attr("a\"b"), "a&quot;b");
-        assert_eq!(html_escape_attr("a<b>c"), "a&lt;b&gt;c");
+    fn test_html_escape_basic() {
+        assert_eq!(html_escape("hello"), "hello");
+        assert_eq!(html_escape("a&b"), "a&amp;b");
+        assert_eq!(html_escape("a\"b"), "a&quot;b");
+        assert_eq!(html_escape("a'b"), "a&#39;b");
+        assert_eq!(html_escape("a<b>c"), "a&lt;b&gt;c");
+        assert_eq!(
+            html_escape("<div class=\"x\">&'</div>"),
+            "&lt;div class=&quot;x&quot;&gt;&amp;&#39;&lt;/div&gt;"
+        );
     }
 
     // -- format_img_tag ----------------------------------------------------
