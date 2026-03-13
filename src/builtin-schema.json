@@ -20,10 +20,10 @@
         "widget": "number-input",
         "description": "Sort weight for ordering"
       },
-      "slug": {
+      "url": {
         "type": "string",
         "widget": "text-input",
-        "description": "URL slug override"
+        "description": "Custom URL path override"
       },
       "cover": {
         "type": "string",
