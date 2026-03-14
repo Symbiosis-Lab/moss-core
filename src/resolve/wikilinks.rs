@@ -8,10 +8,10 @@
 //!
 //! | Input | Output |
 //! |-------|--------|
-//! | `[[target]]` | `[target](resolved/url/)` |
-//! | `[[target\|alias]]` | `[alias](resolved/url/)` |
-//! | `[[target#heading]]` | `[target > heading](resolved/url/#anchor)` |
-//! | `[[target#^block-id]]` | `[target > ^block-id](resolved/url/#block-id)` |
+//! | `[[target]]` | `[target](moss-resolved:target.md)` |
+//! | `[[target\|alias]]` | `[alias](moss-resolved:target.md)` |
+//! | `[[target#heading]]` | `[target > heading](moss-resolved:target.md#anchor)` |
+//! | `[[target#^block-id]]` | `[target > ^block-id](moss-resolved:target.md#block-id)` |
 //! | `![[image.png]]` | `![image](resolved/url/image.png)` |
 //! | `![[file.md]]` | `<!-- moss-embed:resolved/path.md -->` |
 //!
@@ -22,7 +22,7 @@ use crate::content_graph::ContentGraph;
 use crate::heading_anchor::obsidian_heading_anchor;
 use crate::media::{format_img_tag, is_all_display_keywords, parse_media_attrs};
 
-use super::fuzzy_path::{relative_asset_path, relative_url, resolve_reference, ResolvedRef};
+use super::fuzzy_path::{relative_asset_path, resolve_reference, ResolvedRef};
 use super::{Diagnostic, LinkType, OutgoingLink};
 
 /// Image file extensions recognized for embed syntax (`![[…]]`).
@@ -295,8 +295,7 @@ fn resolve_wikilink(
                 // Same-file link: use just the anchor (e.g. `#heading`)
                 format!("[{}]({})", display_text, anchor)
             } else {
-                let url = relative_url(from_path, &target_path);
-                format!("[{}]({}{})", display_text, url, anchor)
+                format!("[{}](moss-resolved:{}{})", display_text, target_path, anchor)
             }
         }
         ResolvedRef::Unresolved => {
@@ -441,7 +440,7 @@ mod tests {
     fn test_basic_wikilink() {
         let graph = test_graph();
         let result = resolve_wikilinks("See [[guide]] for details.", &graph, "posts/hello.md");
-        assert_eq!(result.content, "See [guide](../../guide/) for details.");
+        assert_eq!(result.content, "See [guide](moss-resolved:guide.md) for details.");
         assert!(result.diagnostics.is_empty());
     }
 
@@ -450,7 +449,7 @@ mod tests {
     fn test_wikilink_with_alias() {
         let graph = test_graph();
         let result = resolve_wikilinks("Read [[guide|the guide]].", &graph, "posts/hello.md");
-        assert_eq!(result.content, "Read [the guide](../../guide/).");
+        assert_eq!(result.content, "Read [the guide](moss-resolved:guide.md).");
     }
 
     // 3. Wikilink with heading
@@ -461,7 +460,7 @@ mod tests {
             resolve_wikilinks("See [[guide#Getting Started]].", &graph, "posts/hello.md");
         assert_eq!(
             result.content,
-            "See [guide > Getting Started](../../guide/#getting-started)."
+            "See [guide > Getting Started](moss-resolved:guide.md#getting-started)."
         );
     }
 
@@ -473,7 +472,7 @@ mod tests {
             resolve_wikilinks("See [[guide#^setup-step]].", &graph, "posts/hello.md");
         assert_eq!(
             result.content,
-            "See [guide > ^setup-step](../../guide/#setup-step)."
+            "See [guide > ^setup-step](moss-resolved:guide.md#setup-step)."
         );
     }
 
@@ -488,7 +487,7 @@ mod tests {
         );
         assert_eq!(
             result.content,
-            "See [setup](../../guide/#getting-started)."
+            "See [setup](moss-resolved:guide.md#getting-started)."
         );
     }
 
@@ -513,7 +512,7 @@ mod tests {
         let input = "Before.\n\n```\n[[guide]]\n```\n\nAfter [[guide]].";
         let result = resolve_wikilinks(input, &graph, "posts/hello.md");
         assert!(result.content.contains("```\n[[guide]]\n```"));
-        assert!(result.content.contains("After [guide](../../guide/)."));
+        assert!(result.content.contains("After [guide](moss-resolved:guide.md)."));
     }
 
     // 8. Wikilink in inline code preserved
@@ -536,7 +535,7 @@ mod tests {
         );
         assert_eq!(
             result.content,
-            "See [guide](../../guide/) and [disclaimer](../../disclaimer/)."
+            "See [guide](moss-resolved:guide.md) and [disclaimer](moss-resolved:disclaimer.md)."
         );
         assert_eq!(result.outgoing_links.len(), 2);
     }
@@ -668,7 +667,7 @@ mod tests {
         let input = "Before.\n\n~~~\n[[guide]]\n~~~\n\nAfter [[guide]].";
         let result = resolve_wikilinks(input, &graph, "posts/hello.md");
         assert!(result.content.contains("~~~\n[[guide]]\n~~~"));
-        assert!(result.content.contains("After [guide](../../guide/)."));
+        assert!(result.content.contains("After [guide](moss-resolved:guide.md)."));
     }
 
     #[test]
@@ -735,7 +734,7 @@ mod tests {
         let graph = test_graph();
         let input = "See [[guide]].\n";
         let result = resolve_wikilinks(input, &graph, "posts/hello.md");
-        assert_eq!(result.content, "See [guide](../../guide/).\n");
+        assert_eq!(result.content, "See [guide](moss-resolved:guide.md).\n");
     }
 
     #[test]

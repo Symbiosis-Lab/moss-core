@@ -470,8 +470,8 @@ mod tests {
         // Frontmatter preserved
         assert!(result.content_markdown.starts_with("---\ntitle: Test\n---\n"));
 
-        // Wikilink resolved
-        assert!(result.content_markdown.contains("[guide > Setup](../guide/#setup)"));
+        // Wikilink resolved (moss-resolved: scheme, deferred to Tauri layer)
+        assert!(result.content_markdown.contains("[guide > Setup](moss-resolved:guide.md#setup)"));
 
         // Block ref transformed
         assert!(result.content_markdown.contains("<span id=\"my-block\"></span>"));
@@ -519,9 +519,9 @@ mod tests {
         let input = "![[disclaimer]]";
         let result = resolve_content("note.md", input, &graph, &mock_reader(&files));
 
-        // The embedded content's wikilink [[guide]] should be resolved
+        // The embedded content's wikilink [[guide]] should be resolved (moss-resolved: scheme)
         assert!(
-            result.content_markdown.contains("[guide](../guide/)"),
+            result.content_markdown.contains("[guide](moss-resolved:guide.md)"),
             "Expected resolved wikilink from embedded content, got: {}",
             result.content_markdown
         );
@@ -884,11 +884,10 @@ mod tests {
             result.content_markdown
         );
 
-        // Body wikilink [[news]] SHOULD be resolved to a markdown link.
-        // Both files are at root, so relative path is `news/` (not `../news/`).
+        // Body wikilink [[news]] SHOULD be resolved to moss-resolved: scheme.
         assert!(
-            result.content_markdown.contains("[news](news/)"),
-            "Expected body wikilink to be resolved, got: {}",
+            result.content_markdown.contains("[news](moss-resolved:news.md)"),
+            "Expected body wikilink to be resolved with moss-resolved: scheme, got: {}",
             result.content_markdown
         );
     }
