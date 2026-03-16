@@ -1,12 +1,17 @@
 //! Content model types driven by the schema.
 //!
 //! The schema defines frontmatter fields, types, and UI widget hints.
-//! The built-in schema is embedded at compile time via `include_str!`.
+//! The built-in schema is generated from [`crate::schema_fields::BUILTIN_FIELDS`],
+//! the single source of truth for all frontmatter fields moss recognizes.
+//! Plugin-contributed schemas are still parsed from JSON via [`parse_schema()`].
+//!
 //! All types derive `Serialize` + `Deserialize` so they can cross the
 //! Tauri command boundary.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use crate::schema_fields::BUILTIN_FIELDS;
 
 /// The top-level content schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,15 +141,67 @@ pub struct ShortcodeParam {
     pub default: Option<String>,
 }
 
-/// The built-in schema JSON, embedded at compile time.
-const BUILTIN_SCHEMA_JSON: &str = include_str!("builtin-schema.json");
-
 /// Return the built-in content schema.
 ///
-/// Panics if the embedded JSON is invalid (caught at development time).
+/// Builds the schema programmatically from [`BUILTIN_FIELDS`] — the const
+/// table in `schema_fields.rs`. Fields with `skip_schema: true` are excluded.
+/// This replaces the previous `include_str!("builtin-schema.json")` approach,
+/// ensuring the schema and the `FrontMatter` struct can never drift apart.
 pub fn builtin_schema() -> ContentSchema {
-    parse_schema(BUILTIN_SCHEMA_JSON)
-        .expect("built-in schema JSON is invalid — this is a bug")
+    let mut fields = HashMap::new();
+
+    for bf in BUILTIN_FIELDS {
+        if bf.skip_schema {
+            continue;
+        }
+
+        let items = bf.items_type.as_ref().map(|it| {
+            Box::new(FieldDefinition {
+                field_type: it.clone(),
+                widget: None,
+                required: false,
+                default: None,
+                format: None,
+                enum_values: None,
+                items: None,
+                description: None,
+                source: None,
+            })
+        });
+
+        let default = bf.default_json.map(|s| {
+            serde_json::from_str(s)
+                .unwrap_or_else(|e| panic!("invalid default_json for '{}': {}", bf.name, e))
+        });
+
+        let enum_values = bf
+            .enum_values
+            .map(|vals| vals.iter().map(|s| s.to_string()).collect());
+
+        let fd = FieldDefinition {
+            field_type: bf.field_type.clone(),
+            widget: Some(bf.widget.clone()),
+            required: bf.required,
+            default,
+            format: bf.format.map(|s| s.to_string()),
+            enum_values,
+            items,
+            description: Some(bf.description.to_string()),
+            source: None,
+        };
+
+        fields.insert(bf.name.to_string(), fd);
+    }
+
+    ContentSchema {
+        generator: "moss".to_string(),
+        version: "1.0".to_string(),
+        frontmatter: FrontmatterSchema { fields },
+        shortcodes: Some(ShortcodeSchema {
+            delimiters: (":::".to_string(), ":::".to_string()),
+            definitions: HashMap::new(),
+        }),
+    }
 }
 
 /// Parse a content schema from a JSON string.
@@ -179,7 +236,7 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 22 fields defined in builtin-schema.json
+        // 22 non-skip fields generated from BUILTIN_FIELDS
         assert_eq!(schema.frontmatter.fields.len(), 22);
     }
 
