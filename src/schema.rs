@@ -61,6 +61,12 @@ pub struct FieldDefinition {
     /// Human-readable description of the field.
     #[serde(default)]
     pub description: Option<String>,
+    /// Source of this field definition.
+    /// `None` for builtin fields, `Some("review")` for plugin-contributed fields.
+    /// Used by the frontend to group fields by source in the editor form.
+    /// See docs/architecture/plugin-schema-contributions.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Supported field types.
@@ -289,5 +295,31 @@ mod tests {
         let json = r#""date-picker""#;
         let w: Widget = serde_json::from_str(json).expect("parse date-picker");
         assert_eq!(w, Widget::DatePicker);
+    }
+
+    #[test]
+    fn test_builtin_fields_have_no_source() {
+        let schema = builtin_schema();
+        for (name, field) in &schema.frontmatter.fields {
+            assert!(field.source.is_none(), "builtin field '{}' should have no source", name);
+        }
+    }
+
+    #[test]
+    fn test_field_definition_with_source_roundtrips() {
+        let json = r#"{"type":"string","widget":"text-input","source":"review"}"#;
+        let fd: FieldDefinition = serde_json::from_str(json).expect("parse");
+        assert_eq!(fd.source, Some("review".to_string()));
+        let serialized = serde_json::to_string(&fd).expect("serialize");
+        assert!(serialized.contains(r#""source":"review""#));
+    }
+
+    #[test]
+    fn test_field_definition_without_source_omits_it() {
+        let json = r#"{"type":"string","widget":"text-input"}"#;
+        let fd: FieldDefinition = serde_json::from_str(json).expect("parse");
+        assert!(fd.source.is_none());
+        let serialized = serde_json::to_string(&fd).expect("serialize");
+        assert!(!serialized.contains("source"));
     }
 }
