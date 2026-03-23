@@ -285,6 +285,15 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         skip_schema: true, // auto-generated, not user-editable
         ..FIELD_DEFAULTS
     },
+    BuiltinField {
+        name: "layout",
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["page", "article"]),
+        description: "Template layout override (page or article)",
+        skip_schema: true, // build-only, not an editor form field
+        ..FIELD_DEFAULTS
+    },
 ];
 
 #[cfg(test)]
