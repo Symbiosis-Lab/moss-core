@@ -66,6 +66,10 @@ pub struct FieldDefinition {
     /// Human-readable description of the field.
     #[serde(default)]
     pub description: Option<String>,
+    /// Optional human-readable label for the chip bar. When `None`, the frontend
+    /// falls back to using the field key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Source of this field definition.
     /// `None` for builtin fields, `Some("review")` for plugin-contributed fields.
     /// Used by the frontend to group fields by source in the editor form.
@@ -165,6 +169,7 @@ pub fn builtin_schema() -> ContentSchema {
                 enum_values: None,
                 items: None,
                 description: None,
+                label: None,
                 source: None,
             })
         });
@@ -187,6 +192,7 @@ pub fn builtin_schema() -> ContentSchema {
             enum_values,
             items,
             description: Some(bf.description.to_string()),
+            label: bf.label.map(|s| s.to_string()),
             source: None,
         };
 

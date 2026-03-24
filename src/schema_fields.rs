@@ -46,6 +46,10 @@ pub struct BuiltinField {
     pub items_type: Option<FieldType>,
     /// Human-readable description shown in the editor form.
     pub description: &'static str,
+    /// Optional human-readable label for the chip bar. When `None`, the frontend
+    /// falls back to using the field key. Useful for fields with unfriendly
+    /// internal names (e.g. `children_depth` → "Depth").
+    pub label: Option<&'static str>,
     /// If `true`, the field exists in the `FrontMatter` struct but is NOT
     /// exposed in the editor schema or validation. Used for site-level config,
     /// auto-generated fields, and fields migrating to plugin-contributed schemas.
@@ -64,6 +68,7 @@ const FIELD_DEFAULTS: BuiltinField = BuiltinField {
     enum_values: None,
     items_type: None,
     description: "",
+    label: None,
     skip_schema: false,
 };
 
@@ -123,6 +128,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::TextInput,
         description: "Key to link translations of the same content",
+        label: Some("Translation Key"),
         ..FIELD_DEFAULTS
     },
 
@@ -195,6 +201,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TagInput,
         items_type: Some(FieldType::String),
         description: "Cross-list this page in other sections",
+        label: Some("Also In"),
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -229,6 +236,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         enum_values: Some(&["list", "summary"]),
         default_json: Some("\"list\""),
         description: "How child pages are rendered",
+        label: Some("Style"),
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -237,6 +245,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Select,
         enum_values: Some(&["year", "none"]),
         description: "How children are grouped: year (default for list) or none (default for card)",
+        label: Some("Group"),
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -246,6 +255,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         enum_values: Some(&["direct", "all"]),
         default_json: Some("\"direct\""),
         description: "Whether to include only immediate children or all descendants",
+        label: Some("Depth"),
         ..FIELD_DEFAULTS
     },
 
@@ -323,6 +333,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_labels_propagate_to_schema() {
+        let schema = crate::schema::builtin_schema();
+        let depth = schema.frontmatter.fields.get("children_depth").expect("children_depth");
+        assert_eq!(depth.label.as_deref(), Some("Depth"));
+    }
+
+    #[test]
+    fn test_no_label_means_none() {
+        let schema = crate::schema::builtin_schema();
+        let title = schema.frontmatter.fields.get("title").expect("title");
+        assert!(title.label.is_none());
     }
 
     #[test]
