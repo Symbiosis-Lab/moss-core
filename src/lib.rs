@@ -3,6 +3,8 @@
 //! Zero I/O, zero async. Takes strings in, returns strings out.
 //! All filesystem access happens in the Tauri layer.
 
+#![forbid(unsafe_code)]
+
 pub mod content_graph;
 pub mod home;
 pub mod frontmatter;
