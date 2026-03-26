@@ -70,6 +70,10 @@ pub struct FieldDefinition {
     /// falls back to using the field key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Display priority for chip bar ordering. Lower values appear first.
+    /// 0 means unset (defaults to end). Typical range: 10 (title) to 110 (cascade).
+    #[serde(default)]
+    pub priority: u8,
     /// Source of this field definition.
     /// `None` for builtin fields, `Some("review")` for plugin-contributed fields.
     /// Used by the frontend to group fields by source in the editor form.
@@ -170,6 +174,7 @@ pub fn builtin_schema() -> ContentSchema {
                 items: None,
                 description: None,
                 label: None,
+                priority: 0,
                 source: None,
             })
         });
@@ -193,6 +198,7 @@ pub fn builtin_schema() -> ContentSchema {
             items,
             description: Some(bf.description.to_string()),
             label: bf.label.map(|s| s.to_string()),
+            priority: bf.priority,
             source: None,
         };
 

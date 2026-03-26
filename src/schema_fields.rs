@@ -50,6 +50,9 @@ pub struct BuiltinField {
     /// falls back to using the field key. Useful for fields with unfriendly
     /// internal names (e.g. `children_depth` → "Depth").
     pub label: Option<&'static str>,
+    /// Display priority for chip bar ordering. Lower values appear first.
+    /// 0 means unset (skip-schema fields). Typical range: 10 (title) to 110 (cascade).
+    pub priority: u8,
     /// If `true`, the field exists in the `FrontMatter` struct but is NOT
     /// exposed in the editor schema or validation. Used for site-level config,
     /// auto-generated fields, and fields migrating to plugin-contributed schemas.
@@ -69,6 +72,7 @@ const FIELD_DEFAULTS: BuiltinField = BuiltinField {
     items_type: None,
     description: "",
     label: None,
+    priority: 0,
     skip_schema: false,
 };
 
@@ -84,6 +88,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::TextInput,
         required: true,
+        priority: 10,
         description: "Page title",
         ..FIELD_DEFAULTS
     },
@@ -92,6 +97,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::DatePicker,
         format: Some("date"),
+        priority: 30,
         description: "Publication date (YYYY-MM-DD)",
         ..FIELD_DEFAULTS
     },
@@ -99,6 +105,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "weight",
         field_type: FieldType::Integer,
         widget: Widget::NumberInput,
+        priority: 70,
         description: "Sort weight for ordering",
         ..FIELD_DEFAULTS
     },
@@ -106,6 +113,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "url",
         field_type: FieldType::String,
         widget: Widget::TextInput,
+        priority: 40,
         description: "Custom URL path override",
         ..FIELD_DEFAULTS
     },
@@ -113,6 +121,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "description",
         field_type: FieldType::String,
         widget: Widget::TextArea,
+        priority: 20,
         description: "Page excerpt for SEO meta, og:description, and list previews",
         ..FIELD_DEFAULTS
     },
@@ -120,6 +129,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "lang",
         field_type: FieldType::String,
         widget: Widget::TextInput,
+        priority: 70,
         description: "Language code (e.g. en, zh)",
         ..FIELD_DEFAULTS
     },
@@ -127,6 +137,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "translationKey",
         field_type: FieldType::String,
         widget: Widget::TextInput,
+        priority: 70,
         description: "Key to link translations of the same content",
         label: Some("Translation Key"),
         ..FIELD_DEFAULTS
@@ -137,6 +148,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "cover",
         field_type: FieldType::String,
         widget: Widget::FilePicker,
+        priority: 60,
         description: "Cover image path",
         ..FIELD_DEFAULTS
     },
@@ -154,6 +166,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "nav",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
+        priority: 80,
         description: "Whether to show in site navigation",
         ..FIELD_DEFAULTS
     },
@@ -161,6 +174,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "draft",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
+        priority: 60,
         description: "Mark as draft (excluded from build)",
         ..FIELD_DEFAULTS
     },
@@ -168,6 +182,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "unlisted",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
+        priority: 80,
         description: "Exclude from listings but still accessible",
         ..FIELD_DEFAULTS
     },
@@ -175,6 +190,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "breadcrumb",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
+        priority: 80,
         description: "Override site-wide breadcrumb setting for this page",
         ..FIELD_DEFAULTS
     },
@@ -182,6 +198,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "footer",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
+        priority: 80,
         description: "Show as a link in the site footer",
         ..FIELD_DEFAULTS
     },
@@ -192,6 +209,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::Array,
         widget: Widget::TagInput,
         items_type: Some(FieldType::String),
+        priority: 50,
         description: "Content tags for organization",
         ..FIELD_DEFAULTS
     },
@@ -200,6 +218,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::Array,
         widget: Widget::TagInput,
         items_type: Some(FieldType::String),
+        priority: 90,
         description: "Cross-list this page in other sections",
         label: Some("Also In"),
         ..FIELD_DEFAULTS
@@ -209,6 +228,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::Array,
         widget: Widget::TagInput,
         items_type: Some(FieldType::String),
+        priority: 90,
         description: "Declares children as sequential series. Use true for weight-based ordering, or a list of wikilinks for explicit order.",
         ..FIELD_DEFAULTS
     },
@@ -219,6 +239,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
         default_json: Some("true"),
+        priority: 100,
         description: "Whether to render child pages below content (true = show, false = hide)",
         ..FIELD_DEFAULTS
     },
@@ -226,6 +247,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "sidebar",
         field_type: FieldType::String,
         widget: Widget::TextInput,
+        priority: 90,
         description: "Wikilink to folder whose children appear in sidebar (e.g. [[News]])",
         ..FIELD_DEFAULTS
     },
@@ -235,6 +257,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Select,
         enum_values: Some(&["list", "summary"]),
         default_json: Some("\"list\""),
+        priority: 100,
         description: "How child pages are rendered",
         label: Some("Style"),
         ..FIELD_DEFAULTS
@@ -244,6 +267,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::Select,
         enum_values: Some(&["year", "none"]),
+        priority: 100,
         description: "How children are grouped: year (default for list) or none (default for card)",
         label: Some("Group"),
         ..FIELD_DEFAULTS
@@ -254,6 +278,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Select,
         enum_values: Some(&["direct", "all"]),
         default_json: Some("\"direct\""),
+        priority: 100,
         description: "Whether to include only immediate children or all descendants",
         label: Some("Depth"),
         ..FIELD_DEFAULTS
@@ -264,6 +289,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "cascade",
         field_type: FieldType::Object,
         widget: Widget::CodeEditor,
+        priority: 110,
         description: "Frontmatter values to push to all descendant pages",
         ..FIELD_DEFAULTS
     },
