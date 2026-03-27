@@ -304,13 +304,32 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
 
-    // --- Plugin integration (skip_schema) ---
+    // --- Review metadata ---
+    BuiltinField {
+        name: "review_of",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 90,
+        description: "URL of item being reviewed (activates review feature)",
+        label: Some("Review Of"),
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "rating",
+        field_type: FieldType::Integer,
+        widget: Widget::NumberInput,
+        priority: 90,
+        description: "Author's rating of the reviewed item (1-5)",
+        ..FIELD_DEFAULTS
+    },
+
+    // --- Per-page overrides ---
     BuiltinField {
         name: "comments",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
-        description: "Per-page comment opt-in/opt-out (consumed by comments plugin)",
-        skip_schema: true, // will move to comments plugin contributed schema
+        priority: 80,
+        description: "Per-page comment opt-in/opt-out",
         ..FIELD_DEFAULTS
     },
     BuiltinField {

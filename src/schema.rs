@@ -248,8 +248,8 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 22 non-skip fields generated from BUILTIN_FIELDS
-        assert_eq!(schema.frontmatter.fields.len(), 22);
+        // 25 non-skip fields: 22 original + review_of + rating + comments (was skip_schema)
+        assert_eq!(schema.frontmatter.fields.len(), 25);
     }
 
     #[test]
