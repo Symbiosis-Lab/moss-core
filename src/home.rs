@@ -25,6 +25,34 @@
 /// their behavior from this constant.
 pub const INDEX_STEMS: &[&str] = &["index", "readme", "_index", "main"];
 
+/// Known language suffixes for home file detection.
+///
+/// This is a hardcoded list used only in moss-core (which has no access to
+/// the i18n module). It covers the languages moss supports plus common extras.
+const KNOWN_LANG_SUFFIXES: &[&str] = &[
+    "en", "zh-hans", "zh-hant", "zh-cn", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "ru", "ar",
+];
+
+/// Strip a known language suffix from a file stem.
+///
+/// Returns the bare stem if the suffix after the last `.` is a recognized
+/// language code, otherwise returns `None`.
+///
+/// ```
+/// assert_eq!(moss_core::home::strip_lang_suffix("index.zh-hans"), Some("index"));
+/// assert_eq!(moss_core::home::strip_lang_suffix("index.v2"), None);
+/// assert_eq!(moss_core::home::strip_lang_suffix("index"), None);
+/// ```
+pub fn strip_lang_suffix(stem: &str) -> Option<&str> {
+    if let Some(dot_pos) = stem.rfind('.') {
+        let suffix = &stem[dot_pos + 1..];
+        if KNOWN_LANG_SUFFIXES.contains(&suffix.to_lowercase().as_str()) {
+            return Some(&stem[..dot_pos]);
+        }
+    }
+    None
+}
+
 /// Check if a filename stem (without extension) is a recognized home file.
 ///
 /// Matching is case-insensitive.
@@ -40,13 +68,24 @@ pub fn is_index_stem(stem: &str) -> bool {
 
 /// Check if a file stem acts as a home/index file in a given folder context.
 ///
-/// Returns true if the stem is a recognized index stem (index, readme, etc.)
-/// OR if it matches the parent folder name (self-named folder note).
-/// Matching is case-insensitive.
+/// Returns true if the stem is a recognized index stem (index, readme, etc.),
+/// including language-suffixed variants like `index.zh-hans`.
+/// Also matches self-named folder notes. Matching is case-insensitive.
 pub fn is_home_file(stem: &str, parent_folder_name: &str) -> bool {
-    is_index_stem(stem)
-        || (!parent_folder_name.is_empty()
-            && stem.to_lowercase() == parent_folder_name.to_lowercase())
+    // Direct index stem match
+    if is_index_stem(stem) {
+        return true;
+    }
+
+    // Language-suffixed index stem (e.g., "index.zh-hans")
+    if let Some(bare) = strip_lang_suffix(stem) {
+        if is_index_stem(bare) {
+            return true;
+        }
+    }
+
+    // Self-named folder note
+    !parent_folder_name.is_empty() && stem.to_lowercase() == parent_folder_name.to_lowercase()
 }
 
 /// Find the home file among filenames, with folder-name awareness.
@@ -55,14 +94,15 @@ pub fn is_home_file(stem: &str, parent_folder_name: &str) -> bool {
 /// (e.g., `recipes.md` inside a folder named `recipes`). Priority order:
 ///
 /// 1. INDEX_STEMS × .md (index.md > readme.md > _index.md > main.md)
-/// 2. index.{pages,docx}
-/// 3. Self-named: `foldername.md` (where foldername matches parent folder)
-/// 4. First document alphabetically
+/// 2. Language-suffixed index stems × .md (index.zh-hans.md > readme.en.md > ...)
+/// 3. index.{pages,docx}
+/// 4. Self-named: `foldername.md` (where foldername matches parent folder)
+/// 5. First document alphabetically
 pub fn detect_home_file_in_folder<'a>(
     filenames: &[&'a str],
     folder_name: &str,
 ) -> Option<&'a str> {
-    // Priority 1: index stems × .md
+    // Priority 1: bare index stems × .md
     for stem in INDEX_STEMS {
         let target_md = format!("{}.md", stem);
         if let Some(&f) = filenames.iter().find(|f| f.to_lowercase() == target_md) {
@@ -70,7 +110,23 @@ pub fn detect_home_file_in_folder<'a>(
         }
     }
 
-    // Priority 2: index × non-markdown
+    // Priority 2: language-suffixed index stems × .md
+    // e.g., index.zh-hans.md, readme.en.md
+    for stem in INDEX_STEMS {
+        if let Some(&f) = filenames.iter().find(|f| {
+            let lower = f.to_lowercase();
+            if let Some(name_without_ext) = lower.strip_suffix(".md") {
+                if let Some(bare) = strip_lang_suffix(name_without_ext) {
+                    return bare == *stem;
+                }
+            }
+            false
+        }) {
+            return Some(f);
+        }
+    }
+
+    // Priority 3: index × non-markdown
     for ext in &["pages", "docx"] {
         let target = format!("index.{}", ext);
         if let Some(&f) = filenames.iter().find(|f| f.to_lowercase() == target) {
@@ -78,13 +134,13 @@ pub fn detect_home_file_in_folder<'a>(
         }
     }
 
-    // Priority 3: self-named folder note
+    // Priority 4: self-named folder note
     let self_named = format!("{}.md", folder_name.to_lowercase());
     if let Some(&f) = filenames.iter().find(|f| f.to_lowercase() == self_named) {
         return Some(f);
     }
 
-    // Priority 4: first document alphabetically
+    // Priority 5: first document alphabetically
     let mut doc_files: Vec<&&str> = filenames
         .iter()
         .filter(|f| {
@@ -286,6 +342,49 @@ mod tests {
         assert_eq!(
             detect_home_file_in_folder(&files, "myfolder"),
             Some("index.md")
+        );
+    }
+
+    // --- i18n: language-suffixed home files ---
+
+    #[test]
+    fn test_is_home_file_with_zh_hans_suffix() {
+        assert!(is_home_file("index.zh-hans", "anything"));
+    }
+
+    #[test]
+    fn test_is_home_file_with_en_suffix() {
+        assert!(is_home_file("index.en", "anything"));
+    }
+
+    #[test]
+    fn test_is_home_file_with_zh_hant_suffix() {
+        assert!(is_home_file("readme.zh-hant", "anything"));
+    }
+
+    #[test]
+    fn test_is_home_file_non_language_suffix_rejected() {
+        // "v2" is not a language code — should NOT be treated as home file
+        assert!(!is_home_file("index.v2", "anything"));
+    }
+
+    #[test]
+    fn test_detect_home_bare_stem_wins_over_lang_suffix() {
+        // When both bare index.md and index.zh-hans.md exist, bare wins
+        let files = vec!["index.md", "index.zh-hans.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "root"),
+            Some("index.md")
+        );
+    }
+
+    #[test]
+    fn test_detect_home_lang_suffix_recognized_when_no_bare() {
+        // When only a language-suffixed index exists, it should still be home
+        let files = vec!["index.zh-hans.md", "about.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "root"),
+            Some("index.zh-hans.md")
         );
     }
 }
