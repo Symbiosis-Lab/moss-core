@@ -145,6 +145,14 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
 
     // --- Visual presentation ---
     BuiltinField {
+        name: "logo",
+        field_type: FieldType::String,
+        widget: Widget::FilePicker,
+        priority: 15,
+        description: "Site logo image path (rendered before site name in nav)",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "cover",
         field_type: FieldType::String,
         widget: Widget::FilePicker,
