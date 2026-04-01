@@ -341,6 +341,16 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
+        name: "content_width",
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["wide", "full"]),
+        priority: 75,
+        description: "Page width: default (67ch) for prose, wide (80ch) for grids/tables, full (site max) for dashboards",
+        label: Some("Width"),
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "layout",
         field_type: FieldType::String,
         widget: Widget::Select,
