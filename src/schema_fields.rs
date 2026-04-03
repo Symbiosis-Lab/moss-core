@@ -248,7 +248,15 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Checkbox,
         default_json: Some("true"),
         priority: 100,
-        description: "Whether to render child pages below content (true = show, false = hide)",
+        description: "Whether to render child pages below content. Accepts true/false or a wikilink like [[News]] to render a specific folder's articles.",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "children_source",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        skip_schema: true,
+        description: "Internal: wikilink reference parsed from children field (e.g. [[News]])",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
