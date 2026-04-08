@@ -57,6 +57,9 @@ pub struct BuiltinField {
     /// exposed in the editor schema or validation. Used for site-level config,
     /// auto-generated fields, and fields migrating to plugin-contributed schemas.
     pub skip_schema: bool,
+    /// UI group for the add-property dropdown. Fields with the same group
+    /// are displayed together. Empty string for skip_schema fields.
+    pub group: &'static str,
 }
 
 /// Default values for optional `BuiltinField` fields. Used with struct update
@@ -74,6 +77,7 @@ const FIELD_DEFAULTS: BuiltinField = BuiltinField {
     label: None,
     priority: 0,
     skip_schema: false,
+    group: "",
 };
 
 /// All builtin frontmatter fields recognized by moss.
@@ -82,7 +86,7 @@ const FIELD_DEFAULTS: BuiltinField = BuiltinField {
 /// drift detection test (which asserts every field here has a matching field
 /// in the `FrontMatter` struct, and vice versa).
 pub const BUILTIN_FIELDS: &[BuiltinField] = &[
-    // --- Content metadata ---
+    // --- Common ---
     BuiltinField {
         name: "title",
         field_type: FieldType::String,
@@ -90,6 +94,16 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         required: true,
         priority: 10,
         description: "Page title",
+        group: "Common",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "description",
+        field_type: FieldType::String,
+        widget: Widget::TextArea,
+        priority: 20,
+        description: "Page excerpt for SEO meta, og:description, and list previews",
+        group: "Common",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -99,14 +113,37 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         format: Some("date"),
         priority: 30,
         description: "Publication date (YYYY-MM-DD)",
+        group: "Common",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "weight",
-        field_type: FieldType::Integer,
-        widget: Widget::NumberInput,
-        priority: 70,
-        description: "Sort weight for ordering",
+        name: "tags",
+        field_type: FieldType::Array,
+        widget: Widget::TagInput,
+        items_type: Some(FieldType::String),
+        priority: 50,
+        description: "Content tags for organization",
+        group: "Common",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "draft",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        priority: 60,
+        description: "Mark as draft (excluded from build)",
+        group: "Common",
+        ..FIELD_DEFAULTS
+    },
+
+    // --- Occasional ---
+    BuiltinField {
+        name: "logo",
+        field_type: FieldType::String,
+        widget: Widget::FilePicker,
+        priority: 15,
+        description: "Site logo image path (rendered before site name in nav)",
+        group: "Occasional",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -115,41 +152,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         priority: 40,
         description: "Custom URL path override",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "description",
-        field_type: FieldType::String,
-        widget: Widget::TextArea,
-        priority: 20,
-        description: "Page excerpt for SEO meta, og:description, and list previews",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "lang",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 70,
-        description: "Language code (e.g. en, zh)",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "translationKey",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 70,
-        description: "Key to link translations of the same content",
-        label: Some("Translation Key"),
-        ..FIELD_DEFAULTS
-    },
-
-    // --- Visual presentation ---
-    BuiltinField {
-        name: "logo",
-        field_type: FieldType::String,
-        widget: Widget::FilePicker,
-        priority: 15,
-        description: "Site logo image path (rendered before site name in nav)",
+        group: "Occasional",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -158,6 +161,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::FilePicker,
         priority: 60,
         description: "Cover image path",
+        group: "Occasional",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -168,67 +172,31 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         skip_schema: true, // internal, auto-detected from cover path
         ..FIELD_DEFAULTS
     },
-
-    // --- Visibility & navigation ---
+    BuiltinField {
+        name: "lang",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 70,
+        description: "Language code (e.g. en, zh)",
+        group: "Occasional",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "weight",
+        field_type: FieldType::Integer,
+        widget: Widget::NumberInput,
+        priority: 70,
+        description: "Sort weight for ordering",
+        group: "Occasional",
+        ..FIELD_DEFAULTS
+    },
     BuiltinField {
         name: "nav",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
         priority: 80,
         description: "Whether to show in site navigation",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "draft",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
-        priority: 60,
-        description: "Mark as draft (excluded from build)",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "unlisted",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
-        priority: 80,
-        description: "Exclude from listings but still accessible",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "breadcrumb",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
-        priority: 80,
-        description: "Override site-wide breadcrumb setting for this page",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "footer",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
-        priority: 80,
-        description: "Show as a link in the site footer",
-        ..FIELD_DEFAULTS
-    },
-
-    // --- Organization ---
-    BuiltinField {
-        name: "tags",
-        field_type: FieldType::Array,
-        widget: Widget::TagInput,
-        items_type: Some(FieldType::String),
-        priority: 50,
-        description: "Content tags for organization",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "also_in",
-        field_type: FieldType::Array,
-        widget: Widget::TagInput,
-        items_type: Some(FieldType::String),
-        priority: 90,
-        description: "Cross-list this page in other sections",
-        label: Some("Also In"),
+        group: "Occasional",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -238,10 +206,11 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         items_type: Some(FieldType::String),
         priority: 90,
         description: "Declares children as sequential series. Use true for weight-based ordering, or a list of wikilinks for explicit order.",
+        group: "Occasional",
         ..FIELD_DEFAULTS
     },
 
-    // --- Children rendering ---
+    // --- Children ---
     BuiltinField {
         name: "children",
         field_type: FieldType::Boolean,
@@ -249,6 +218,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         default_json: Some("true"),
         priority: 100,
         description: "Whether to render child pages below content. Accepts true/false or a wikilink like [[News]] to render a specific folder's articles.",
+        group: "Children",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -260,14 +230,6 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "sidebar",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 90,
-        description: "Wikilink to folder whose children appear in sidebar (e.g. [[News]])",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
         name: "children_style",
         field_type: FieldType::String,
         widget: Widget::Select,
@@ -276,6 +238,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 100,
         description: "How child pages are rendered",
         label: Some("Style"),
+        group: "Children",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -286,6 +249,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 100,
         description: "How children are grouped: year (default for list) or none (default for card)",
         label: Some("Group"),
+        group: "Children",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -297,65 +261,49 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 100,
         description: "Whether to include only immediate children or all descendants",
         label: Some("Depth"),
+        group: "Children",
         ..FIELD_DEFAULTS
     },
 
-    // --- Cascade ---
+    // --- Navigation & Visibility ---
     BuiltinField {
-        name: "cascade",
-        field_type: FieldType::Object,
-        widget: Widget::CodeEditor,
-        priority: 110,
-        description: "Frontmatter values to push to all descendant pages",
-        ..FIELD_DEFAULTS
-    },
-
-    // --- Site-level config (skip_schema) ---
-    BuiltinField {
-        name: "analytics",
-        field_type: FieldType::Object,
-        widget: Widget::CodeEditor,
-        description: "Analytics configuration (site-level, read from homepage only)",
-        skip_schema: true,
-        ..FIELD_DEFAULTS
-    },
-
-    // --- Review metadata ---
-    BuiltinField {
-        name: "review_of",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 90,
-        description: "URL of item being reviewed (activates review feature)",
-        label: Some("Review Of"),
+        name: "breadcrumb",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        priority: 80,
+        description: "Override site-wide breadcrumb setting for this page",
+        group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "rating",
-        field_type: FieldType::Integer,
-        widget: Widget::NumberInput,
-        priority: 90,
-        description: "Author's rating of the reviewed item (1-5)",
+        name: "footer",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        priority: 80,
+        description: "Show as a link in the site footer",
+        group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
-
-    // --- Per-page overrides ---
+    BuiltinField {
+        name: "unlisted",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        priority: 80,
+        description: "Exclude from listings but still accessible",
+        group: "Navigation & Visibility",
+        ..FIELD_DEFAULTS
+    },
     BuiltinField {
         name: "comments",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
         priority: 80,
         description: "Per-page comment opt-in/opt-out",
+        group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
-    BuiltinField {
-        name: "uid",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        description: "Content-addressable unique identifier (auto-generated)",
-        skip_schema: true, // auto-generated, not user-editable
-        ..FIELD_DEFAULTS
-    },
+
+    // --- Layout & Presentation ---
     BuiltinField {
         name: "content_width",
         field_type: FieldType::String,
@@ -364,6 +312,87 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 75,
         description: "Page width: default (67ch) for prose, wide (80ch) for grids/tables, full (site max) for dashboards",
         label: Some("Width"),
+        group: "Layout & Presentation",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "sidebar",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 90,
+        description: "Wikilink to folder whose children appear in sidebar (e.g. [[News]])",
+        group: "Layout & Presentation",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "cascade",
+        field_type: FieldType::Object,
+        widget: Widget::CodeEditor,
+        priority: 110,
+        description: "Frontmatter values to push to all descendant pages",
+        group: "Layout & Presentation",
+        ..FIELD_DEFAULTS
+    },
+
+    // --- Cross-referencing & i18n ---
+    BuiltinField {
+        name: "also_in",
+        field_type: FieldType::Array,
+        widget: Widget::TagInput,
+        items_type: Some(FieldType::String),
+        priority: 90,
+        description: "Cross-list this page in other sections",
+        label: Some("Also In"),
+        group: "Cross-referencing & i18n",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "translationKey",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 70,
+        description: "Key to link translations of the same content",
+        label: Some("Translation Key"),
+        group: "Cross-referencing & i18n",
+        ..FIELD_DEFAULTS
+    },
+
+    // --- Review Metadata ---
+    BuiltinField {
+        name: "review_of",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 90,
+        description: "URL of item being reviewed (activates review feature)",
+        label: Some("Review Of"),
+        group: "Review Metadata",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "rating",
+        field_type: FieldType::Integer,
+        widget: Widget::NumberInput,
+        priority: 90,
+        description: "Author's rating of the reviewed item (1-5)",
+        group: "Review Metadata",
+        ..FIELD_DEFAULTS
+    },
+
+    // --- Skip schema (internal / site-level) ---
+    BuiltinField {
+        name: "analytics",
+        field_type: FieldType::Object,
+        widget: Widget::CodeEditor,
+        description: "Analytics configuration (site-level, read from homepage only)",
+        skip_schema: true,
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "uid",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        description: "Content-addressable unique identifier (auto-generated)",
+        skip_schema: true, // auto-generated, not user-editable
         ..FIELD_DEFAULTS
     },
     BuiltinField {

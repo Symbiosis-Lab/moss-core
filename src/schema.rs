@@ -80,6 +80,10 @@ pub struct FieldDefinition {
     /// See docs/architecture/plugin-schema-contributions.md.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// UI group name for the add-property dropdown (e.g. "Common", "Children").
+    /// `None` for plugin-contributed fields (shown in "Other" group).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// Supported field types.
@@ -176,6 +180,7 @@ pub fn builtin_schema() -> ContentSchema {
                 label: None,
                 priority: 0,
                 source: None,
+                group: None,
             })
         });
 
@@ -200,6 +205,7 @@ pub fn builtin_schema() -> ContentSchema {
             label: bf.label.map(|s| s.to_string()),
             priority: bf.priority,
             source: None,
+            group: if bf.group.is_empty() { None } else { Some(bf.group.to_string()) },
         };
 
         fields.insert(bf.name.to_string(), fd);
@@ -248,8 +254,20 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 26 non-skip fields: 22 original + review_of + rating + comments + content_width
-        assert_eq!(schema.frontmatter.fields.len(), 26);
+        // 27 non-skip fields
+        assert_eq!(schema.frontmatter.fields.len(), 27);
+    }
+
+    #[test]
+    fn test_all_non_skip_fields_have_group() {
+        let schema = builtin_schema();
+        for (name, field) in &schema.frontmatter.fields {
+            assert!(
+                field.group.is_some(),
+                "field '{}' is exposed in schema but has no group",
+                name
+            );
+        }
     }
 
     #[test]
