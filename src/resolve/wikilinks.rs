@@ -360,8 +360,10 @@ fn resolve_embed(
                     }
                 }
             } else {
-                // Markdown embed: produce <!-- moss-embed:path -->
-                let anchor = build_anchor(section);
+                // Markdown embed: produce <!-- moss-embed:path#anchor -->
+                // For embeds, preserve ^block-id so the embed resolver can
+                // distinguish block refs from heading refs.
+                let anchor = build_embed_anchor(section);
                 format!("<!-- moss-embed:{}{} -->", target_path, anchor)
             }
         }
@@ -393,6 +395,26 @@ fn build_anchor(section: Option<&str>) -> String {
             if let Some(block_id) = s.strip_prefix('^') {
                 // Block reference: use as-is (no slug transform)
                 format!("#{}", block_id)
+            } else {
+                // Heading reference: generate Obsidian-compatible anchor
+                format!("#{}", obsidian_heading_anchor(s))
+            }
+        }
+    }
+}
+
+/// Build the anchor fragment for an embed marker.
+///
+/// Unlike [`build_anchor`] (used for links), this preserves the `^` prefix
+/// on block references so the embed resolver can distinguish them from headings.
+fn build_embed_anchor(section: Option<&str>) -> String {
+    match section {
+        None => String::new(),
+        Some(s) if s.is_empty() => String::new(),
+        Some(s) => {
+            if s.starts_with('^') {
+                // Block reference: preserve ^prefix for embed resolver
+                format!("#{}", s)
             } else {
                 // Heading reference: generate Obsidian-compatible anchor
                 format!("#{}", obsidian_heading_anchor(s))
@@ -625,6 +647,18 @@ mod tests {
         assert_eq!(
             result.content,
             "<!-- moss-embed:guide.md#getting-started -->"
+        );
+    }
+
+    // 12b. Block-ref-scoped embed (preserves ^ for embed resolver)
+    #[test]
+    fn test_block_ref_scoped_embed() {
+        let graph = test_graph();
+        let result =
+            resolve_wikilinks("![[guide#^def-stem]]", &graph, "posts/hello.md");
+        assert_eq!(
+            result.content,
+            "<!-- moss-embed:guide.md#^def-stem -->"
         );
     }
 
