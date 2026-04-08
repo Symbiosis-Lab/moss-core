@@ -133,17 +133,35 @@ fn resolve_embeds_inner(
                     let body = strip_frontmatter(&file_content);
 
                     let section = if let Some(anchor) = heading_anchor {
-                        match extract_heading_section(body, anchor) {
-                            Some(section) => section,
-                            None => {
-                                diagnostics.push(Diagnostic {
-                                    message: format!(
-                                        "Heading '#{anchor}' not found in '{file_path}'"
-                                    ),
-                                    source_path: from_path.to_string(),
-                                    reference: target.to_string(),
-                                });
-                                body.to_string()
+                        if let Some(block_id) = anchor.strip_prefix('^') {
+                            // Block reference: find paragraph containing ^block_id
+                            match extract_block_section(body, block_id) {
+                                Some(section) => section,
+                                None => {
+                                    diagnostics.push(Diagnostic {
+                                        message: format!(
+                                            "Block reference '^{block_id}' not found in '{file_path}'"
+                                        ),
+                                        source_path: from_path.to_string(),
+                                        reference: target.to_string(),
+                                    });
+                                    body.to_string()
+                                }
+                            }
+                        } else {
+                            // Heading reference
+                            match extract_heading_section(body, anchor) {
+                                Some(section) => section,
+                                None => {
+                                    diagnostics.push(Diagnostic {
+                                        message: format!(
+                                            "Heading '#{anchor}' not found in '{file_path}'"
+                                        ),
+                                        source_path: from_path.to_string(),
+                                        reference: target.to_string(),
+                                    });
+                                    body.to_string()
+                                }
                             }
                         }
                     } else {
@@ -304,6 +322,27 @@ fn extract_heading_section(body: &str, target_anchor: &str) -> Option<String> {
 
     let section = lines[start..end_idx].join("\n");
     Some(section)
+}
+
+/// Extract the line containing a block reference marker, with the marker stripped.
+///
+/// Block references are `^id` markers at the end of a line, preceded by a space.
+/// Returns the line content without the marker, or `None` if not found.
+///
+/// The space-before-`^` check prevents substring collisions: looking up `^stem`
+/// must not match a line tagged `^def-stem`.
+fn extract_block_section(body: &str, block_id: &str) -> Option<String> {
+    let marker = format!(" ^{}", block_id);
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.ends_with(&marker) {
+            let content = trimmed[..trimmed.len() - marker.len()].trim_end();
+            if !content.is_empty() {
+                return Some(content.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Parse a markdown heading line into (level, text).
@@ -650,5 +689,70 @@ mod tests {
         assert_eq!(parse_heading("Not a heading"), None);
         assert_eq!(parse_heading("#NoSpace"), None);
         assert_eq!(parse_heading(""), None);
+    }
+
+    #[test]
+    fn test_block_ref_embed() {
+        let mut files = HashMap::new();
+        files.insert(
+            "concepts.md".to_string(),
+            "---\ntitle: Concepts\n---\nA **stem** is a folder's own page. ^def-stem\n\nA **leaf** is an article. ^def-leaf"
+                .to_string(),
+        );
+
+        let content = "<!-- moss-embed:concepts.md#^def-stem -->";
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
+
+        assert!(result.content.contains("stem"), "Should contain 'stem'");
+        assert!(!result.content.contains("leaf"), "Should not contain 'leaf'");
+        assert!(
+            !result.content.contains("^def-stem"),
+            "Should strip block ref marker"
+        );
+        assert!(result.diagnostics.is_empty(), "Should have no diagnostics");
+    }
+
+    #[test]
+    fn test_block_ref_not_found() {
+        let mut files = HashMap::new();
+        files.insert(
+            "note.md".to_string(),
+            "---\ntitle: Note\n---\nSome content.".to_string(),
+        );
+
+        let content = "<!-- moss-embed:note.md#^nonexistent -->";
+        let result = resolve_embeds(content, "index.md", &mock_reader(&files));
+
+        assert_eq!(result.diagnostics.len(), 1);
+        assert!(result.diagnostics[0]
+            .message
+            .contains("Block reference"));
+    }
+
+    #[test]
+    fn test_extract_block_section_basic() {
+        let body = "First paragraph.\n\nA **stem** is a folder's own page. ^def-stem\n\nLast paragraph.";
+        let section = extract_block_section(body, "def-stem");
+        assert!(section.is_some());
+        let s = section.unwrap();
+        assert!(s.contains("stem"));
+        assert!(!s.contains("^def-stem"));
+        assert!(!s.contains("Last paragraph"));
+    }
+
+    #[test]
+    fn test_extract_block_section_not_found() {
+        let body = "No block refs here.";
+        assert!(extract_block_section(body, "missing").is_none());
+    }
+
+    #[test]
+    fn test_extract_block_section_no_substring_collision() {
+        let body = "About stems. ^stem\nA **stem** is a folder's own page. ^def-stem";
+        // Looking for "stem" must match the line tagged ^stem, not ^def-stem
+        let section = extract_block_section(body, "stem");
+        assert!(section.is_some());
+        assert!(section.as_ref().unwrap().contains("About stems"));
+        assert!(!section.unwrap().contains("folder"));
     }
 }
