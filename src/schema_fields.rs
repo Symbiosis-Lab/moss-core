@@ -305,6 +305,18 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
 
     // --- Layout & Presentation ---
     BuiltinField {
+        name: "typesetting",
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["horizontal", "vertical"]),
+        default_json: Some("\"horizontal\""),
+        priority: 50,
+        description: "Typesetting direction: horizontal (default) or vertical (right-to-left columns for CJK content)",
+        label: Some("Typesetting"),
+        group: "Layout & Presentation",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "content_width",
         field_type: FieldType::String,
         widget: Widget::Select,

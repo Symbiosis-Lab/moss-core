@@ -362,7 +362,7 @@ mod tests {
         let schema = builtin_schema();
         let fm = make_fm(&[
             ("title", str_val("Test")),
-            ("children_style", str_val("grid")), // not in ["list", "summary"]
+            ("children_style", str_val("table")), // not in ["list", "summary", "grid"]
         ]);
 
         let diags = validate_frontmatter(&fm, &schema);
@@ -371,7 +371,7 @@ mod tests {
             .filter(|d| d.severity == Severity::Error && d.message.contains("children_style"))
             .collect();
         assert_eq!(enum_errs.len(), 1);
-        assert!(enum_errs[0].message.contains("grid"));
+        assert!(enum_errs[0].message.contains("table"));
     }
 
     #[test]
