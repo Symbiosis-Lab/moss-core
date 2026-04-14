@@ -13,4 +13,5 @@ pub mod media;
 pub mod resolve;
 pub mod schema;
 pub mod schema_fields;
+pub mod shortcode_tokens;
 pub mod validation;
