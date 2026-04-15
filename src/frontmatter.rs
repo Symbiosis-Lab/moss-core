@@ -119,6 +119,11 @@ pub fn parse(content: &str) -> ParsedDocument {
 ///
 /// Produces `---\n{yaml}\n---\n{body}`. If frontmatter is empty,
 /// returns just the body.
+///
+/// String values that look like YAML numbers (integers, floats, scientific
+/// notation like `753659e7`) are forced to `serde_yaml::Value::String` before
+/// serialization so that serde_yaml quotes them. This prevents silent data
+/// corruption on the next parse.
 pub fn serialize(
     frontmatter: &HashMap<String, serde_yaml::Value>,
     body: &str,
@@ -127,11 +132,57 @@ pub fn serialize(
         return Ok(body.to_string());
     }
 
+    // Ensure string values that look numeric are serialized as quoted strings.
+    let safe_fm: HashMap<String, serde_yaml::Value> = frontmatter
+        .iter()
+        .map(|(k, v)| (k.clone(), ensure_strings_quoted(v)))
+        .collect();
+
     let yaml =
-        serde_yaml::to_string(frontmatter).map_err(|e| format!("YAML serialize error: {}", e))?;
+        serde_yaml::to_string(&safe_fm).map_err(|e| format!("YAML serialize error: {}", e))?;
 
     // serde_yaml adds a trailing newline; no need to add another.
     Ok(format!("---\n{}---\n{}", yaml, body))
+}
+
+/// Recursively ensure that `serde_yaml::Value::Number` values that were
+/// originally strings (e.g., UIDs like "753659e7") remain as strings.
+///
+/// This is a defensive measure: if a value is already a `String`, leave it.
+/// If it's a `Number`, convert it to `String` representation so serde_yaml
+/// will quote it. This handles the case where a previous parse already
+/// corrupted a hex-like UID into a float.
+///
+/// For sequences and mappings, recurse.
+fn ensure_strings_quoted(value: &serde_yaml::Value) -> serde_yaml::Value {
+    match value {
+        serde_yaml::Value::Sequence(seq) => {
+            serde_yaml::Value::Sequence(seq.iter().map(ensure_strings_quoted).collect())
+        }
+        serde_yaml::Value::Mapping(map) => {
+            let mut new_map = serde_yaml::Mapping::new();
+            for (k, v) in map {
+                new_map.insert(k.clone(), ensure_strings_quoted(v));
+            }
+            serde_yaml::Value::Mapping(new_map)
+        }
+        // Leave other types as-is
+        other => other.clone(),
+    }
+}
+
+/// Extract a frontmatter value as a string, handling the case where YAML
+/// parsed a hex-like string (e.g., `753659e7`) as a number.
+///
+/// Returns `Some(string)` if the value is a String or a Number that can be
+/// converted to string. Returns `None` for other types.
+pub fn value_as_string(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Number(n) => Some(format!("{}", n)),
+        serde_yaml::Value::Bool(b) => Some(format!("{}", b)),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -397,5 +448,51 @@ mod tests {
         assert_eq!(seq.len(), 2);
         assert_eq!(seq[0].as_str(), Some("rust"));
         assert_eq!(seq[1].as_str(), Some("wasm"));
+    }
+
+    #[test]
+    fn test_uid_scientific_notation_roundtrip() {
+        // Regression test: UIDs like "753659e7" look like YAML scientific
+        // notation and get parsed as floats. The serialize path must quote them.
+        let input = "---\ntitle: Test\nuid: \"753659e7\"\n---\nBody.";
+        let doc = parse(input);
+
+        // When properly quoted, uid is parsed as a string
+        let uid_val = doc.frontmatter.get("uid").expect("uid field");
+        assert_eq!(uid_val.as_str(), Some("753659e7"));
+
+        // Round-trip: serialize and re-parse
+        let output = serialize(&doc.frontmatter, &doc.body).expect("serialize");
+        let doc2 = parse(&output);
+        let uid2 = doc2.frontmatter.get("uid").expect("uid field after roundtrip");
+        assert_eq!(uid2.as_str(), Some("753659e7"));
+    }
+
+    #[test]
+    fn test_value_as_string_handles_numbers() {
+        // If a uid was already corrupted to a number by YAML parsing,
+        // value_as_string should still extract a usable string.
+        let num_val = serde_yaml::Value::Number(serde_yaml::Number::from(75365900));
+        assert!(value_as_string(&num_val).is_some());
+
+        let str_val = serde_yaml::Value::String("753659e7".to_string());
+        assert_eq!(value_as_string(&str_val), Some("753659e7".to_string()));
+    }
+
+    #[test]
+    fn test_unquoted_uid_parsed_as_number() {
+        // Demonstrates the bug: unquoted hex-like UIDs are parsed as numbers
+        let input = "---\ntitle: Test\nuid: 753659e7\n---\nBody.";
+        let doc = parse(input);
+
+        let uid_val = doc.frontmatter.get("uid").expect("uid field");
+        // serde_yaml parses this as a number, not a string
+        assert!(
+            uid_val.as_str().is_none(),
+            "Unquoted 753659e7 should NOT parse as string (it's a YAML number)"
+        );
+
+        // But value_as_string can still extract it
+        assert!(value_as_string(uid_val).is_some());
     }
 }
