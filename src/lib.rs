@@ -8,6 +8,7 @@
 pub mod content_graph;
 pub mod home;
 pub mod frontmatter;
+pub mod link_candidates;
 pub mod heading_anchor;
 pub mod media;
 pub mod resolve;
