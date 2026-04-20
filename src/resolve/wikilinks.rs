@@ -823,4 +823,113 @@ mod tests {
         assert!(!is_all_display_keywords(""));
         assert!(!is_all_display_keywords("   "));
     }
+
+    // -- Language-tree aware wikilink resolution (Task 2.4) --
+
+    /// Build a content graph from a simple filename -> content map.
+    /// Used by language-tree tests below.
+    fn build_graph_for_test(files: &std::collections::HashMap<String, String>) -> ContentGraph {
+        let mut b = ContentGraphBuilder::new();
+        for path in files.keys() {
+            let slug = path.trim_end_matches(".md").to_string();
+            b.add_file(path, &slug);
+        }
+        b.build()
+    }
+
+    #[test]
+    fn test_wikilink_prefers_same_language_tree() {
+        // Two footer.md files: one at root (EN), one under zh-hans/ (中文)
+        // ![[footer]] from zh-hans/about.md should resolve to zh-hans/footer.md
+        let mut files = std::collections::HashMap::new();
+        files.insert("footer.md".to_string(), "EN footer content".to_string());
+        files.insert("zh-hans/footer.md".to_string(), "ZH footer content".to_string());
+        files.insert(
+            "zh-hans/about.md".to_string(),
+            "About\n\n![[footer]]".to_string(),
+        );
+
+        let graph = build_graph_for_test(&files);
+        let result = resolve_wikilinks(
+            &files["zh-hans/about.md"],
+            &graph,
+            "zh-hans/about.md",
+        );
+
+        assert!(
+            result.content.contains("moss-embed:zh-hans/footer.md"),
+            "Expected zh-hans/footer.md embed; got {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_wikilink_falls_back_when_no_same_tree_match() {
+        // Only one footer.md at root; zh-hans page's ![[footer]] falls back.
+        let mut files = std::collections::HashMap::new();
+        files.insert("footer.md".to_string(), "EN footer".to_string());
+        files.insert(
+            "zh-hans/about.md".to_string(),
+            "About\n\n![[footer]]".to_string(),
+        );
+
+        let graph = build_graph_for_test(&files);
+        let result = resolve_wikilinks(
+            &files["zh-hans/about.md"],
+            &graph,
+            "zh-hans/about.md",
+        );
+
+        assert!(
+            result.content.contains("moss-embed:footer.md"),
+            "Expected fallback to root footer.md; got {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_wikilink_root_prefers_root() {
+        // When the source is at root, it prefers root-level siblings,
+        // not a lang-prefixed namesake.
+        let mut files = std::collections::HashMap::new();
+        files.insert("footer.md".to_string(), "EN".to_string());
+        files.insert("zh-hans/footer.md".to_string(), "ZH".to_string());
+        files.insert("index.md".to_string(), "![[footer]]".to_string());
+
+        let graph = build_graph_for_test(&files);
+        let result = resolve_wikilinks(&files["index.md"], &graph, "index.md");
+
+        assert!(
+            result.content.contains("moss-embed:footer.md"),
+            "Root source should resolve to root footer.md; got {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("moss-embed:zh-hans/footer.md"),
+            "Should NOT prefer zh-hans sibling from root source; got {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_explicit_path_overrides_language_preference() {
+        // ![[zh-hans/footer]] from root should still resolve to zh-hans/footer.md
+        // even though the root-tree preference would default to footer.md.
+        let mut files = std::collections::HashMap::new();
+        files.insert("footer.md".to_string(), "root".to_string());
+        files.insert("zh-hans/footer.md".to_string(), "zh-hans version".to_string());
+        files.insert(
+            "index.md".to_string(),
+            "![[zh-hans/footer]]".to_string(),
+        );
+
+        let graph = build_graph_for_test(&files);
+        let result = resolve_wikilinks(&files["index.md"], &graph, "index.md");
+
+        assert!(
+            result.content.contains("moss-embed:zh-hans/footer.md"),
+            "Explicit paths should be honored; got {}",
+            result.content
+        );
+    }
 }

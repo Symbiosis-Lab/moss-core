@@ -59,6 +59,25 @@ fn common_prefix_len(a: &[&str], b: &[&str]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
+/// Score a candidate path's language-tree alignment with the source's
+/// language-tree prefix.
+///
+/// Both inputs should be normalized (lowercase).  Returns 1 when the candidate
+/// is in the same language tree as the source (either both share the same
+/// language prefix, or both are tree-less/root-level), 0 otherwise.
+///
+/// This is used as a tiebreaker in [`ContentGraph::resolve_path`] so that
+/// `![[footer]]` from `zh-hans/about.md` picks `zh-hans/footer.md` over a
+/// root-level `footer.md`, and conversely root sources prefer root candidates.
+fn lang_tree_match(candidate: &str, from_lang: Option<&str>) -> u8 {
+    let cand_lang = crate::home::lang_tree_prefix(candidate);
+    match (from_lang, cand_lang) {
+        (Some(f), Some(c)) if f.eq_ignore_ascii_case(c) => 1,
+        (None, None) => 1,
+        _ => 0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Slug generation
 // ---------------------------------------------------------------------------
@@ -141,9 +160,31 @@ impl ContentGraph {
         let norm_ref = normalize_path(reference);
         let norm_from = normalize_path(from_path);
 
+        // Language-tree prefix of the source file, if any.
+        // E.g. "zh-hans/about.md" -> Some("zh-hans").  Used to prefer
+        // same-language-tree candidates when the reference is bare (no slash).
+        let from_lang = crate::home::lang_tree_prefix(&norm_from);
+
         // 1. Exact path match
         if self.path_index.contains_key(&norm_ref) {
             return Some(self.files[self.path_index[&norm_ref]].clone());
+        }
+
+        // 1b. Bare reference (no slash) from a language-tree source:
+        // prefer a same-language-tree sibling before falling back to root.
+        // e.g. ![[footer]] from "zh-hans/about.md" should match
+        //      "zh-hans/footer.md" if it exists, not root "footer.md".
+        if !norm_ref.contains('/') {
+            if let Some(lang) = from_lang {
+                let scoped = format!("{}/{}", lang, norm_ref);
+                if let Some(&idx) = self.path_index.get(&scoped) {
+                    return Some(self.files[idx].clone());
+                }
+                let scoped_md = format!("{}/{}.md", lang, norm_ref);
+                if let Some(&idx) = self.path_index.get(&scoped_md) {
+                    return Some(self.files[idx].clone());
+                }
+            }
         }
 
         // 2. Exact + .md
@@ -187,8 +228,10 @@ impl ContentGraph {
                 if candidates.len() > 1 {
                     let from_dirs = dir_components(&norm_from);
                     let best = candidates.iter().copied().max_by_key(|&idx| {
-                        let candidate_dirs = dir_components(&self.files[idx]);
-                        common_prefix_len(&candidate_dirs, &from_dirs)
+                        let normalized = normalize_path(&self.files[idx]);
+                        let candidate_dirs = dir_components(&normalized);
+                        let tree_match = lang_tree_match(&normalized, from_lang);
+                        (tree_match, common_prefix_len(&candidate_dirs, &from_dirs))
                     });
                     if let Some(idx) = best {
                         return Some(self.files[idx].clone());
@@ -210,14 +253,18 @@ impl ContentGraph {
                 if candidates.len() == 1 {
                     return Some(self.files[candidates[0]].clone());
                 }
-                // Ambiguity tiebreaker: longest common directory prefix with from_path
+                // Ambiguity tiebreakers, in priority order:
+                //   1. Same language tree as the source (or both tree-less)
+                //   2. Longest common directory prefix with from_path
                 let from_dirs = dir_components(&norm_from);
                 let best = candidates
                     .iter()
                     .copied()
                     .max_by_key(|&idx| {
-                        let candidate_dirs = dir_components(&self.files[idx]);
-                        common_prefix_len(&candidate_dirs, &from_dirs)
+                        let normalized = normalize_path(&self.files[idx]);
+                        let candidate_dirs = dir_components(&normalized);
+                        let tree_match = lang_tree_match(&normalized, from_lang);
+                        (tree_match, common_prefix_len(&candidate_dirs, &from_dirs))
                     });
                 if let Some(idx) = best {
                     return Some(self.files[idx].clone());

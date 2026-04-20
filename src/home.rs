@@ -34,10 +34,41 @@ pub const INDEX_STEMS: &[&str] = &["index", "readme", "_index", "main"];
 /// the normalization from `zh` → `zh-hans` happens in the i18n layer
 /// (`Language::from_code`), not here. This list only governs which suffixes
 /// are recognized as language suffixes at all.
-const KNOWN_LANG_SUFFIXES: &[&str] = &[
+pub const KNOWN_LANG_SUFFIXES: &[&str] = &[
     "en", "zh", "zh-hans", "zh-hant", "zh-cn", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "ru",
     "ar",
 ];
+
+/// If `path` is rooted under a known language-tree directory (e.g.
+/// `"zh-hans/about.md"`), return that directory component (e.g. `"zh-hans"`).
+///
+/// Returns `None` when the path has no parent directory (root-level file)
+/// or when the first path component is not a recognized language code.
+/// Matching is case-insensitive.
+///
+/// Used by wikilink resolution to prefer same-language-tree candidates.
+///
+/// ```
+/// use moss_core::home::lang_tree_prefix;
+/// assert_eq!(lang_tree_prefix("zh-hans/about.md"), Some("zh-hans"));
+/// assert_eq!(lang_tree_prefix("ZH-HANS/about.md"), Some("ZH-HANS"));
+/// assert_eq!(lang_tree_prefix("fr/deep/page.md"), Some("fr"));
+/// assert_eq!(lang_tree_prefix("posts/hello.md"), None);
+/// assert_eq!(lang_tree_prefix("index.md"), None);
+/// assert_eq!(lang_tree_prefix(""), None);
+/// ```
+pub fn lang_tree_prefix(path: &str) -> Option<&str> {
+    let first = path.split('/').next()?;
+    // Must have at least one more component after it (so it's a directory).
+    if first.len() == path.len() {
+        return None;
+    }
+    if KNOWN_LANG_SUFFIXES.contains(&first.to_lowercase().as_str()) {
+        Some(first)
+    } else {
+        None
+    }
+}
 
 /// Strip a known language suffix from a file stem.
 ///
