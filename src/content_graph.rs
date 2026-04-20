@@ -153,9 +153,9 @@ impl ContentGraph {
     /// 4. Filename + `.md` match
     /// 5. Folder note: `reference/index.md` or `reference/<reference>.md`
     ///
-    /// When multiple candidates match (e.g. same filename in different dirs),
-    /// the candidate sharing the longest common directory prefix with
-    /// `from_path` wins.
+    /// Ambiguity tiebreakers, applied in order:
+    /// candidates in the same language tree as the source are preferred first;
+    /// then longest common directory prefix with `from_path`; then alphabetical.
     pub fn resolve_path(&self, reference: &str, from_path: &str) -> Option<String> {
         let norm_ref = normalize_path(reference);
         let norm_from = normalize_path(from_path);
@@ -228,6 +228,9 @@ impl ContentGraph {
                 if candidates.len() > 1 {
                     let from_dirs = dir_components(&norm_from);
                     let best = candidates.iter().copied().max_by_key(|&idx| {
+                        // self.files stores original (pre-normalized) paths for
+                        // filesystem fidelity; re-normalize here to compare
+                        // against norm_from and lang_tree_prefix output.
                         let normalized = normalize_path(&self.files[idx]);
                         let candidate_dirs = dir_components(&normalized);
                         let tree_match = lang_tree_match(&normalized, from_lang);
@@ -261,6 +264,9 @@ impl ContentGraph {
                     .iter()
                     .copied()
                     .max_by_key(|&idx| {
+                        // self.files stores original (pre-normalized) paths for
+                        // filesystem fidelity; re-normalize here to compare
+                        // against norm_from and lang_tree_prefix output.
                         let normalized = normalize_path(&self.files[idx]);
                         let candidate_dirs = dir_components(&normalized);
                         let tree_match = lang_tree_match(&normalized, from_lang);

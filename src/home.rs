@@ -34,7 +34,7 @@ pub const INDEX_STEMS: &[&str] = &["index", "readme", "_index", "main"];
 /// the normalization from `zh` → `zh-hans` happens in the i18n layer
 /// (`Language::from_code`), not here. This list only governs which suffixes
 /// are recognized as language suffixes at all.
-pub const KNOWN_LANG_SUFFIXES: &[&str] = &[
+const KNOWN_LANG_SUFFIXES: &[&str] = &[
     "en", "zh", "zh-hans", "zh-hant", "zh-cn", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "ru",
     "ar",
 ];
