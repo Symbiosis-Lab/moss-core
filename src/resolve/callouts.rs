@@ -23,7 +23,7 @@
 pub fn transform_callouts(content: &str) -> String {
     const SUPPORTED_TYPES: &[&str] = &[
         "note", "tip", "warning", "caution", "important", "info", "abstract", "todo", "success",
-        "question", "failure", "danger", "bug", "example", "quote",
+        "question", "failure", "danger", "bug", "example", "quote", "pending",
     ];
 
     let lines: Vec<&str> = content.lines().collect();
@@ -298,5 +298,15 @@ mod tests {
             html_escape("<script>alert(\"xss\");</script>"),
             "&lt;script&gt;alert(&quot;xss&quot;);&lt;/script&gt;"
         );
+    }
+
+    #[test]
+    fn test_pending_callout_type() {
+        let input = "> [!pending] Trailer video\n> Add when ready.";
+        let result = transform_callouts(input);
+        assert!(result.contains(r#"<div class="callout callout-pending">"#),
+            "Expected callout-pending class. Got: {}", result);
+        assert!(result.contains("Trailer video"), "Expected title");
+        assert!(result.contains("Add when ready."), "Expected body");
     }
 }
