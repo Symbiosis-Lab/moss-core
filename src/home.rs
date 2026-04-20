@@ -29,8 +29,14 @@ pub const INDEX_STEMS: &[&str] = &["index", "readme", "_index", "main"];
 ///
 /// This is a hardcoded list used only in moss-core (which has no access to
 /// the i18n module). It covers the languages moss supports plus common extras.
+///
+/// Bare `"zh"` is accepted as shorthand for Simplified Chinese (`zh-hans`);
+/// the normalization from `zh` → `zh-hans` happens in the i18n layer
+/// (`Language::from_code`), not here. This list only governs which suffixes
+/// are recognized as language suffixes at all.
 const KNOWN_LANG_SUFFIXES: &[&str] = &[
-    "en", "zh-hans", "zh-hant", "zh-cn", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "ru", "ar",
+    "en", "zh", "zh-hans", "zh-hant", "zh-cn", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "ru",
+    "ar",
 ];
 
 /// Strip a known language suffix from a file stem.
@@ -385,6 +391,48 @@ mod tests {
         assert_eq!(
             detect_home_file_in_folder(&files, "root"),
             Some("index.zh-hans.md")
+        );
+    }
+
+    // --- Task 2.6: `zh` as shorthand for `zh-hans` ---
+
+    #[test]
+    fn test_strip_lang_suffix_zh_shorthand_accepted() {
+        // `.zh` should be recognized as a language suffix (shorthand for zh-hans)
+        assert_eq!(strip_lang_suffix("about.zh"), Some("about"));
+    }
+
+    #[test]
+    fn test_strip_lang_suffix_zh_hans_still_works() {
+        // Backward compat: zh-hans still works
+        assert_eq!(strip_lang_suffix("about.zh-hans"), Some("about"));
+    }
+
+    #[test]
+    fn test_strip_lang_suffix_zh_hant_still_works() {
+        // zh-hant stays distinct (strip_lang_suffix only returns stem)
+        assert_eq!(strip_lang_suffix("about.zh-hant"), Some("about"));
+    }
+
+    #[test]
+    fn test_strip_lang_suffix_zh_tw_still_works() {
+        // zh-tw stays distinct (strip_lang_suffix only returns stem)
+        assert_eq!(strip_lang_suffix("about.zh-tw"), Some("about"));
+    }
+
+    #[test]
+    fn test_is_home_file_with_zh_shorthand_suffix() {
+        // `index.zh.md` stem is `index.zh` — should be recognized as home
+        assert!(is_home_file("index.zh", "anything"));
+    }
+
+    #[test]
+    fn test_detect_home_zh_shorthand_recognized() {
+        // index.zh.md (shorthand) should be recognized as home when no bare exists
+        let files = vec!["index.zh.md", "about.md"];
+        assert_eq!(
+            detect_home_file_in_folder(&files, "root"),
+            Some("index.zh.md")
         );
     }
 }
