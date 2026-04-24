@@ -25,6 +25,9 @@
 
 use std::sync::OnceLock;
 
+mod common;
+use common::{build_src, dim_attrs, file_stem, html_escape_attr, path_extension_lower};
+
 // ---------------------------------------------------------------------------
 // Reserved classnames (HTML/CSS contract, per moss#508)
 // ---------------------------------------------------------------------------
@@ -247,13 +250,7 @@ impl EmbedRenderer for ImageRenderer {
     }
 }
 
-pub(crate) fn file_stem(path: &str) -> String {
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    match filename.rfind('.') {
-        Some(pos) if pos > 0 => filename[..pos].to_string(),
-        _ => filename.to_string(),
-    }
-}
+// file_stem now lives in common.rs — imported via common::file_stem below.
 
 // ---------------------------------------------------------------------------
 // MarkdownEmbedRenderer
@@ -319,7 +316,7 @@ impl EmbedRenderer for IframeRenderer {
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let src = build_src(&url, embed.query, embed.section);
-        let (width_attr, height_attr) = iframe_dim_attrs(embed.alias);
+        let (width_attr, height_attr) = dim_attrs(embed.alias);
         let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_IFRAME);
         let title_attr = iframe_title_attr(embed.alias);
 
@@ -350,43 +347,7 @@ fn iframe_title_attr(alias: Option<&str>) -> String {
     format!(" title=\"{}\"", html_escape_attr(a))
 }
 
-/// Build an iframe `src` URL: `path?query#fragment` (URL order, independent
-/// of authoring order).
-fn build_src(path: &str, query: Option<&str>, fragment: Option<&str>) -> String {
-    let mut out = String::from(path);
-    if let Some(q) = query {
-        out.push('?');
-        out.push_str(q);
-    }
-    if let Some(f) = fragment {
-        out.push('#');
-        out.push_str(f);
-    }
-    out
-}
-
-/// Parse `|WxH` into iframe width/height attribute strings (leading space each).
-fn iframe_dim_attrs(alias: Option<&str>) -> (String, String) {
-    let Some(a) = alias else {
-        return (String::new(), String::new());
-    };
-    match Sizing::parse(a) {
-        Some(Sizing::Width(w)) => (format!(" width=\"{}\"", w.to_css()), String::new()),
-        Some(Sizing::Box(w, h)) => (
-            format!(" width=\"{}\"", w.to_css()),
-            format!(" height=\"{}\"", h.to_css()),
-        ),
-        None => (String::new(), String::new()),
-    }
-}
-
-/// Minimal HTML attribute-value escaper for `src` / `title`.
-fn html_escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
+// build_src, dim_attrs, html_escape_attr now live in common.rs — imported above.
 
 #[cfg(test)]
 mod tests {
