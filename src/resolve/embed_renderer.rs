@@ -41,10 +41,54 @@ pub trait EmbedRenderer: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// MarkdownEmbedRenderer
+// ImageRenderer
 // ---------------------------------------------------------------------------
 
 use crate::heading_anchor::obsidian_heading_anchor;
+use crate::media::{format_img_tag, is_all_display_keywords, parse_media_attrs};
+
+use super::fuzzy_path::relative_asset_path;
+
+/// Image file extensions recognized by `ImageRenderer`.
+pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
+
+/// Renderer for image embeds: `![[photo.jpg]]` → `<img>` or `![alt](url)`.
+pub struct ImageRenderer;
+
+impl EmbedRenderer for ImageRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        IMAGE_EXTENSIONS
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        let url = relative_asset_path(embed.from_path, embed.resolved_path);
+        let out = match embed.alias {
+            Some(alias_text) if is_all_display_keywords(alias_text) => {
+                let alt = file_stem(embed.resolved_path);
+                let attrs = parse_media_attrs(alias_text);
+                format_img_tag(&url, &alt, &attrs)
+            }
+            Some(alias_text) => format!("![{}]({})", alias_text, url),
+            None => {
+                let alt = file_stem(embed.resolved_path);
+                format!("![{}]({})", alt, url)
+            }
+        };
+        RenderedEmbed::Inline(out)
+    }
+}
+
+pub(crate) fn file_stem(path: &str) -> String {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    match filename.rfind('.') {
+        Some(pos) if pos > 0 => filename[..pos].to_string(),
+        _ => filename.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MarkdownEmbedRenderer
+// ---------------------------------------------------------------------------
 
 /// Renderer for markdown transclusion: `![[file.md]]` → `<!-- moss-embed:path -->`.
 ///
@@ -169,5 +213,70 @@ mod tests {
     #[test]
     fn test_markdown_embed_renderer_extensions() {
         assert_eq!(MarkdownEmbedRenderer.extensions(), &["md"]);
+    }
+
+    // --- ImageRenderer ---
+
+    #[test]
+    fn test_image_renderer_no_alias() {
+        let r = ImageRenderer;
+        let embed = ParsedEmbed {
+            resolved_path: "assets/photo.jpg",
+            from_path: "posts/hello.md",
+            query: None,
+            section: None,
+            alias: None,
+        };
+        assert_eq!(
+            r.render(&embed),
+            RenderedEmbed::Inline("![photo](../assets/photo.jpg)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_image_renderer_alias_plain_text() {
+        let r = ImageRenderer;
+        let embed = ParsedEmbed {
+            resolved_path: "photo.jpg",
+            from_path: "hello.md",
+            query: None,
+            section: None,
+            alias: Some("A lovely cat"),
+        };
+        assert_eq!(
+            r.render(&embed),
+            RenderedEmbed::Inline("![A lovely cat](photo.jpg)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_image_renderer_display_keywords() {
+        let r = ImageRenderer;
+        let embed = ParsedEmbed {
+            resolved_path: "photo.jpg",
+            from_path: "hello.md",
+            query: None,
+            section: None,
+            alias: Some("contain"),
+        };
+        let out = match r.render(&embed) {
+            RenderedEmbed::Inline(s) => s,
+        };
+        assert!(out.starts_with("<img "), "expected <img tag, got: {}", out);
+        assert!(out.contains("src=\"photo.jpg\""), "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_extensions_cover_all_formats() {
+        let r = ImageRenderer;
+        let exts: Vec<&&str> = r.extensions().iter().collect();
+        for e in &["png", "jpg", "jpeg", "gif", "svg", "webp"] {
+            assert!(
+                exts.iter().any(|&&x| x == *e),
+                "missing ext: {} in {:?}",
+                e,
+                exts
+            );
+        }
     }
 }
