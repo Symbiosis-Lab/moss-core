@@ -237,9 +237,10 @@ fn parse_wikilink_inner(inner: &str) -> (&str, Option<&str>, Option<&str>) {
 
 /// Extended parser that also extracts an optional `?query` segment.
 ///
-/// Split order: `|` (alias) first, then `?` (query), then `#` (section).
-/// The `#` is looked for in whichever segment would carry it — if a query
-/// is present, `#` after `?` is a URL fragment.
+/// Split order: `|` (alias) first, then split the remaining segment by whichever
+/// of `#` or `?` appears first. This matches Obsidian's heading-ref priority
+/// (`![[file#section]]`) while also allowing URL-style `![[file.html?x=1#frag]]`
+/// and nonstandard `![[file#frag?x=1]]` (treated as heading `frag` + query `x=1`).
 ///
 /// Returns `(file_part, section, query, alias)`.
 pub(crate) fn parse_wikilink_inner_v2(
@@ -251,27 +252,43 @@ pub(crate) fn parse_wikilink_inner_v2(
         None => (inner, None),
     };
 
-    // 2. Split on `?` (query)
-    let (before_query, query_raw) = match before_pipe.find('?') {
-        Some(pos) => (&before_pipe[..pos], Some(&before_pipe[pos + 1..])),
-        None => (before_pipe, None),
-    };
+    // 2. Find `#` and `?` in `before_pipe`. Whichever comes first owns its tail;
+    //    the other is split out of that tail.
+    let hash_pos = before_pipe.find('#');
+    let query_pos = before_pipe.find('?');
 
-    // 3. Split `#` from whichever segment carries it.
-    match query_raw {
-        Some(q) => match q.find('#') {
-            Some(pos) => (before_query, Some(&q[pos + 1..]), Some(&q[..pos]), alias),
-            None => (before_query, None, Some(q), alias),
-        },
-        None => match before_query.find('#') {
-            Some(pos) => (
-                &before_query[..pos],
-                Some(&before_query[pos + 1..]),
-                None,
+    match (hash_pos, query_pos) {
+        (None, None) => (before_pipe, None, None, alias),
+        (Some(h), None) => (
+            &before_pipe[..h],
+            Some(&before_pipe[h + 1..]),
+            None,
+            alias,
+        ),
+        (None, Some(q)) => (
+            &before_pipe[..q],
+            None,
+            Some(&before_pipe[q + 1..]),
+            alias,
+        ),
+        (Some(h), Some(q)) if h < q => {
+            // `#` first: section is [h+1..q], query is [q+1..]
+            (
+                &before_pipe[..h],
+                Some(&before_pipe[h + 1..q]),
+                Some(&before_pipe[q + 1..]),
                 alias,
-            ),
-            None => (before_query, None, None, alias),
-        },
+            )
+        }
+        (Some(h), Some(q)) => {
+            // `?` first (q < h): query is [q+1..h], section is [h+1..]
+            (
+                &before_pipe[..q],
+                Some(&before_pipe[h + 1..]),
+                Some(&before_pipe[q + 1..h]),
+                alias,
+            )
+        }
     }
 }
 
@@ -994,6 +1011,27 @@ mod tests {
         assert_eq!(alias, None);
     }
 
+    #[test]
+    fn test_parse_wikilink_inner_v2_fragment_before_query() {
+        // Nonstandard order: `#` before `?`. Section wins its slice; query follows.
+        let (file, section, query, alias) = parse_wikilink_inner_v2("file#frag?x=1");
+        assert_eq!(file, "file");
+        assert_eq!(section, Some("frag"));
+        assert_eq!(query, Some("x=1"));
+        assert_eq!(alias, None);
+    }
+
+    #[test]
+    fn test_parse_wikilink_inner_v2_heading_plus_alias() {
+        // Heading ref combined with alias — regression test for v2 dispatch.
+        let (file, section, query, alias) =
+            parse_wikilink_inner_v2("guide#Getting Started|my alias");
+        assert_eq!(file, "guide");
+        assert_eq!(section, Some("Getting Started"));
+        assert_eq!(query, None);
+        assert_eq!(alias, Some("my alias"));
+    }
+
     // --- Task 5: dispatch + fallback tests ---
 
     #[test]
@@ -1030,6 +1068,27 @@ mod tests {
         assert!(
             !result.content.contains("?x=1"),
             "image renderer ignores query; got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_embed_unknown_extension_with_query_drops_query() {
+        // Phase A: fallback link does not preserve ?query. Document the behavior
+        // so Phase B consumers (iframe renderer) don't accidentally rely on it.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("data.xyz", "data");
+        let graph = b.build();
+
+        let result = resolve_wikilinks("![[data.xyz?x=1]]", &graph, "hello.md");
+        assert!(
+            result.content.contains("[data.xyz]("),
+            "expected fallback link, got: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("?x=1"),
+            "fallback drops query; got: {}",
             result.content
         );
     }

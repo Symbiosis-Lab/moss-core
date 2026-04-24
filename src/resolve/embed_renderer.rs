@@ -32,7 +32,7 @@ pub enum RenderedEmbed {
 }
 
 /// A renderer converts a `ParsedEmbed` into its rendered form.
-pub trait EmbedRenderer: Send + Sync {
+pub trait EmbedRenderer: std::fmt::Debug + Send + Sync {
     /// Extensions this renderer claims (lowercase, without leading dot).
     fn extensions(&self) -> &[&'static str];
 
@@ -53,6 +53,7 @@ use super::fuzzy_path::relative_asset_path;
 pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
 
 /// Renderer for image embeds: `![[photo.jpg]]` → `<img>` or `![alt](url)`.
+#[derive(Debug)]
 pub struct ImageRenderer;
 
 impl EmbedRenderer for ImageRenderer {
@@ -95,6 +96,7 @@ pub(crate) fn file_stem(path: &str) -> String {
 /// The marker comment is resolved later by src-tauri's embed resolver, which
 /// reads the target file's content and splices it inline. This renderer does
 /// not perform I/O.
+#[derive(Debug)]
 pub struct MarkdownEmbedRenderer;
 
 impl EmbedRenderer for MarkdownEmbedRenderer {
@@ -133,6 +135,7 @@ fn build_embed_anchor(section: Option<&str>) -> String {
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
     struct DummyRenderer;
     impl EmbedRenderer for DummyRenderer {
         fn extensions(&self) -> &[&'static str] {
