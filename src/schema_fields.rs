@@ -8,7 +8,7 @@
 //!
 //! ## Adding a new field
 //!
-//! 1. Add the field to the `FrontMatter` struct in `src-tauri/src/compile/generator/markdown.rs`.
+//! 1. Add the field to the `FrontMatter` struct in `src-tauri/src/build/generator/markdown.rs`.
 //! 2. Add a corresponding entry to [`BUILTIN_FIELDS`] in this file.
 //! 3. Run `cargo test` — the sync test in `markdown.rs` will fail if you forget either side.
 //!
