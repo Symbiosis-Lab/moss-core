@@ -1030,4 +1030,30 @@ mod tests {
             result.content
         );
     }
+
+    #[test]
+    fn test_embed_html_dispatches_to_iframe_renderer() {
+        // End-to-end: resolve_wikilinks routes .html via IframeRenderer.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("widget.html", "widget");
+        let graph = b.build();
+
+        let result = resolve_wikilinks("![[widget.html|400x300]]", &graph, "post.md");
+        assert!(
+            result.content.contains("<iframe "),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("width=\"400px\""),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("height=\"300px\""),
+            "got: {}",
+            result.content
+        );
+        assert!(result.diagnostics.is_empty());
+    }
 }

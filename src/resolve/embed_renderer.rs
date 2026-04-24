@@ -192,6 +192,7 @@ fn registry() -> &'static [&'static dyn EmbedRenderer] {
         vec![
             &ImageRenderer as &'static dyn EmbedRenderer,
             &MarkdownEmbedRenderer as &'static dyn EmbedRenderer,
+            &IframeRenderer as &'static dyn EmbedRenderer,
         ]
     })
 }
@@ -295,6 +296,81 @@ fn build_embed_anchor(section: Option<&str>) -> String {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// IframeRenderer
+// ---------------------------------------------------------------------------
+
+/// Renderer for local HTML embeds: `![[file.html?query#frag|WxH]]` → `<iframe>`.
+///
+/// - `?query` is appended to the iframe `src` as URL query.
+/// - `#fragment` is appended as URL fragment (order: path?query#frag).
+/// - `|W` or `|WxH` becomes iframe width/height attributes via [`Sizing`].
+/// - No sandbox attribute is set by default — noted as a follow-up.
+#[derive(Debug)]
+pub struct IframeRenderer;
+
+impl EmbedRenderer for IframeRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        &["html", "htm"]
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        let url = relative_asset_path(embed.from_path, embed.resolved_path);
+        let src = build_src(&url, embed.query, embed.section);
+        let (width_attr, height_attr) = iframe_dim_attrs(embed.alias);
+        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_IFRAME);
+        let title = html_escape_attr(&file_stem(embed.resolved_path));
+
+        let html = format!(
+            "<iframe class=\"{}\" src=\"{}\" title=\"{}\"{}{} loading=\"lazy\"></iframe>",
+            classes,
+            html_escape_attr(&src),
+            title,
+            width_attr,
+            height_attr,
+        );
+        RenderedEmbed::Html(html)
+    }
+}
+
+/// Build an iframe `src` URL: `path?query#fragment` (URL order, independent
+/// of authoring order).
+fn build_src(path: &str, query: Option<&str>, fragment: Option<&str>) -> String {
+    let mut out = String::from(path);
+    if let Some(q) = query {
+        out.push('?');
+        out.push_str(q);
+    }
+    if let Some(f) = fragment {
+        out.push('#');
+        out.push_str(f);
+    }
+    out
+}
+
+/// Parse `|WxH` into iframe width/height attribute strings (leading space each).
+fn iframe_dim_attrs(alias: Option<&str>) -> (String, String) {
+    let Some(a) = alias else {
+        return (String::new(), String::new());
+    };
+    match Sizing::parse(a) {
+        Some(Sizing::Width(w)) => (format!(" width=\"{}\"", w.to_css()), String::new()),
+        Some(Sizing::Box(w, h)) => (
+            format!(" width=\"{}\"", w.to_css()),
+            format!(" height=\"{}\"", h.to_css()),
+        ),
+        None => (String::new(), String::new()),
+    }
+}
+
+/// Minimal HTML attribute-value escaper for `src` / `title`.
+fn html_escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -566,5 +642,123 @@ mod tests {
         assert!(lookup_renderer("md").is_some());
         assert!(lookup_renderer("xyz").is_none());
         assert!(lookup_renderer("").is_none());
+    }
+
+    // --- IframeRenderer ---
+
+    #[test]
+    fn test_iframe_renderer_extensions() {
+        let r = IframeRenderer;
+        let exts: Vec<&&str> = r.extensions().iter().collect();
+        assert!(exts.iter().any(|&&x| x == "html"));
+        assert!(exts.iter().any(|&&x| x == "htm"));
+    }
+
+    fn iframe_html(e: &ParsedEmbed) -> String {
+        match IframeRenderer.render(e) {
+            RenderedEmbed::Html(s) => s,
+            _ => panic!("expected Html variant"),
+        }
+    }
+
+    #[test]
+    fn test_iframe_renderer_basic() {
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "widget.html",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(out.contains("<iframe "), "got: {}", out);
+        assert!(
+            out.contains("class=\"moss-embed moss-embed-iframe\""),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("src=\"widget.html\""), "got: {}", out);
+        assert!(out.contains("loading=\"lazy\""), "got: {}", out);
+    }
+
+    #[test]
+    fn test_iframe_renderer_with_query() {
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "scale.html",
+            from_path: "post.md",
+            query: Some("a=major,minor&r=D"),
+            section: None,
+            alias: None,
+        });
+        assert!(
+            out.contains("src=\"scale.html?a=major,minor&amp;r=D\""),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_iframe_renderer_with_query_and_fragment() {
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "doc.html",
+            from_path: "post.md",
+            query: Some("x=1"),
+            section: Some("section2"),
+            alias: None,
+        });
+        assert!(
+            out.contains("src=\"doc.html?x=1#section2\""),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_iframe_renderer_with_width_only() {
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "widget.html",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: Some("400"),
+        });
+        assert!(out.contains("width=\"400px\""), "got: {}", out);
+        assert!(!out.contains("height="), "got: {}", out);
+    }
+
+    #[test]
+    fn test_iframe_renderer_with_width_and_height() {
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "widget.html",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: Some("100%x600"),
+        });
+        assert!(out.contains("width=\"100%\""), "got: {}", out);
+        assert!(out.contains("height=\"600px\""), "got: {}", out);
+    }
+
+    #[test]
+    fn test_iframe_renderer_scale_tree_example() {
+        // Real-world case from test-sites/刘果/交互/音阶对比/音阶对比.md
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "scale-family-tree.html",
+            from_path: "post.md",
+            query: Some("a=major_pent,major_blues,in&r=major_pent:D,major_blues:D"),
+            section: None,
+            alias: Some("100%x600"),
+        });
+        assert!(
+            out.contains("src=\"scale-family-tree.html?a=major_pent,major_blues,in&amp;r=major_pent:D,major_blues:D\""),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("width=\"100%\""), "got: {}", out);
+        assert!(out.contains("height=\"600px\""), "got: {}", out);
+        assert!(
+            out.contains("class=\"moss-embed moss-embed-iframe\""),
+            "got: {}",
+            out
+        );
     }
 }
