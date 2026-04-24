@@ -92,15 +92,14 @@ pub fn resolve_markdown_links(
             }
             output_lines.push(line.to_string());
             continue;
-        } else {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("```") {
-                fence_char = Some('`');
-                output_lines.push(line.to_string());
-                continue;
-            }
-            if trimmed.starts_with("~~~") {
-                fence_char = Some('~');
+        }
+
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            let candidate_char = trimmed.chars().next().unwrap();
+            let rest = &trimmed[3..];
+            if !rest.contains(candidate_char) {
+                fence_char = Some(candidate_char);
                 output_lines.push(line.to_string());
                 continue;
             }
@@ -131,44 +130,54 @@ fn rewrite_line(
     diags: &mut Vec<Diagnostic>,
 ) -> String {
     // Parser state: scan for `[` that is NOT preceded by `!` (image) and NOT inside `` `code` ``.
-    // Walk by char to stay UTF-8 safe; ASCII delimiters always land on char boundaries so
-    // slicing by byte index into `line` remains valid.
+    // Walk by byte index. ASCII delimiters (`, !, [, ]) are always char-boundaries,
+    // so byte-indexed slicing into `line` stays UTF-8 safe.
     let mut out = String::with_capacity(line.len());
     let bytes = line.as_bytes();
-    let mut in_inline_code = false;
-    let mut it = line.char_indices().peekable();
+    let len = bytes.len();
+    let mut i = 0;
 
-    while let Some((i, ch)) = it.next() {
-        if ch == '`' {
-            in_inline_code = !in_inline_code;
-            out.push(ch);
-            continue;
-        }
-        if in_inline_code {
-            out.push(ch);
-            continue;
-        }
-        // Skip images: `![...](...)` -- the entire span is left for markdown_refs.
-        if ch == '!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            // Try to parse the bracketed link span starting at i+1.
-            if let Some((_text, _url, consumed)) = parse_link_at(&line[i + 1..]) {
-                // Emit the full `![...](...)` span and advance past it.
-                out.push_str(&line[i..i + 1 + consumed]);
-                // Advance the iterator past the consumed bytes.
-                while let Some(&(j, _)) = it.peek() {
-                    if j < i + 1 + consumed {
-                        it.next();
-                    } else {
+    while i < len {
+        // Inline code span: match backtick runs. A run of N backticks is closed
+        // only by another run of exactly N. Single ` does not close `` ... ``.
+        if bytes[i] == b'`' {
+            let run = count_byte(bytes, i, b'`');
+            out.push_str(&line[i..i + run]);
+            i += run;
+            // Scan for a matching closing run of the same length.
+            while i < len {
+                if bytes[i] == b'`' {
+                    let closing = count_byte(bytes, i, b'`');
+                    out.push_str(&line[i..i + closing]);
+                    i += closing;
+                    if closing == run {
                         break;
                     }
+                } else {
+                    // Advance one UTF-8 char.
+                    let ch_len = utf8_char_len(bytes[i]);
+                    out.push_str(&line[i..i + ch_len]);
+                    i += ch_len;
                 }
+            }
+            continue;
+        }
+
+        // Skip images: `![...](...)` -- the entire span is left for markdown_refs.
+        if bytes[i] == b'!' && i + 1 < len && bytes[i + 1] == b'[' {
+            if let Some((.., consumed)) = parse_link_at(&line[i + 1..]) {
+                // Emit the full `![...](...)` span and advance past it.
+                out.push_str(&line[i..i + 1 + consumed]);
+                i += 1 + consumed;
                 continue;
             }
             // Not a well-formed image span -- emit `!` and continue.
             out.push('!');
+            i += 1;
             continue;
         }
-        if ch == '[' {
+
+        if bytes[i] == b'[' {
             if let Some((text, url, consumed)) = parse_link_at(&line[i..]) {
                 let mut handled = false;
                 if is_resolvable_target(url) {
@@ -199,20 +208,36 @@ fn rewrite_line(
                 if !handled {
                     out.push_str(&line[i..i + consumed]);
                 }
-                // Advance iterator past the consumed span.
-                while let Some(&(j, _)) = it.peek() {
-                    if j < i + consumed {
-                        it.next();
-                    } else {
-                        break;
-                    }
-                }
+                i += consumed;
                 continue;
             }
         }
-        out.push(ch);
+
+        let ch_len = utf8_char_len(bytes[i]);
+        out.push_str(&line[i..i + ch_len]);
+        i += ch_len;
     }
     out
+}
+
+/// Count consecutive occurrences of `b` in `bytes` starting at `start`.
+fn count_byte(bytes: &[u8], start: usize, b: u8) -> usize {
+    bytes[start..].iter().take_while(|&&x| x == b).count()
+}
+
+/// Length in bytes of the UTF-8 character whose leading byte is `b`.
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b < 0xC0 {
+        1 // continuation byte — shouldn't happen at a char boundary, but be safe
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    }
 }
 
 /// Parse `[text](url)` starting at index 0 of `s`. Returns (text, url, total_bytes_consumed).
@@ -323,6 +348,57 @@ mod tests {
         let g = graph_with(&["index.md", "文字/文字.md"]);
         let r = resolve_markdown_links("`[文字](文字.md)`", &g, "index.md");
         assert_eq!(r.content, "`[文字](文字.md)`");
+    }
+
+    #[test]
+    fn fragment_preserved() {
+        let g = graph_with(&["index.md", "文字/文字.md"]);
+        let r = resolve_markdown_links("[x](文字/文字.md#sec)", &g, "index.md");
+        assert!(
+            r.content.contains("moss-resolved:文字/文字.md#sec"),
+            "got: {}",
+            r.content
+        );
+        assert_eq!(r.outgoing_links.len(), 1);
+        assert_eq!(r.outgoing_links[0].target_path, "文字/文字.md");
+    }
+
+    #[test]
+    fn multiple_links_on_one_line() {
+        let g = graph_with(&["index.md", "foo.md", "bar.md"]);
+        let r = resolve_markdown_links("[a](foo.md) and [b](bar.md)", &g, "index.md");
+        assert!(r.content.contains("moss-resolved:foo.md"), "got: {}", r.content);
+        assert!(r.content.contains("moss-resolved:bar.md"), "got: {}", r.content);
+        assert_eq!(r.outgoing_links.len(), 2);
+    }
+
+    #[test]
+    fn double_backtick_inline_code_skipped() {
+        let g = graph_with(&["index.md", "y.md"]);
+        // A single ` inside a `` ... `` span should NOT close the span.
+        let r = resolve_markdown_links("``[x](y.md)``", &g, "index.md");
+        assert_eq!(r.content, "``[x](y.md)``");
+        assert!(r.outgoing_links.is_empty());
+    }
+
+    #[test]
+    fn outgoing_link_fields_populated() {
+        let g = graph_with(&["index.md", "foo.md"]);
+        let r = resolve_markdown_links("[hello](foo.md)", &g, "index.md");
+        assert_eq!(r.outgoing_links.len(), 1);
+        assert_eq!(r.outgoing_links[0].link_type, LinkType::Standard);
+        assert_eq!(r.outgoing_links[0].target_path, "foo.md");
+        assert_eq!(r.outgoing_links[0].display_text, "hello");
+    }
+
+    #[test]
+    fn fence_open_with_inline_close_is_not_fence() {
+        // Sibling rule: a line with the fence char after the leading run
+        // isn't a fence *opening*. Content outside should still rewrite.
+        let g = graph_with(&["index.md", "foo.md"]);
+        let input = "```inline``` [a](foo.md)";
+        let r = resolve_markdown_links(input, &g, "index.md");
+        assert!(r.content.contains("moss-resolved:foo.md"), "got: {}", r.content);
     }
 
     #[test]
