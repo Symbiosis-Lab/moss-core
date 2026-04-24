@@ -215,27 +215,7 @@ fn find_wikilink_close(chars: &[char], start: usize) -> Option<(usize, String)> 
     None
 }
 
-/// Parse wikilink inner text into (file_part, section, alias).
-///
-/// Syntax: `file#section|alias` — both `#section` and `|alias` are optional.
-/// The section may start with `^` for block references.
-fn parse_wikilink_inner(inner: &str) -> (&str, Option<&str>, Option<&str>) {
-    // Split on `|` first (alias separator). Obsidian uses the first `|`.
-    let (before_pipe, alias) = match inner.find('|') {
-        Some(pos) => (&inner[..pos], Some(&inner[pos + 1..])),
-        None => (inner, None),
-    };
-
-    // Split on `#` (section separator). Use the first `#`.
-    let (file_part, section) = match before_pipe.find('#') {
-        Some(pos) => (&before_pipe[..pos], Some(&before_pipe[pos + 1..])),
-        None => (before_pipe, None),
-    };
-
-    (file_part, section, alias)
-}
-
-/// Extended parser that also extracts an optional `?query` segment.
+/// Parse wikilink inner text into (file_part, section, query, alias).
 ///
 /// Split order: `|` (alias) first, then split the remaining segment by whichever
 /// of `#` or `?` appears first. This matches Obsidian's heading-ref priority
@@ -243,7 +223,7 @@ fn parse_wikilink_inner(inner: &str) -> (&str, Option<&str>, Option<&str>) {
 /// and nonstandard `![[file#frag?x=1]]` (treated as heading `frag` + query `x=1`).
 ///
 /// Returns `(file_part, section, query, alias)`.
-pub(crate) fn parse_wikilink_inner_v2(
+pub(crate) fn parse_wikilink_inner(
     inner: &str,
 ) -> (&str, Option<&str>, Option<&str>, Option<&str>) {
     // 1. Split on `|` (alias)
@@ -300,7 +280,9 @@ fn resolve_wikilink(
     outgoing_links: &mut Vec<OutgoingLink>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> String {
-    let (file_part, section, alias) = parse_wikilink_inner(inner);
+    let (file_part, section, _query, alias) = parse_wikilink_inner(inner);
+    // `?query` on a regular wikilink is ignored — non-embed wikilinks do not
+    // carry URL queries. Parser returns it for consistency with embed parsing.
 
     // Build display text
     let display_text = if let Some(a) = alias {
@@ -373,7 +355,7 @@ fn resolve_embed(
 ) -> String {
     use super::embed_renderer::{lookup_renderer, ParsedEmbed, RenderedEmbed};
 
-    let (file_part, section, query, alias) = parse_wikilink_inner_v2(inner);
+    let (file_part, section, query, alias) = parse_wikilink_inner(inner);
 
     let resolved = if file_part.is_empty() {
         ResolvedRef::Found(from_path.to_string())
@@ -739,34 +721,9 @@ mod tests {
         assert_eq!(result.content, "See []().");
     }
 
-    #[test]
-    fn test_parse_wikilink_inner_basic() {
-        assert_eq!(parse_wikilink_inner("guide"), ("guide", None, None));
-    }
-
-    #[test]
-    fn test_parse_wikilink_inner_with_section() {
-        assert_eq!(
-            parse_wikilink_inner("guide#heading"),
-            ("guide", Some("heading"), None)
-        );
-    }
-
-    #[test]
-    fn test_parse_wikilink_inner_with_alias() {
-        assert_eq!(
-            parse_wikilink_inner("guide|my alias"),
-            ("guide", None, Some("my alias"))
-        );
-    }
-
-    #[test]
-    fn test_parse_wikilink_inner_full() {
-        assert_eq!(
-            parse_wikilink_inner("guide#heading|my alias"),
-            ("guide", Some("heading"), Some("my alias"))
-        );
-    }
+    // (v1 parse_wikilink_inner tests removed — v2 is now the only parser and
+    // its tests at the bottom of this module cover all cases with the 4-tuple
+    // (file, section, query, alias) signature.)
 
     // (test_is_image_path_detection removed — is_image_path was replaced by
     // ImageRenderer's extension registry. Coverage lives in
@@ -942,12 +899,12 @@ mod tests {
         );
     }
 
-    // --- parse_wikilink_inner_v2: new parser with ?query support ---
+    // --- parse_wikilink_inner: new parser with ?query support ---
 
     #[test]
-    fn test_parse_wikilink_inner_v2_with_query() {
+    fn test_parse_wikilink_inner_with_query() {
         let (file, section, query, alias) =
-            parse_wikilink_inner_v2("scale.html?a=1,2&b=3#frag|100x200");
+            parse_wikilink_inner("scale.html?a=1,2&b=3#frag|100x200");
         assert_eq!(file, "scale.html");
         assert_eq!(section, Some("frag"));
         assert_eq!(query, Some("a=1,2&b=3"));
@@ -955,8 +912,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_wikilink_inner_v2_no_query() {
-        let (file, section, query, alias) = parse_wikilink_inner_v2("photo.jpg|200");
+    fn test_parse_wikilink_inner_no_query() {
+        let (file, section, query, alias) = parse_wikilink_inner("photo.jpg|200");
         assert_eq!(file, "photo.jpg");
         assert_eq!(section, None);
         assert_eq!(query, None);
@@ -964,8 +921,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_wikilink_inner_v2_heading_ref_no_query() {
-        let (file, section, query, alias) = parse_wikilink_inner_v2("guide#intro");
+    fn test_parse_wikilink_inner_heading_ref_no_query() {
+        let (file, section, query, alias) = parse_wikilink_inner("guide#intro");
         assert_eq!(file, "guide");
         assert_eq!(section, Some("intro"));
         assert_eq!(query, None);
@@ -973,8 +930,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_wikilink_inner_v2_query_only_no_fragment() {
-        let (file, section, query, alias) = parse_wikilink_inner_v2("data.csv?col=1");
+    fn test_parse_wikilink_inner_query_only_no_fragment() {
+        let (file, section, query, alias) = parse_wikilink_inner("data.csv?col=1");
         assert_eq!(file, "data.csv");
         assert_eq!(section, None);
         assert_eq!(query, Some("col=1"));
@@ -982,8 +939,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_wikilink_inner_v2_plain_file() {
-        let (file, section, query, alias) = parse_wikilink_inner_v2("note");
+    fn test_parse_wikilink_inner_plain_file() {
+        let (file, section, query, alias) = parse_wikilink_inner("note");
         assert_eq!(file, "note");
         assert_eq!(section, None);
         assert_eq!(query, None);
@@ -991,9 +948,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_wikilink_inner_v2_fragment_before_query() {
+    fn test_parse_wikilink_inner_fragment_before_query() {
         // Nonstandard order: `#` before `?`. Section wins its slice; query follows.
-        let (file, section, query, alias) = parse_wikilink_inner_v2("file#frag?x=1");
+        let (file, section, query, alias) = parse_wikilink_inner("file#frag?x=1");
         assert_eq!(file, "file");
         assert_eq!(section, Some("frag"));
         assert_eq!(query, Some("x=1"));
@@ -1001,10 +958,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_wikilink_inner_v2_heading_plus_alias() {
+    fn test_parse_wikilink_inner_heading_plus_alias() {
         // Heading ref combined with alias — regression test for v2 dispatch.
         let (file, section, query, alias) =
-            parse_wikilink_inner_v2("guide#Getting Started|my alias");
+            parse_wikilink_inner("guide#Getting Started|my alias");
         assert_eq!(file, "guide");
         assert_eq!(section, Some("Getting Started"));
         assert_eq!(query, None);
