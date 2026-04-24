@@ -239,6 +239,46 @@ fn parse_wikilink_inner(inner: &str) -> (&str, Option<&str>, Option<&str>) {
     (file_part, section, alias)
 }
 
+/// Extended parser that also extracts an optional `?query` segment.
+///
+/// Split order: `|` (alias) first, then `?` (query), then `#` (section).
+/// The `#` is looked for in whichever segment would carry it — if a query
+/// is present, `#` after `?` is a URL fragment.
+///
+/// Returns `(file_part, section, query, alias)`.
+pub(crate) fn parse_wikilink_inner_v2(
+    inner: &str,
+) -> (&str, Option<&str>, Option<&str>, Option<&str>) {
+    // 1. Split on `|` (alias)
+    let (before_pipe, alias) = match inner.find('|') {
+        Some(pos) => (&inner[..pos], Some(&inner[pos + 1..])),
+        None => (inner, None),
+    };
+
+    // 2. Split on `?` (query)
+    let (before_query, query_raw) = match before_pipe.find('?') {
+        Some(pos) => (&before_pipe[..pos], Some(&before_pipe[pos + 1..])),
+        None => (before_pipe, None),
+    };
+
+    // 3. Split `#` from whichever segment carries it.
+    match query_raw {
+        Some(q) => match q.find('#') {
+            Some(pos) => (before_query, Some(&q[pos + 1..]), Some(&q[..pos]), alias),
+            None => (before_query, None, Some(q), alias),
+        },
+        None => match before_query.find('#') {
+            Some(pos) => (
+                &before_query[..pos],
+                Some(&before_query[pos + 1..]),
+                None,
+                alias,
+            ),
+            None => (before_query, None, None, alias),
+        },
+    }
+}
+
 /// Check whether a path has an image extension.
 fn is_image_path(path: &str) -> bool {
     if let Some(dot_pos) = path.rfind('.') {
@@ -931,5 +971,53 @@ mod tests {
             "Explicit paths should be honored; got {}",
             result.content
         );
+    }
+
+    // --- parse_wikilink_inner_v2: new parser with ?query support ---
+
+    #[test]
+    fn test_parse_wikilink_inner_v2_with_query() {
+        let (file, section, query, alias) =
+            parse_wikilink_inner_v2("scale.html?a=1,2&b=3#frag|100x200");
+        assert_eq!(file, "scale.html");
+        assert_eq!(section, Some("frag"));
+        assert_eq!(query, Some("a=1,2&b=3"));
+        assert_eq!(alias, Some("100x200"));
+    }
+
+    #[test]
+    fn test_parse_wikilink_inner_v2_no_query() {
+        let (file, section, query, alias) = parse_wikilink_inner_v2("photo.jpg|200");
+        assert_eq!(file, "photo.jpg");
+        assert_eq!(section, None);
+        assert_eq!(query, None);
+        assert_eq!(alias, Some("200"));
+    }
+
+    #[test]
+    fn test_parse_wikilink_inner_v2_heading_ref_no_query() {
+        let (file, section, query, alias) = parse_wikilink_inner_v2("guide#intro");
+        assert_eq!(file, "guide");
+        assert_eq!(section, Some("intro"));
+        assert_eq!(query, None);
+        assert_eq!(alias, None);
+    }
+
+    #[test]
+    fn test_parse_wikilink_inner_v2_query_only_no_fragment() {
+        let (file, section, query, alias) = parse_wikilink_inner_v2("data.csv?col=1");
+        assert_eq!(file, "data.csv");
+        assert_eq!(section, None);
+        assert_eq!(query, Some("col=1"));
+        assert_eq!(alias, None);
+    }
+
+    #[test]
+    fn test_parse_wikilink_inner_v2_plain_file() {
+        let (file, section, query, alias) = parse_wikilink_inner_v2("note");
+        assert_eq!(file, "note");
+        assert_eq!(section, None);
+        assert_eq!(query, None);
+        assert_eq!(alias, None);
     }
 }
