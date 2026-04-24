@@ -371,9 +371,7 @@ fn resolve_embed(
     outgoing_links: &mut Vec<OutgoingLink>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> String {
-    use super::embed_renderer::{
-        EmbedRenderer, ImageRenderer, MarkdownEmbedRenderer, ParsedEmbed, RenderedEmbed,
-    };
+    use super::embed_renderer::{lookup_renderer, ParsedEmbed, RenderedEmbed};
 
     let (file_part, section, query, alias) = parse_wikilink_inner_v2(inner);
 
@@ -399,26 +397,7 @@ fn resolve_embed(
                 alias,
             };
 
-            let ext = path_extension(&target_path);
-            let renderer: Option<Box<dyn EmbedRenderer>> = match ext.as_deref() {
-                Some(e) if ImageRenderer
-                    .extensions()
-                    .iter()
-                    .any(|x| x.eq_ignore_ascii_case(e)) =>
-                {
-                    Some(Box::new(ImageRenderer))
-                }
-                Some(e) if MarkdownEmbedRenderer
-                    .extensions()
-                    .iter()
-                    .any(|x| x.eq_ignore_ascii_case(e)) =>
-                {
-                    Some(Box::new(MarkdownEmbedRenderer))
-                }
-                _ => None,
-            };
-
-            match renderer {
+            match path_extension(&target_path).as_deref().and_then(lookup_renderer) {
                 Some(r) => match r.render(&parsed) {
                     RenderedEmbed::Inline(s) => s,
                 },
