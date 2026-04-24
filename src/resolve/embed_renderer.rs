@@ -40,6 +40,51 @@ pub trait EmbedRenderer: Send + Sync {
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed;
 }
 
+// ---------------------------------------------------------------------------
+// MarkdownEmbedRenderer
+// ---------------------------------------------------------------------------
+
+use crate::heading_anchor::obsidian_heading_anchor;
+
+/// Renderer for markdown transclusion: `![[file.md]]` → `<!-- moss-embed:path -->`.
+///
+/// The marker comment is resolved later by src-tauri's embed resolver, which
+/// reads the target file's content and splices it inline. This renderer does
+/// not perform I/O.
+pub struct MarkdownEmbedRenderer;
+
+impl EmbedRenderer for MarkdownEmbedRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        &["md"]
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        let anchor = build_embed_anchor(embed.section);
+        RenderedEmbed::Inline(format!(
+            "<!-- moss-embed:{}{} -->",
+            embed.resolved_path, anchor
+        ))
+    }
+}
+
+/// Build the anchor fragment for a markdown embed marker.
+///
+/// Preserves the `^` prefix on block references so the downstream embed
+/// resolver can distinguish them from headings.
+fn build_embed_anchor(section: Option<&str>) -> String {
+    match section {
+        None => String::new(),
+        Some(s) if s.is_empty() => String::new(),
+        Some(s) => {
+            if s.starts_with('^') {
+                format!("#{}", s)
+            } else {
+                format!("#{}", obsidian_heading_anchor(s))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +114,60 @@ mod tests {
             r.render(&embed),
             RenderedEmbed::Inline("<dummy src=a.xyz>".to_string())
         );
+    }
+
+    // --- MarkdownEmbedRenderer ---
+
+    #[test]
+    fn test_markdown_embed_renderer_no_section() {
+        let r = MarkdownEmbedRenderer;
+        let embed = ParsedEmbed {
+            resolved_path: "posts/intro.md",
+            from_path: "index.md",
+            query: None,
+            section: None,
+            alias: None,
+        };
+        assert_eq!(
+            r.render(&embed),
+            RenderedEmbed::Inline("<!-- moss-embed:posts/intro.md -->".to_string())
+        );
+    }
+
+    #[test]
+    fn test_markdown_embed_renderer_heading_section() {
+        let r = MarkdownEmbedRenderer;
+        let embed = ParsedEmbed {
+            resolved_path: "guide.md",
+            from_path: "index.md",
+            query: None,
+            section: Some("Getting Started"),
+            alias: None,
+        };
+        assert_eq!(
+            r.render(&embed),
+            RenderedEmbed::Inline("<!-- moss-embed:guide.md#getting-started -->".to_string())
+        );
+    }
+
+    #[test]
+    fn test_markdown_embed_renderer_block_ref_section() {
+        let r = MarkdownEmbedRenderer;
+        let embed = ParsedEmbed {
+            resolved_path: "guide.md",
+            from_path: "index.md",
+            query: None,
+            section: Some("^block-xyz"),
+            alias: None,
+        };
+        assert_eq!(
+            r.render(&embed),
+            RenderedEmbed::Inline("<!-- moss-embed:guide.md#^block-xyz -->".to_string())
+        );
+    }
+
+    #[test]
+    fn test_markdown_embed_renderer_extensions() {
+        assert_eq!(MarkdownEmbedRenderer.extensions(), &["md"]);
     }
 }
