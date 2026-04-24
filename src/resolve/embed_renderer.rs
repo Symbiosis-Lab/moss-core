@@ -321,18 +321,33 @@ impl EmbedRenderer for IframeRenderer {
         let src = build_src(&url, embed.query, embed.section);
         let (width_attr, height_attr) = iframe_dim_attrs(embed.alias);
         let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_IFRAME);
-        let title = html_escape_attr(&file_stem(embed.resolved_path));
+        let title_attr = iframe_title_attr(embed.alias);
 
         let html = format!(
-            "<iframe class=\"{}\" src=\"{}\" title=\"{}\"{}{} loading=\"lazy\"></iframe>",
+            "<iframe class=\"{}\" src=\"{}\"{}{}{} loading=\"lazy\"></iframe>",
             classes,
             html_escape_attr(&src),
-            title,
+            title_attr,
             width_attr,
             height_attr,
         );
         RenderedEmbed::Html(html)
     }
+}
+
+/// Derive the `title=` attribute from alias.
+///
+/// - `|400x300` (sizing): no title (browser shows no tooltip).
+/// - `|My cool widget` (plain text): use as title (accessible name + tooltip).
+/// - No alias: no title (iframe's own `<title>` provides accessible name).
+fn iframe_title_attr(alias: Option<&str>) -> String {
+    let Some(a) = alias else {
+        return String::new();
+    };
+    if Sizing::parse(a).is_some() {
+        return String::new();
+    }
+    format!(" title=\"{}\"", html_escape_attr(a))
 }
 
 /// Build an iframe `src` URL: `path?query#fragment` (URL order, independent
@@ -760,5 +775,64 @@ mod tests {
             "got: {}",
             out
         );
+        // Sizing alias → no title attr (avoid filename leakage as tooltip).
+        assert!(!out.contains("title="), "got: {}", out);
+    }
+
+    #[test]
+    fn test_iframe_renderer_no_alias_emits_no_title() {
+        // No alias: iframe's own <title> provides accessible name; no outer tooltip.
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "widget.html",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(!out.contains("title="), "got: {}", out);
+    }
+
+    #[test]
+    fn test_iframe_renderer_text_alias_becomes_title() {
+        // Non-sizing alias text is used as title (accessible name + tooltip).
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "widget.html",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: Some("My cool widget"),
+        });
+        assert!(
+            out.contains("title=\"My cool widget\""),
+            "got: {}",
+            out
+        );
+        // And no dim attrs, since alias isn't a sizing hint.
+        assert!(!out.contains("width="), "got: {}", out);
+    }
+
+    // --- Sizing malformed-input coverage ---
+
+    #[test]
+    fn test_sizing_parse_malformed_box_is_none() {
+        assert_eq!(Sizing::parse("100xbad"), None);
+        assert_eq!(Sizing::parse("100x"), None);
+        assert_eq!(Sizing::parse("-100"), None);
+    }
+
+    #[test]
+    fn test_iframe_renderer_malformed_sizing_drops_dim_attrs() {
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "widget.html",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: Some("100xbad"),
+        });
+        assert!(!out.contains("width="), "got: {}", out);
+        assert!(!out.contains("height="), "got: {}", out);
+        // Malformed sizing isn't recognized by Sizing::parse, so it falls through
+        // to the title-attr path and becomes a title.
+        assert!(out.contains("title=\"100xbad\""), "got: {}", out);
     }
 }
