@@ -6,6 +6,8 @@
 //! fall back to a file link (Obsidian parity) — that fallback lives in the
 //! caller, not here.
 
+use std::sync::OnceLock;
+
 /// An embed that has been parsed and path-resolved, ready for rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedEmbed<'a> {
@@ -115,6 +117,32 @@ pub trait EmbedRenderer: std::fmt::Debug + Send + Sync {
 
     /// Render the embed. Must be pure; moss-core is I/O-free.
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed;
+}
+
+/// Built-in renderer registry. Initialized lazily on first lookup.
+///
+/// Each renderer is a unit struct, so the pointer is to a zero-size `'static`
+/// — no heap allocation ever. Future renderers (iframe, pdf, audio, etc.)
+/// get appended here as they ship.
+fn registry() -> &'static [&'static dyn EmbedRenderer] {
+    static INIT: OnceLock<Vec<&'static dyn EmbedRenderer>> = OnceLock::new();
+    INIT.get_or_init(|| {
+        vec![
+            &ImageRenderer as &'static dyn EmbedRenderer,
+            &MarkdownEmbedRenderer as &'static dyn EmbedRenderer,
+        ]
+    })
+}
+
+/// Look up a renderer by file extension (case-insensitive, no leading dot).
+pub fn lookup_renderer(ext: &str) -> Option<&'static dyn EmbedRenderer> {
+    if ext.is_empty() {
+        return None;
+    }
+    registry()
+        .iter()
+        .copied()
+        .find(|r| r.extensions().iter().any(|e| e.eq_ignore_ascii_case(ext)))
 }
 
 // ---------------------------------------------------------------------------
@@ -424,5 +452,16 @@ mod tests {
     fn test_sizing_parse_empty_returns_none() {
         assert_eq!(Sizing::parse(""), None);
         assert_eq!(Sizing::parse("   "), None);
+    }
+
+    // --- Registry lookup ---
+
+    #[test]
+    fn test_lookup_renderer_by_extension() {
+        assert!(lookup_renderer("jpg").is_some());
+        assert!(lookup_renderer("JPG").is_some()); // case-insensitive
+        assert!(lookup_renderer("md").is_some());
+        assert!(lookup_renderer("xyz").is_none());
+        assert!(lookup_renderer("").is_none());
     }
 }
