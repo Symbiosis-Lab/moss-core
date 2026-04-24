@@ -20,13 +20,9 @@
 
 use crate::content_graph::ContentGraph;
 use crate::heading_anchor::obsidian_heading_anchor;
-use crate::media::{format_img_tag, is_all_display_keywords, parse_media_attrs};
 
 use super::fuzzy_path::{relative_asset_path, resolve_reference, ResolvedRef};
 use super::{Diagnostic, LinkType, OutgoingLink};
-
-/// Image file extensions recognized for embed syntax (`![[…]]`).
-const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
 
 /// Result of resolving all wikilinks in a document.
 #[derive(Debug)]
@@ -279,16 +275,6 @@ pub(crate) fn parse_wikilink_inner_v2(
     }
 }
 
-/// Check whether a path has an image extension.
-fn is_image_path(path: &str) -> bool {
-    if let Some(dot_pos) = path.rfind('.') {
-        let ext = &path[dot_pos + 1..];
-        IMAGE_EXTENSIONS.iter().any(|&e| e.eq_ignore_ascii_case(ext))
-    } else {
-        false
-    }
-}
-
 /// Resolve a standard `[[…]]` wikilink and return its markdown replacement.
 fn resolve_wikilink(
     inner: &str,
@@ -357,6 +343,10 @@ fn resolve_wikilink(
 }
 
 /// Resolve an embed `![[…]]` and return its markdown replacement.
+///
+/// Parsing produces a `ParsedEmbed`; a renderer is chosen by the resolved
+/// target's extension. Unknown extensions fall back to a plain markdown link
+/// (Obsidian parity).
 fn resolve_embed(
     inner: &str,
     graph: &ContentGraph,
@@ -364,7 +354,11 @@ fn resolve_embed(
     outgoing_links: &mut Vec<OutgoingLink>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> String {
-    let (file_part, section, alias) = parse_wikilink_inner(inner);
+    use super::embed_renderer::{
+        EmbedRenderer, ImageRenderer, MarkdownEmbedRenderer, ParsedEmbed, RenderedEmbed,
+    };
+
+    let (file_part, section, query, alias) = parse_wikilink_inner_v2(inner);
 
     let resolved = if file_part.is_empty() {
         ResolvedRef::Found(from_path.to_string())
@@ -380,31 +374,42 @@ fn resolve_embed(
                 link_type: LinkType::Embed,
             });
 
-            if is_image_path(&target_path) {
-                let url = relative_asset_path(from_path, &target_path);
-                match alias {
-                    Some(alias_text) if is_all_display_keywords(alias_text) => {
-                        // Alias is entirely display keywords → output raw HTML <img> with style.
-                        let alt = file_stem(&target_path);
-                        let attrs = parse_media_attrs(alias_text);
-                        format_img_tag(&url, &alt, &attrs)
-                    }
-                    Some(alias_text) => {
-                        // Alias is plain text → use as alt text.
-                        format!("![{}]({})", alias_text, url)
-                    }
-                    None => {
-                        // No alias → use filename stem as alt (existing behavior).
-                        let alt = file_stem(&target_path);
-                        format!("![{}]({})", alt, url)
-                    }
+            let parsed = ParsedEmbed {
+                resolved_path: &target_path,
+                from_path,
+                query,
+                section,
+                alias,
+            };
+
+            let ext = path_extension(&target_path);
+            let renderer: Option<Box<dyn EmbedRenderer>> = match ext.as_deref() {
+                Some(e) if ImageRenderer
+                    .extensions()
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(e)) =>
+                {
+                    Some(Box::new(ImageRenderer))
                 }
-            } else {
-                // Markdown embed: produce <!-- moss-embed:path#anchor -->
-                // For embeds, preserve ^block-id so the embed resolver can
-                // distinguish block refs from heading refs.
-                let anchor = build_embed_anchor(section);
-                format!("<!-- moss-embed:{}{} -->", target_path, anchor)
+                Some(e) if MarkdownEmbedRenderer
+                    .extensions()
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(e)) =>
+                {
+                    Some(Box::new(MarkdownEmbedRenderer))
+                }
+                _ => None,
+            };
+
+            match renderer {
+                Some(r) => match r.render(&parsed) {
+                    RenderedEmbed::Inline(s) => s,
+                },
+                None => {
+                    // Fallback: plain file link (Obsidian parity for unknown types).
+                    let url = relative_asset_path(from_path, &target_path);
+                    format!("[{}]({})", file_part, url)
+                }
             }
         }
         ResolvedRef::Unresolved => {
@@ -425,6 +430,12 @@ fn resolve_embed(
     }
 }
 
+fn path_extension(path: &str) -> Option<String> {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    let pos = filename.rfind('.')?;
+    Some(filename[pos + 1..].to_string())
+}
+
 /// Build the anchor fragment (e.g. `#getting-started` or `#block-id`) from
 /// a section reference.
 fn build_anchor(section: Option<&str>) -> String {
@@ -443,35 +454,6 @@ fn build_anchor(section: Option<&str>) -> String {
     }
 }
 
-/// Build the anchor fragment for an embed marker.
-///
-/// Unlike [`build_anchor`] (used for links), this preserves the `^` prefix
-/// on block references so the embed resolver can distinguish them from headings.
-fn build_embed_anchor(section: Option<&str>) -> String {
-    match section {
-        None => String::new(),
-        Some(s) if s.is_empty() => String::new(),
-        Some(s) => {
-            if s.starts_with('^') {
-                // Block reference: preserve ^prefix for embed resolver
-                format!("#{}", s)
-            } else {
-                // Heading reference: generate Obsidian-compatible anchor
-                format!("#{}", obsidian_heading_anchor(s))
-            }
-        }
-    }
-}
-
-/// Extract the filename stem from a path (no directory, no extension).
-fn file_stem(path: &str) -> String {
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    match filename.rfind('.') {
-        Some(pos) if pos > 0 => filename[..pos].to_string(),
-        _ => filename.to_string(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -480,6 +462,7 @@ fn file_stem(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::content_graph::ContentGraphBuilder;
+    use crate::media::is_all_display_keywords;
 
     /// Build a graph with common test files for wikilink tests.
     fn test_graph() -> ContentGraph {
@@ -789,19 +772,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_is_image_path_detection() {
-        assert!(is_image_path("photo.png"));
-        assert!(is_image_path("photo.PNG"));
-        assert!(is_image_path("dir/photo.jpg"));
-        assert!(is_image_path("photo.jpeg"));
-        assert!(is_image_path("photo.gif"));
-        assert!(is_image_path("photo.svg"));
-        assert!(is_image_path("photo.webp"));
-        assert!(!is_image_path("file.md"));
-        assert!(!is_image_path("file.pdf"));
-        assert!(!is_image_path("noextension"));
-    }
+    // (test_is_image_path_detection removed — is_image_path was replaced by
+    // ImageRenderer's extension registry. Coverage lives in
+    // resolve::embed_renderer::tests::test_image_renderer_extensions_cover_all_formats.)
 
     #[test]
     fn test_trailing_newline_preserved() {
@@ -1019,5 +992,45 @@ mod tests {
         assert_eq!(section, None);
         assert_eq!(query, None);
         assert_eq!(alias, None);
+    }
+
+    // --- Task 5: dispatch + fallback tests ---
+
+    #[test]
+    fn test_embed_unknown_extension_falls_back_to_link() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("data.xyz", "data");
+        let graph = b.build();
+
+        let result = resolve_wikilinks("![[data.xyz]]", &graph, "posts/hello.md");
+        assert!(
+            result.content.contains("[data.xyz]("),
+            "expected fallback link, got: {}",
+            result.content
+        );
+        assert!(
+            result.diagnostics.is_empty(),
+            "should not diagnose resolved-but-unsupported ext"
+        );
+    }
+
+    #[test]
+    fn test_embed_image_with_query_ignores_query() {
+        // Image renderer ignores ?query; adding it must not break rendering.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("photo.jpg", "photo");
+        let graph = b.build();
+
+        let result = resolve_wikilinks("![[photo.jpg?x=1]]", &graph, "hello.md");
+        assert!(
+            result.content.contains("photo.jpg"),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("?x=1"),
+            "image renderer ignores query; got: {}",
+            result.content
+        );
     }
 }
