@@ -11,6 +11,8 @@ pub mod frontmatter;
 pub mod link_candidates;
 pub mod heading_anchor;
 pub mod media;
+pub mod page_kind;
+pub use page_kind::PageKind;
 pub mod resolve;
 pub mod schema;
 pub mod schema_fields;
