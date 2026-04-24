@@ -215,6 +215,9 @@ fn registry() -> &'static [&'static dyn EmbedRenderer] {
             &PdfRenderer as &'static dyn EmbedRenderer,
             &AudioRenderer as &'static dyn EmbedRenderer,
             &VideoRenderer as &'static dyn EmbedRenderer,
+            &NotebookRenderer as &'static dyn EmbedRenderer,
+            &ModelViewerRenderer as &'static dyn EmbedRenderer,
+            &TableRenderer as &'static dyn EmbedRenderer,
         ]
     })
 }
@@ -507,6 +510,117 @@ fn video_mime_for_ext(ext: &str) -> &'static str {
             // Defensive: registry-gated; see audio_mime_for_ext.
             debug_assert!(false, "unmapped video extension: {}", ext);
             "application/octet-stream"
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NotebookRenderer
+// ---------------------------------------------------------------------------
+
+/// Renderer for Jupyter notebooks: `![[file.ipynb]]` → deferred marker.
+///
+/// Emits `<!-- moss-embed-ipynb:PATH -->` (with optional `?query` appended).
+/// The real rendering happens in src-tauri via nbconvert or equivalent —
+/// src-tauri resolves the marker post-pass.
+#[derive(Debug)]
+pub struct NotebookRenderer;
+
+impl EmbedRenderer for NotebookRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        &["ipynb"]
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        let target = match embed.query {
+            Some(q) => format!("{}?{}", embed.resolved_path, q),
+            None => embed.resolved_path.to_string(),
+        };
+        RenderedEmbed::Deferred {
+            marker: format!("<!-- moss-embed-ipynb:{} -->", target),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ModelViewerRenderer (3D)
+// ---------------------------------------------------------------------------
+
+/// Page-level script import needed for `<model-viewer>` to work.
+///
+/// Loaded from Google's CDN. Pinned to a major version for stability.
+/// If this URL becomes unavailable, self-host and update this constant.
+const MODEL_VIEWER_SCRIPT: &str = "<script type=\"module\" src=\"https://ajax.googleapis.com/ajax/libs/model-viewer/3.4.0/model-viewer.min.js\"></script>";
+
+/// Renderer for 3D model embeds: `![[model.glb|400x400]]` → `<model-viewer>`.
+///
+/// Requires the `<model-viewer>` custom element script, injected via
+/// `head_assets` once per page that contains any `.glb`/`.gltf` embed.
+#[derive(Debug)]
+pub struct ModelViewerRenderer;
+
+impl EmbedRenderer for ModelViewerRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        &["glb", "gltf"]
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        let url = relative_asset_path(embed.from_path, embed.resolved_path);
+        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_3D);
+        let style = model_viewer_style(embed.alias);
+
+        let html = format!(
+            "<model-viewer class=\"{}\" src=\"{}\" camera-controls auto-rotate touch-action=\"pan-y\" loading=\"lazy\"{}></model-viewer>",
+            classes,
+            html_escape_attr(&url),
+            style,
+        );
+        RenderedEmbed::Html(html)
+    }
+
+    fn head_assets(&self) -> &[&'static str] {
+        &[MODEL_VIEWER_SCRIPT]
+    }
+}
+
+/// Derive the inline `style="width:..;height:.."` for `<model-viewer>`.
+///
+/// Unlike iframe/video, the `<model-viewer>` element uses CSS length values
+/// not HTML `width=`/`height=` attributes — hence inline style.
+fn model_viewer_style(alias: Option<&str>) -> String {
+    let Some(a) = alias else {
+        return String::new();
+    };
+    match Sizing::parse(a) {
+        Some(Sizing::Width(w)) => format!(" style=\"width:{}\"", w.to_css()),
+        Some(Sizing::Box(w, h)) => format!(
+            " style=\"width:{};height:{}\"",
+            w.to_css(),
+            h.to_css()
+        ),
+        None => String::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TableRenderer
+// ---------------------------------------------------------------------------
+
+/// Renderer for tabular data: `![[data.csv]]` → deferred marker.
+///
+/// Emits `<!-- moss-embed-table:PATH -->`. src-tauri reads the CSV/TSV file
+/// and calls `moss_core::csv_table::render` (a pure renderer) in a post-pass.
+#[derive(Debug)]
+pub struct TableRenderer;
+
+impl EmbedRenderer for TableRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        &["csv", "tsv"]
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        RenderedEmbed::Deferred {
+            marker: format!("<!-- moss-embed-table:{} -->", embed.resolved_path),
         }
     }
 }
@@ -1219,5 +1333,151 @@ mod tests {
             alias: None,
         });
         assert!(out.contains("preload=\"metadata\""), "got: {}", out);
+    }
+
+    // --- NotebookRenderer ---
+
+    #[test]
+    fn test_notebook_renderer_extensions() {
+        assert_eq!(NotebookRenderer.extensions(), &["ipynb"]);
+    }
+
+    #[test]
+    fn test_notebook_renderer_basic() {
+        let embed = ParsedEmbed {
+            resolved_path: "resources/habitable-zone.ipynb",
+            from_path: "posts/hello.md",
+            query: None,
+            section: None,
+            alias: None,
+        };
+        match NotebookRenderer.render(&embed) {
+            RenderedEmbed::Deferred { marker } => assert_eq!(
+                marker,
+                "<!-- moss-embed-ipynb:resources/habitable-zone.ipynb -->"
+            ),
+            _ => panic!("expected Deferred"),
+        }
+    }
+
+    #[test]
+    fn test_notebook_renderer_with_query() {
+        let embed = ParsedEmbed {
+            resolved_path: "nb.ipynb",
+            from_path: "post.md",
+            query: Some("cells=1-5"),
+            section: None,
+            alias: None,
+        };
+        match NotebookRenderer.render(&embed) {
+            RenderedEmbed::Deferred { marker } => {
+                assert!(marker.contains("nb.ipynb?cells=1-5"), "got: {}", marker)
+            }
+            _ => panic!("expected Deferred"),
+        }
+    }
+
+    #[test]
+    fn test_notebook_renderer_no_head_assets() {
+        // nbconvert embeds its own styles inline; no page-level assets needed.
+        assert!(NotebookRenderer.head_assets().is_empty());
+    }
+
+    // --- ModelViewerRenderer ---
+
+    fn mv_html(e: &ParsedEmbed) -> String {
+        match ModelViewerRenderer.render(e) {
+            RenderedEmbed::Html(s) => s,
+            _ => panic!("expected Html"),
+        }
+    }
+
+    #[test]
+    fn test_model_viewer_extensions() {
+        let exts = ModelViewerRenderer.extensions();
+        assert!(exts.iter().any(|&x| x == "glb"));
+        assert!(exts.iter().any(|&x| x == "gltf"));
+    }
+
+    #[test]
+    fn test_model_viewer_basic() {
+        let out = mv_html(&ParsedEmbed {
+            resolved_path: "models/teapot.glb",
+            from_path: "posts/hello.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(out.contains("<model-viewer "), "got: {}", out);
+        assert!(
+            out.contains("src=\"../models/teapot.glb\""),
+            "got: {}",
+            out
+        );
+        assert!(
+            out.contains("class=\"moss-embed moss-embed-3d\""),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("camera-controls"), "got: {}", out);
+        assert!(out.contains("auto-rotate"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_model_viewer_with_sizing() {
+        let out = mv_html(&ParsedEmbed {
+            resolved_path: "m.glb",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: Some("400x400"),
+        });
+        assert!(
+            out.contains("style=\"width:400px;height:400px\""),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_model_viewer_head_assets() {
+        let assets = ModelViewerRenderer.head_assets();
+        assert_eq!(assets.len(), 1);
+        assert!(
+            assets[0].contains("model-viewer"),
+            "got: {}",
+            assets[0]
+        );
+        assert!(
+            assets[0].contains("<script"),
+            "got: {}",
+            assets[0]
+        );
+    }
+
+    // --- TableRenderer ---
+
+    #[test]
+    fn test_table_renderer_extensions() {
+        let exts = TableRenderer.extensions();
+        assert!(exts.iter().any(|&x| x == "csv"));
+        assert!(exts.iter().any(|&x| x == "tsv"));
+    }
+
+    #[test]
+    fn test_table_renderer_emits_deferred() {
+        let embed = ParsedEmbed {
+            resolved_path: "data/stars.csv",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+        };
+        match TableRenderer.render(&embed) {
+            RenderedEmbed::Deferred { marker } => {
+                assert_eq!(marker, "<!-- moss-embed-table:data/stars.csv -->")
+            }
+            _ => panic!("expected Deferred"),
+        }
     }
 }
