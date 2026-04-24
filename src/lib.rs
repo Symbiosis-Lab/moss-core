@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod content_graph;
+pub mod csv_table;
 pub mod home;
 pub mod frontmatter;
 pub mod link_candidates;
