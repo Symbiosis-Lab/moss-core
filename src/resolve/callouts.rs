@@ -99,8 +99,17 @@ pub fn transform_callouts(content: &str) -> String {
             let body = body_lines.join("\n");
 
             let escaped_title = html_escape(&display_title);
+            // CommonMark requires blank lines between an HTML block tag and
+            // embedded markdown content, otherwise the renderer treats the
+            // body as raw HTML and does not process inline markup. Emit a
+            // blank line before and after {body}.
+            //
+            // The closing </div>s are kept at column 0 (not indented) so
+            // markdown lists in the body close cleanly — any leading indent
+            // on the closer would be interpreted as list-item continuation
+            // and pull the tag inside the final <li>.
             output.push_str(&format!(
-                "<div class=\"callout callout-{callout_type}\">\n  <div class=\"callout-title\">{escaped_title}</div>\n  <div class=\"callout-content\">\n{body}\n  </div>\n</div>\n"
+                "<div class=\"callout callout-{callout_type}\">\n  <div class=\"callout-title\">{escaped_title}</div>\n  <div class=\"callout-content\">\n\n{body}\n\n</div>\n</div>\n"
             ));
         } else {
             output.push_str(line);
@@ -181,7 +190,7 @@ mod tests {
     fn test_basic_callout() {
         let input = "> [!warning] Be Careful\n> This is a warning callout.\n> It can span multiple lines.";
         let output = transform_callouts(input);
-        let expected = "<div class=\"callout callout-warning\">\n  <div class=\"callout-title\">Be Careful</div>\n  <div class=\"callout-content\">\nThis is a warning callout.\nIt can span multiple lines.\n  </div>\n</div>";
+        let expected = "<div class=\"callout callout-warning\">\n  <div class=\"callout-title\">Be Careful</div>\n  <div class=\"callout-content\">\n\nThis is a warning callout.\nIt can span multiple lines.\n\n</div>\n</div>";
         assert_eq!(norm(&output), expected);
     }
 
@@ -297,6 +306,48 @@ mod tests {
         assert_eq!(
             html_escape("<script>alert(\"xss\");</script>"),
             "&lt;script&gt;alert(&quot;xss&quot;);&lt;/script&gt;"
+        );
+    }
+
+    #[test]
+    fn test_closing_div_not_indented_so_markdown_lists_close_cleanly() {
+        // If the closing `</div>` is indented (e.g., "  </div>"), CommonMark
+        // treats the two-space indent as list-item continuation, and the
+        // closing tag gets pulled INSIDE the last <li>. Keeping the closers
+        // at column 0 prevents that.
+        let input = "> [!tip] List inside\n> - one\n> - two";
+        let output = transform_callouts(input);
+        assert!(
+            output.contains("\n</div>\n</div>"),
+            "closing </div>s must not be indented (would bleed into adjacent markdown lists), got: {}",
+            output,
+        );
+    }
+
+    #[test]
+    fn test_body_is_separated_from_wrapper_divs_for_markdown_parsing() {
+        // CommonMark rule: content immediately adjacent to an HTML block tag is
+        // treated as raw HTML — inline markdown inside is NOT parsed. To get
+        // `**bold**` inside a callout's first paragraph rendered as <strong>,
+        // the body must be separated from the surrounding <div> tags by blank
+        // lines so the markdown renderer treats it as its own markdown block.
+        //
+        // This test locks in that contract on the emitted string. Removing the
+        // blank lines would reintroduce the "first-paragraph inline markdown
+        // does not render" bug.
+        let input = "> [!note] Title\n> Body with **bold**.";
+        let output = transform_callouts(input);
+        // Blank line between <div class="callout-content"> and the body:
+        assert!(
+            output.contains("<div class=\"callout-content\">\n\nBody with **bold**."),
+            "expected blank line after callout-content opener, got: {}",
+            output,
+        );
+        // Blank line between the body and the closing </div>:
+        assert!(
+            output.contains("Body with **bold**.\n\n</div>"),
+            "expected blank line before callout-content closer, got: {}",
+            output,
         );
     }
 
