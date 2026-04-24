@@ -196,6 +196,7 @@ fn registry() -> &'static [&'static dyn EmbedRenderer] {
             &ImageRenderer as &'static dyn EmbedRenderer,
             &MarkdownEmbedRenderer as &'static dyn EmbedRenderer,
             &IframeRenderer as &'static dyn EmbedRenderer,
+            &PdfRenderer as &'static dyn EmbedRenderer,
         ]
     })
 }
@@ -348,6 +349,43 @@ fn iframe_title_attr(alias: Option<&str>) -> String {
 }
 
 // build_src, dim_attrs, html_escape_attr now live in common.rs — imported above.
+
+// ---------------------------------------------------------------------------
+// PdfRenderer
+// ---------------------------------------------------------------------------
+
+/// Renderer for PDF embeds: `![[report.pdf]]` → `<object type="application/pdf">`.
+///
+/// `<object>` has better keyboard navigation than `<iframe>` for PDFs and
+/// supports inline fallback content for browsers that can't render PDFs natively.
+#[derive(Debug)]
+pub struct PdfRenderer;
+
+impl EmbedRenderer for PdfRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        &["pdf"]
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        let url = relative_asset_path(embed.from_path, embed.resolved_path);
+        let data_url = build_src(&url, embed.query, embed.section);
+        let (width_attr, height_attr) = dim_attrs(embed.alias);
+        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_PDF);
+        let name = html_escape_attr(&file_stem(embed.resolved_path));
+
+        // <object> with inline download fallback for browsers that can't render PDFs.
+        let html = format!(
+            "<object class=\"{}\" type=\"application/pdf\" data=\"{}\"{}{}><a href=\"{}\">Download {}</a></object>",
+            classes,
+            html_escape_attr(&data_url),
+            width_attr,
+            height_attr,
+            html_escape_attr(&url),
+            name,
+        );
+        RenderedEmbed::Html(html)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -795,5 +833,94 @@ mod tests {
         // Malformed sizing isn't recognized by Sizing::parse, so it falls through
         // to the title-attr path and becomes a title.
         assert!(out.contains("title=\"100xbad\""), "got: {}", out);
+    }
+
+    // --- PdfRenderer ---
+
+    fn pdf_html(e: &ParsedEmbed) -> String {
+        match PdfRenderer.render(e) {
+            RenderedEmbed::Html(s) => s,
+            _ => panic!("expected Html variant"),
+        }
+    }
+
+    #[test]
+    fn test_pdf_renderer_extensions() {
+        assert_eq!(PdfRenderer.extensions(), &["pdf"]);
+    }
+
+    #[test]
+    fn test_pdf_renderer_basic() {
+        let out = pdf_html(&ParsedEmbed {
+            resolved_path: "assets/report.pdf",
+            from_path: "posts/hello.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(out.contains("<object "), "got: {}", out);
+        assert!(
+            out.contains("type=\"application/pdf\""),
+            "got: {}",
+            out
+        );
+        assert!(
+            out.contains("data=\"../assets/report.pdf\""),
+            "got: {}",
+            out
+        );
+        assert!(
+            out.contains("class=\"moss-embed moss-embed-pdf\""),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_pdf_renderer_with_page_fragment() {
+        // #page=5 is the standard PDF viewer fragment.
+        let out = pdf_html(&ParsedEmbed {
+            resolved_path: "doc.pdf",
+            from_path: "post.md",
+            query: None,
+            section: Some("page=5"),
+            alias: None,
+        });
+        assert!(
+            out.contains("data=\"doc.pdf#page=5\""),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_pdf_renderer_with_sizing() {
+        let out = pdf_html(&ParsedEmbed {
+            resolved_path: "doc.pdf",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: Some("100%x800"),
+        });
+        assert!(out.contains("width=\"100%\""), "got: {}", out);
+        assert!(out.contains("height=\"800px\""), "got: {}", out);
+    }
+
+    #[test]
+    fn test_pdf_renderer_fallback_link() {
+        // <object> must contain fallback content for browsers that can't render PDFs.
+        let out = pdf_html(&ParsedEmbed {
+            resolved_path: "doc.pdf",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(
+            out.contains("href=\"doc.pdf\""),
+            "fallback link missing: {}",
+            out
+        );
+        assert!(out.contains("Download doc"), "got: {}", out);
     }
 }
