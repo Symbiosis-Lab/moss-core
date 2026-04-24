@@ -59,3 +59,27 @@ impl Default for PageKind {
         PageKind::Article
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn listable_at_depth_all_is_article_only() {
+        assert!(PageKind::Article.is_listable_at_depth_all());
+        assert!(!PageKind::Folder.is_listable_at_depth_all());
+        assert!(!PageKind::Asset.is_listable_at_depth_all());
+    }
+
+    #[test]
+    fn listable_at_depth_direct_is_article_and_folder() {
+        assert!(PageKind::Article.is_listable_at_depth_direct());
+        assert!(PageKind::Folder.is_listable_at_depth_direct());
+        assert!(!PageKind::Asset.is_listable_at_depth_direct());
+    }
+
+    #[test]
+    fn default_is_article() {
+        assert_eq!(PageKind::default(), PageKind::Article);
+    }
+}
