@@ -933,6 +933,32 @@ mod tests {
     }
 
     #[test]
+    fn standard_markdown_link_resolves_folder_note() {
+        // Graph contains only 文字/文字.md, not 文字.md.
+        // A link [文字](文字.md) from root index.md should resolve via
+        // ContentGraph::resolve_path's folder-note fallback.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "index");
+        b.add_file("文字/文字.md", "writings");
+        let graph = b.build();
+
+        let files = HashMap::new();
+        let result = resolve_content(
+            "index.md",
+            "[文字](文字.md)\n",
+            &graph,
+            &mock_reader(&files),
+        );
+
+        // The resolver should have rewritten 文字.md to 文字/文字.md.
+        assert!(
+            result.content_markdown.contains("文字/文字.md"),
+            "expected folder-note resolution; got: {}",
+            result.content_markdown
+        );
+    }
+
+    #[test]
     fn test_frontmatter_link_wikilink_alias_discarded() {
         let mut b = ContentGraphBuilder::new();
         b.add_file("index.md", "index");
