@@ -371,6 +371,143 @@ fn parse_heading(line: &str) -> Option<(usize, &str)> {
     Some((level, rest[1..].trim()))
 }
 
+// ---------------------------------------------------------------------------
+// Deferred-marker post-pass
+// ---------------------------------------------------------------------------
+
+/// A resolver for one kind of Deferred embed marker.
+///
+/// Given the marker's target body (everything between `<!-- <prefix>:` and
+/// ` -->`), returns the HTML to splice in. The `diagnostics` buffer is for
+/// reporting I/O errors or invalid targets; the handler is expected to
+/// return a best-effort fallback HTML even on failure so the build doesn't
+/// stall.
+pub type MarkerHandler<'a> =
+    Box<dyn Fn(&str, &mut Vec<Diagnostic>) -> String + Send + Sync + 'a>;
+
+/// Registry of marker-prefix → handler, used by
+/// [`resolve_deferred_markers`] to dispatch Deferred embeds
+/// ([`crate::resolve::embed_renderer::RenderedEmbed::Deferred`]) in a post-pass.
+///
+/// The built-in `moss-embed:` (markdown transclusion) is **not** dispatched
+/// here — it's resolved by [`resolve_embeds`] in an earlier pass. This
+/// registry handles typed prefixes: `moss-embed-ipynb`, `moss-embed-table`,
+/// `moss-embed-plugin-<name>`, etc.
+///
+/// Use [`super::embed_renderer::MARKER_IPYNB`] / [`super::embed_renderer::MARKER_TABLE`]
+/// (etc.) as prefixes to avoid stringly-typed drift.
+pub struct MarkerHandlers<'a> {
+    handlers: Vec<(String, MarkerHandler<'a>)>,
+}
+
+impl<'a> MarkerHandlers<'a> {
+    pub fn new() -> Self {
+        Self {
+            handlers: Vec::new(),
+        }
+    }
+
+    /// Register a handler for markers whose prefix is `<prefix>:`.
+    ///
+    /// `prefix` should NOT include the trailing colon — the scanner matches
+    /// `<!-- <prefix>:` automatically.
+    pub fn register(
+        &mut self,
+        prefix: impl Into<String>,
+        handler: MarkerHandler<'a>,
+    ) {
+        self.handlers.push((prefix.into(), handler));
+    }
+
+    /// Find the handler whose prefix matches the body of this marker.
+    /// Returns `(prefix, handler, target_body)`.
+    fn find<'b>(&'b self, marker_body: &'b str) -> Option<(&'b str, &'b MarkerHandler<'a>, &'b str)> {
+        self.handlers.iter().find_map(|(p, h)| {
+            let needle = format!("{}:", p);
+            marker_body
+                .strip_prefix(needle.as_str())
+                .map(|tail| (p.as_str(), h, tail))
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+}
+
+impl<'a> Default for MarkerHandlers<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Scan `content` for Deferred markers and dispatch each to its registered
+/// handler. Markers with no registered handler are left intact (so they
+/// survive to the final HTML as comments — visible, greppable, not silently
+/// swallowed if a resolver is missing).
+///
+/// This is a pure string transform. The handler closures may do I/O; this
+/// function does not.
+pub fn resolve_deferred_markers(
+    content: &str,
+    handlers: &MarkerHandlers<'_>,
+) -> DeferredResult {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    if handlers.is_empty() {
+        return DeferredResult {
+            content: content.to_string(),
+            diagnostics,
+        };
+    }
+
+    let mut out = String::with_capacity(content.len());
+    let mut remaining = content;
+
+    loop {
+        // Find the next "<!-- " marker start.
+        let Some(start) = remaining.find("<!-- ") else {
+            out.push_str(remaining);
+            break;
+        };
+        // Copy everything up to the marker verbatim.
+        out.push_str(&remaining[..start]);
+        let after_start = &remaining[start + 5..];
+
+        // Find the closing " -->".
+        let Some(end) = after_start.find(" -->") else {
+            // Unclosed; copy the rest verbatim.
+            out.push_str(&remaining[start..]);
+            break;
+        };
+        let marker_body = &after_start[..end];
+
+        match handlers.find(marker_body) {
+            Some((_prefix, handler, target)) => {
+                let resolved = handler(target, &mut diagnostics);
+                out.push_str(&resolved);
+            }
+            None => {
+                // Unrecognized marker — leave it as-is.
+                out.push_str(&remaining[start..start + 5 + end + 4]);
+            }
+        }
+        remaining = &after_start[end + 4..];
+    }
+
+    DeferredResult {
+        content: out,
+        diagnostics,
+    }
+}
+
+/// Output of [`resolve_deferred_markers`].
+#[derive(Debug)]
+pub struct DeferredResult {
+    pub content: String,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,5 +891,98 @@ mod tests {
         assert!(section.is_some());
         assert!(section.as_ref().unwrap().contains("About stems"));
         assert!(!section.unwrap().contains("folder"));
+    }
+
+    // --- MarkerHandlers / resolve_deferred_markers ---
+
+    #[test]
+    fn test_deferred_markers_empty_handlers_noop() {
+        let content = "before <!-- moss-embed-ipynb:x.ipynb --> after";
+        let handlers = MarkerHandlers::new();
+        let r = resolve_deferred_markers(content, &handlers);
+        assert_eq!(r.content, content);
+    }
+
+    #[test]
+    fn test_deferred_markers_dispatches_single() {
+        let content = "before <!-- moss-embed-ipynb:nb.ipynb --> after";
+        let mut h = MarkerHandlers::new();
+        h.register(
+            "moss-embed-ipynb",
+            Box::new(|target, _| format!("<div class=\"nb\">{}</div>", target)),
+        );
+        let r = resolve_deferred_markers(content, &h);
+        assert_eq!(r.content, "before <div class=\"nb\">nb.ipynb</div> after");
+    }
+
+    #[test]
+    fn test_deferred_markers_dispatches_multiple_different_prefixes() {
+        let content = "a <!-- moss-embed-ipynb:n.ipynb --> b <!-- moss-embed-table:d.csv --> c";
+        let mut h = MarkerHandlers::new();
+        h.register(
+            "moss-embed-ipynb",
+            Box::new(|t, _| format!("[nb:{}]", t)),
+        );
+        h.register(
+            "moss-embed-table",
+            Box::new(|t, _| format!("[tbl:{}]", t)),
+        );
+        let r = resolve_deferred_markers(content, &h);
+        assert_eq!(r.content, "a [nb:n.ipynb] b [tbl:d.csv] c");
+    }
+
+    #[test]
+    fn test_deferred_markers_unknown_prefix_left_intact() {
+        let content = "before <!-- moss-embed-unknown:foo --> after";
+        let mut h = MarkerHandlers::new();
+        h.register("moss-embed-ipynb", Box::new(|_, _| String::new()));
+        let r = resolve_deferred_markers(content, &h);
+        // Unknown marker preserved verbatim so bugs are visible.
+        assert!(r.content.contains("<!-- moss-embed-unknown:foo -->"));
+    }
+
+    #[test]
+    fn test_deferred_markers_handler_can_emit_diagnostics() {
+        let content = "<!-- moss-embed-ipynb:bad -->";
+        let mut h = MarkerHandlers::new();
+        h.register(
+            "moss-embed-ipynb",
+            Box::new(|t, diags| {
+                diags.push(Diagnostic {
+                    message: format!("synthetic failure for {}", t),
+                    source_path: "".to_string(),
+                    reference: t.to_string(),
+                });
+                "<div class=\"error\"></div>".to_string()
+            }),
+        );
+        let r = resolve_deferred_markers(content, &h);
+        assert_eq!(r.diagnostics.len(), 1);
+        assert!(r.diagnostics[0].message.contains("synthetic failure"));
+    }
+
+    #[test]
+    fn test_deferred_markers_prefix_matching_exact() {
+        // A handler for "moss-embed" must NOT swallow "moss-embed-ipynb".
+        let content = "<!-- moss-embed-ipynb:nb.ipynb -->";
+        let mut h = MarkerHandlers::new();
+        h.register(
+            "moss-embed",
+            Box::new(|_, _| "WRONG".to_string()),
+        );
+        let r = resolve_deferred_markers(content, &h);
+        // "moss-embed:" would match; "moss-embed-ipynb:" would not.
+        // Our format!("{}:", prefix) matches "moss-embed:", which doesn't
+        // prefix "moss-embed-ipynb:" — correct disjoint behavior.
+        assert!(r.content.contains("moss-embed-ipynb"), "got: {}", r.content);
+    }
+
+    #[test]
+    fn test_deferred_markers_unclosed_marker_preserved() {
+        let content = "before <!-- moss-embed-ipynb:no-closing";
+        let mut h = MarkerHandlers::new();
+        h.register("moss-embed-ipynb", Box::new(|_, _| "NO".to_string()));
+        let r = resolve_deferred_markers(content, &h);
+        assert_eq!(r.content, content);
     }
 }
