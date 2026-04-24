@@ -15,6 +15,7 @@ pub mod callouts;
 pub mod embed_renderer;
 pub mod embeds;
 pub mod fuzzy_path;
+pub mod markdown_links;
 pub mod markdown_refs;
 pub mod wikilinks;
 
@@ -68,6 +69,7 @@ pub struct ResolveResult {
 /// 3. Resolve embed placeholders -- inline `<!-- moss-embed:… -->` markers with file content
 /// 4. Resolve wikilinks (second pass) -- catch wikilinks introduced by embedded content
 /// 4.5. Resolve bare filenames in standard markdown images -- `![](photo.jpg)` to resolved paths
+/// 4.6. Resolve standard markdown links -- `[text](target.md)` to resolved paths
 /// 5. Transform block references -- `^id` markers to HTML anchors
 /// 6. Transform callouts -- `> [!type]` to HTML divs
 /// 7. Rejoin frontmatter + resolved body
@@ -101,8 +103,14 @@ pub fn resolve_content(
     outgoing_links.extend(md_ref_result.outgoing_links);
     diagnostics.extend(md_ref_result.diagnostics);
 
+    // Step 4.6: Resolve standard markdown link targets via ContentGraph.
+    let md_link_result =
+        markdown_links::resolve_markdown_links(&md_ref_result.content, graph, source_path);
+    outgoing_links.extend(md_link_result.outgoing_links);
+    diagnostics.extend(md_link_result.diagnostics);
+
     // Step 5: Transform block references.
-    let (block_result, block_ids) = block_refs::transform_block_refs(&md_ref_result.content);
+    let (block_result, block_ids) = block_refs::transform_block_refs(&md_link_result.content);
 
     // Step 6: Transform callouts.
     let callout_result = callouts::transform_callouts(&block_result);
@@ -929,6 +937,32 @@ mod tests {
         assert!(
             result.content_markdown.starts_with("cover: \"photos/hero.jpg|cover left\"\n---"),
             "Embed wikilink with attrs not resolved correctly: {}",
+            result.content_markdown
+        );
+    }
+
+    #[test]
+    fn standard_markdown_link_resolves_folder_note() {
+        // Graph contains only 文字/文字.md, not 文字.md.
+        // A link [文字](文字.md) from root index.md should resolve via
+        // ContentGraph::resolve_path's folder-note fallback.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "index");
+        b.add_file("文字/文字.md", "writings");
+        let graph = b.build();
+
+        let files = HashMap::new();
+        let result = resolve_content(
+            "index.md",
+            "[文字](文字.md)\n",
+            &graph,
+            &mock_reader(&files),
+        );
+
+        // The resolver should have rewritten 文字.md to 文字/文字.md.
+        assert!(
+            result.content_markdown.contains("文字/文字.md"),
+            "expected folder-note resolution; got: {}",
             result.content_markdown
         );
     }

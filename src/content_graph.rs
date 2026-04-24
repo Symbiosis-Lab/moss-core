@@ -144,7 +144,19 @@ pub struct ContentGraph {
 }
 
 impl ContentGraph {
-    /// Resolve an Obsidian-style `reference` to a normalized path in this graph.
+    /// **Single source of truth for target resolution in moss.**
+    ///
+    /// Every link syntax — wikilinks `[[x]]`, standard markdown links
+    /// `[t](x)`, image refs `![](x)`, embeds `![[x]]`, frontmatter refs —
+    /// MUST resolve through this function. See the resolve pipeline in
+    /// [`crate::resolve::resolve_content`] and the prose overview in
+    /// `moss/docs/link-resolution.md` for the per-syntax call sites.
+    ///
+    /// Downstream code (the compiler's URL-prettifier, for instance)
+    /// receives already-resolved hrefs and MUST NOT reimplement any
+    /// part of this chain. Adding a parallel resolver was the root
+    /// cause of the `[文字](文字.md)` regression on sites using folder
+    /// notes.
     ///
     /// Resolution chain (first match wins):
     /// 1. Exact normalized path
