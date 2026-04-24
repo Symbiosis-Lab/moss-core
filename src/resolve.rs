@@ -17,6 +17,7 @@ pub mod embeds;
 pub mod fuzzy_path;
 pub mod markdown_links;
 pub mod markdown_refs;
+pub mod registry;
 pub mod wikilinks;
 
 /// A link going out from a document.

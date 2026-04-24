@@ -41,6 +41,9 @@ pub struct WikilinkResult {
 /// and replaces them with standard markdown links.  Content inside fenced code
 /// blocks and inline code spans is left untouched.
 ///
+/// Uses the built-in renderer registry. Pipelines with plugin-registered
+/// renderers should use [`resolve_wikilinks_with_registry`] instead.
+///
 /// # Arguments
 ///
 /// * `content`   — the markdown source text
@@ -50,6 +53,31 @@ pub fn resolve_wikilinks(
     content: &str,
     graph: &ContentGraph,
     from_path: &str,
+) -> WikilinkResult {
+    resolve_wikilinks_inner(content, graph, from_path, &|ext| {
+        super::embed_renderer::lookup_renderer(ext).map(|r| r as &dyn super::embed_renderer::EmbedRenderer)
+    })
+}
+
+/// Like [`resolve_wikilinks`] but threads a custom [`RendererRegistry`](super::registry::RendererRegistry)
+/// through the embed dispatch. Use this when the pipeline has plugin-registered
+/// renderers; otherwise use [`resolve_wikilinks`].
+pub fn resolve_wikilinks_with_registry(
+    content: &str,
+    graph: &ContentGraph,
+    from_path: &str,
+    registry: &super::registry::RendererRegistry,
+) -> WikilinkResult {
+    resolve_wikilinks_inner(content, graph, from_path, &|ext| {
+        registry.lookup(ext).map(|r| r as &dyn super::embed_renderer::EmbedRenderer)
+    })
+}
+
+fn resolve_wikilinks_inner(
+    content: &str,
+    graph: &ContentGraph,
+    from_path: &str,
+    lookup: &dyn Fn(&str) -> Option<&dyn super::embed_renderer::EmbedRenderer>,
 ) -> WikilinkResult {
     let mut outgoing_links: Vec<OutgoingLink> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -85,7 +113,7 @@ pub fn resolve_wikilinks(
         }
 
         // --- Process line for wikilinks, respecting inline code ---
-        let transformed = process_line(line, graph, from_path, &mut outgoing_links, &mut diagnostics);
+        let transformed = process_line(line, graph, from_path, &mut outgoing_links, &mut diagnostics, lookup);
         output_lines.push(transformed);
     }
 
@@ -110,6 +138,7 @@ fn process_line(
     from_path: &str,
     outgoing_links: &mut Vec<OutgoingLink>,
     diagnostics: &mut Vec<Diagnostic>,
+    lookup: &dyn Fn(&str) -> Option<&dyn super::embed_renderer::EmbedRenderer>,
 ) -> String {
     let mut result = String::with_capacity(line.len());
     let chars: Vec<char> = line.chars().collect();
@@ -163,6 +192,7 @@ fn process_line(
                     from_path,
                     outgoing_links,
                     diagnostics,
+                    lookup,
                 );
                 result.push_str(&replacement);
                 i = end;
@@ -344,16 +374,17 @@ fn resolve_wikilink(
 /// Resolve an embed `![[…]]` and return its markdown replacement.
 ///
 /// Parsing produces a `ParsedEmbed`; a renderer is chosen by the resolved
-/// target's extension. Unknown extensions fall back to a plain markdown link
-/// (Obsidian parity).
+/// target's extension via the supplied `lookup` closure. Unknown extensions
+/// fall back to a plain markdown link (Obsidian parity).
 fn resolve_embed(
     inner: &str,
     graph: &ContentGraph,
     from_path: &str,
     outgoing_links: &mut Vec<OutgoingLink>,
     diagnostics: &mut Vec<Diagnostic>,
+    lookup: &dyn Fn(&str) -> Option<&dyn super::embed_renderer::EmbedRenderer>,
 ) -> String {
-    use super::embed_renderer::{lookup_renderer, ParsedEmbed, RenderedEmbed};
+    use super::embed_renderer::{ParsedEmbed, RenderedEmbed};
 
     let (file_part, section, query, alias) = parse_wikilink_inner(inner);
 
@@ -379,7 +410,7 @@ fn resolve_embed(
                 alias,
             };
 
-            match path_extension(&target_path).as_deref().and_then(lookup_renderer) {
+            match path_extension(&target_path).as_deref().and_then(lookup) {
                 Some(r) => match r.render(&parsed) {
                     RenderedEmbed::Inline(s) => s,
                     RenderedEmbed::Html(s) => s,
@@ -1055,5 +1086,38 @@ mod tests {
             result.content
         );
         assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_wikilinks_with_registry_picks_plugin_renderer() {
+        use super::super::embed_renderer::{EmbedRenderer, ParsedEmbed, RenderedEmbed};
+        use super::super::registry::RendererRegistry;
+
+        #[derive(Debug)]
+        struct FooRenderer;
+        impl EmbedRenderer for FooRenderer {
+            fn extensions(&self) -> &[&'static str] {
+                &["foo"]
+            }
+            fn render(&self, e: &ParsedEmbed<'_>) -> RenderedEmbed {
+                RenderedEmbed::Html(format!("<foo src={}>", e.resolved_path))
+            }
+        }
+
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("data.foo", "data");
+        let graph = b.build();
+
+        let reg = RendererRegistry::builtin()
+            .with_boxed(Box::new(FooRenderer))
+            .build();
+
+        let result =
+            resolve_wikilinks_with_registry("![[data.foo]]", &graph, "post.md", &reg);
+        assert!(
+            result.content.contains("<foo src="),
+            "plugin renderer did not dispatch; got: {}",
+            result.content
+        );
     }
 }
