@@ -31,6 +31,83 @@ pub enum RenderedEmbed {
     Inline(String),
 }
 
+/// A single dimension with a unit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Dim {
+    Px(u32),
+    Percent(f32),
+    Vh(f32),
+}
+
+impl Dim {
+    /// Render this dimension as a CSS length string.
+    pub fn to_css(self) -> String {
+        match self {
+            Dim::Px(n) => format!("{}px", n),
+            Dim::Percent(v) => {
+                if v.fract() == 0.0 {
+                    format!("{}%", v as i64)
+                } else {
+                    format!("{}%", v)
+                }
+            }
+            Dim::Vh(v) => {
+                if v.fract() == 0.0 {
+                    format!("{}vh", v as i64)
+                } else {
+                    format!("{}vh", v)
+                }
+            }
+        }
+    }
+
+    /// Parse one dimension. Accepts: `200`, `200px`, `100%`, `80vh`.
+    /// Returns None on any parse failure.
+    fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        if let Some(rest) = s.strip_suffix('%') {
+            return rest.trim().parse::<f32>().ok().map(Dim::Percent);
+        }
+        if let Some(rest) = s.strip_suffix("vh") {
+            return rest.trim().parse::<f32>().ok().map(Dim::Vh);
+        }
+        if let Some(rest) = s.strip_suffix("px") {
+            return rest.trim().parse::<u32>().ok().map(Dim::Px);
+        }
+        s.parse::<u32>().ok().map(Dim::Px)
+    }
+}
+
+/// Parsed `|WxH` sizing hint from a wikilink pipe segment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Sizing {
+    /// `|200` or `|100%` — width only.
+    Width(Dim),
+    /// `|200x150` or `|100%x600` — width × height.
+    Box(Dim, Dim),
+}
+
+impl Sizing {
+    /// Parse a pipe segment. Returns None if the string does not look like a
+    /// sizing hint — callers can then fall through to their own parser
+    /// (e.g. image display keywords).
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        if let Some((w, h)) = s.split_once('x') {
+            let wd = Dim::parse(w)?;
+            let hd = Dim::parse(h)?;
+            return Some(Sizing::Box(wd, hd));
+        }
+        Dim::parse(s).map(Sizing::Width)
+    }
+}
+
 /// A renderer converts a `ParsedEmbed` into its rendered form.
 pub trait EmbedRenderer: std::fmt::Debug + Send + Sync {
     /// Extensions this renderer claims (lowercase, without leading dot).
@@ -281,5 +358,71 @@ mod tests {
                 exts
             );
         }
+    }
+
+    // --- Dim parser ---
+
+    #[test]
+    fn test_dim_css_px() {
+        assert_eq!(Dim::Px(200).to_css(), "200px");
+    }
+
+    #[test]
+    fn test_dim_css_percent() {
+        assert_eq!(Dim::Percent(100.0).to_css(), "100%");
+        assert_eq!(Dim::Percent(50.5).to_css(), "50.5%");
+    }
+
+    #[test]
+    fn test_dim_css_vh() {
+        assert_eq!(Dim::Vh(100.0).to_css(), "100vh");
+    }
+
+    // --- Sizing parser ---
+
+    #[test]
+    fn test_sizing_parse_width_only_px() {
+        assert_eq!(Sizing::parse("200"), Some(Sizing::Width(Dim::Px(200))));
+    }
+
+    #[test]
+    fn test_sizing_parse_width_only_percent() {
+        assert_eq!(Sizing::parse("100%"), Some(Sizing::Width(Dim::Percent(100.0))));
+    }
+
+    #[test]
+    fn test_sizing_parse_box_px() {
+        assert_eq!(
+            Sizing::parse("200x150"),
+            Some(Sizing::Box(Dim::Px(200), Dim::Px(150)))
+        );
+    }
+
+    #[test]
+    fn test_sizing_parse_box_percent_by_px() {
+        assert_eq!(
+            Sizing::parse("100%x600"),
+            Some(Sizing::Box(Dim::Percent(100.0), Dim::Px(600)))
+        );
+    }
+
+    #[test]
+    fn test_sizing_parse_box_vh_height() {
+        assert_eq!(
+            Sizing::parse("100%x100vh"),
+            Some(Sizing::Box(Dim::Percent(100.0), Dim::Vh(100.0)))
+        );
+    }
+
+    #[test]
+    fn test_sizing_parse_rejects_display_keywords() {
+        assert_eq!(Sizing::parse("contain"), None);
+        assert_eq!(Sizing::parse("left top"), None);
+    }
+
+    #[test]
+    fn test_sizing_parse_empty_returns_none() {
+        assert_eq!(Sizing::parse(""), None);
+        assert_eq!(Sizing::parse("   "), None);
     }
 }
