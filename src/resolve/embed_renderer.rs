@@ -187,8 +187,12 @@ pub trait EmbedRenderer: std::fmt::Debug + Send + Sync {
 /// Built-in renderer registry. Initialized lazily on first lookup.
 ///
 /// Each renderer is a unit struct, so the pointer is to a zero-size `'static`
-/// — no heap allocation ever. Future renderers (iframe, pdf, audio, etc.)
+/// — no heap allocation ever. Future renderers (notebook, 3d, table, plugins)
 /// get appended here as they ship.
+///
+/// Extension sets across renderers are currently disjoint. Adding overlap
+/// (e.g., if a future renderer claims `.ogg` for video) would require
+/// tie-break logic here; first-match-wins is the only implicit rule today.
 fn registry() -> &'static [&'static dyn EmbedRenderer] {
     static INIT: OnceLock<Vec<&'static dyn EmbedRenderer>> = OnceLock::new();
     INIT.get_or_init(|| {
@@ -431,7 +435,12 @@ fn audio_mime_for_ext(ext: &str) -> &'static str {
         "flac" => "audio/flac",
         "m4a" => "audio/mp4",
         "opus" => "audio/opus",
-        _ => "application/octet-stream",
+        _ => {
+            // Defensive: registry-gated, so only reachable if AUDIO_EXTENSIONS
+            // gains an entry without a matching mime entry here.
+            debug_assert!(false, "unmapped audio extension: {}", ext);
+            "application/octet-stream"
+        }
     }
 }
 
@@ -445,6 +454,11 @@ const VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "mov", "m4v"];
 ///
 /// `|WxH` becomes width/height attrs. `preload=metadata` so the browser
 /// fetches duration/dimensions but not the full payload until play.
+///
+/// Note: `.mov` is codec-dependent. Safari plays QuickTime natively; Chrome
+/// and Firefox accept the MIME but decode only if the container's video
+/// codec is supported (usually H.264). Prefer `.mp4` or `.webm` for
+/// cross-browser reliability.
 #[derive(Debug)]
 pub struct VideoRenderer;
 
@@ -477,7 +491,11 @@ fn video_mime_for_ext(ext: &str) -> &'static str {
         "mp4" | "m4v" => "video/mp4",
         "webm" => "video/webm",
         "mov" => "video/quicktime",
-        _ => "application/octet-stream",
+        _ => {
+            // Defensive: registry-gated; see audio_mime_for_ext.
+            debug_assert!(false, "unmapped video extension: {}", ext);
+            "application/octet-stream"
+        }
     }
 }
 
