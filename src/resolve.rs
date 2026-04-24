@@ -80,21 +80,59 @@ pub fn resolve_content(
     graph: &ContentGraph,
     file_reader: &dyn Fn(&str) -> Option<String>,
 ) -> ResolveResult {
+    let handlers = embeds::MarkerHandlers::new();
+    let registry = registry::RendererRegistry::builtin().build();
+    resolve_content_with_handlers(
+        source_path,
+        raw_markdown,
+        graph,
+        file_reader,
+        &registry,
+        &handlers,
+    )
+}
+
+/// Variant of [`resolve_content`] that threads a custom [`registry::RendererRegistry`]
+/// (plugin-aware renderer dispatch) and [`embeds::MarkerHandlers`] (resolvers for
+/// Deferred markers: notebook, table, plugin renderers) through the pipeline.
+///
+/// Built-in-only pipelines should call [`resolve_content`]. Pipelines that load
+/// plugins at init time build a registry + handlers once and call this variant.
+///
+/// The handler registry fires in a **new step 4.25** that runs after embed
+/// resolution and before the second wikilink pass. This ordering lets
+/// Deferred handlers splice content that may itself contain wikilinks.
+pub fn resolve_content_with_handlers(
+    source_path: &str,
+    raw_markdown: &str,
+    graph: &ContentGraph,
+    file_reader: &dyn Fn(&str) -> Option<String>,
+    registry: &registry::RendererRegistry,
+    handlers: &embeds::MarkerHandlers<'_>,
+) -> ResolveResult {
     // Step 1: Separate frontmatter from body.
     let (frontmatter, body) = split_frontmatter(raw_markdown);
 
-    // Step 2: First wikilink pass.
-    let wikilink_pass1 = wikilinks::resolve_wikilinks(body, graph, source_path);
+    // Step 2: First wikilink pass (uses custom registry so plugin renderers
+    // participate in extension dispatch).
+    let wikilink_pass1 =
+        wikilinks::resolve_wikilinks_with_registry(body, graph, source_path, registry);
     let mut outgoing_links = wikilink_pass1.outgoing_links;
     let mut diagnostics = wikilink_pass1.diagnostics;
 
-    // Step 3: Resolve embeds.
+    // Step 3: Resolve markdown transclusion embeds.
     let embed_result = embeds::resolve_embeds(&wikilink_pass1.content, source_path, file_reader);
     diagnostics.extend(embed_result.diagnostics);
     let embed_deps = embed_result.embed_deps;
 
+    // Step 3.5 (new): Resolve Deferred markers (notebook, table, plugins).
+    // Skipped cheaply if handlers is empty.
+    let deferred_result = embeds::resolve_deferred_markers(&embed_result.content, handlers);
+    diagnostics.extend(deferred_result.diagnostics);
+
     // Step 4: Second wikilink pass (for wikilinks inside embedded content).
-    let wikilink_pass2 = wikilinks::resolve_wikilinks(&embed_result.content, graph, source_path);
+    let wikilink_pass2 =
+        wikilinks::resolve_wikilinks_with_registry(&deferred_result.content, graph, source_path, registry);
     outgoing_links.extend(wikilink_pass2.outgoing_links);
     diagnostics.extend(wikilink_pass2.diagnostics);
 
