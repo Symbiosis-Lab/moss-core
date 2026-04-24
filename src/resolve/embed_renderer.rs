@@ -25,6 +25,39 @@
 
 use std::sync::OnceLock;
 
+// ---------------------------------------------------------------------------
+// Reserved classnames (HTML/CSS contract, per moss#508)
+// ---------------------------------------------------------------------------
+
+/// Base class applied to all typed-embed output elements.
+///
+/// Theme authors may target `.moss-embed` to style the wrapper of any embed;
+/// renderer-specific classes (e.g. [`CLASS_EMBED_IFRAME`]) extend the base.
+/// The CSS that ships with moss is defined in src-tauri (see issue #508 for
+/// the HTML/CSS contract).
+pub const CLASS_EMBED: &str = "moss-embed";
+
+/// Applied to iframe renderer output (Phase B).
+pub const CLASS_EMBED_IFRAME: &str = "moss-embed-iframe";
+
+/// Applied to PDF renderer output (Phase C).
+pub const CLASS_EMBED_PDF: &str = "moss-embed-pdf";
+
+/// Applied to audio renderer output (Phase C).
+pub const CLASS_EMBED_AUDIO: &str = "moss-embed-audio";
+
+/// Applied to video renderer output (Phase C).
+pub const CLASS_EMBED_VIDEO: &str = "moss-embed-video";
+
+/// Applied to notebook renderer output (Phase D).
+pub const CLASS_EMBED_NOTEBOOK: &str = "moss-embed-notebook";
+
+/// Applied to 3D model renderer output (Phase D).
+pub const CLASS_EMBED_3D: &str = "moss-embed-3d";
+
+/// Applied to tabular-data renderer output (Phase D).
+pub const CLASS_EMBED_TABLE: &str = "moss-embed-table";
+
 /// An embed that has been parsed and path-resolved, ready for rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedEmbed<'a> {
@@ -487,6 +520,19 @@ mod tests {
     fn test_sizing_parse_empty_returns_none() {
         assert_eq!(Sizing::parse(""), None);
         assert_eq!(Sizing::parse("   "), None);
+    }
+
+    // --- Reserved classnames ---
+
+    #[test]
+    fn test_embed_class_constants_stable() {
+        // These strings are part of moss's HTML/CSS contract (#508).
+        // Changing them is a breaking change for theme authors; this test
+        // exists to force an explicit decision if anyone tries.
+        assert_eq!(CLASS_EMBED, "moss-embed");
+        assert_eq!(CLASS_EMBED_IFRAME, "moss-embed-iframe");
+        assert_eq!(CLASS_EMBED_PDF, "moss-embed-pdf");
+        assert_eq!(CLASS_EMBED_NOTEBOOK, "moss-embed-notebook");
     }
 
     // --- RenderedEmbed variants ---
