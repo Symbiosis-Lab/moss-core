@@ -5,6 +5,23 @@
 //! dispatches to the renderer for the target's extension. Unknown extensions
 //! fall back to a file link (Obsidian parity) — that fallback lives in the
 //! caller, not here.
+//!
+//! # moss-core ↔ src-tauri boundary
+//!
+//! moss-core is pure: no filesystem, no network, no async. This constrains
+//! what a renderer can do:
+//!
+//! - **Pure renderers** (image, iframe, audio, video, 3D, table) — return
+//!   `RenderedEmbed::Inline(markdown)` or `RenderedEmbed::Html(html)`. No I/O.
+//!   The string is spliced directly into the compiled output.
+//! - **I/O-bound renderers** (markdown transclusion, notebook, PDF preview) —
+//!   return `RenderedEmbed::Deferred { marker }`. src-tauri runs a post-pass
+//!   (`resolve_embeds` in `embeds.rs`) that reads the target file and splices
+//!   its rendered content into the marker.
+//!
+//! Plugin-registered renderers (Phase E) must follow the same rule: if they
+//! need I/O, they emit a marker and register a corresponding resolver on the
+//! src-tauri side.
 
 use std::sync::OnceLock;
 
@@ -27,10 +44,22 @@ pub struct ParsedEmbed<'a> {
 }
 
 /// Output of a renderer.
+///
+/// The variant tells the caller what further processing (if any) the string
+/// needs. See the module-level doc for the moss-core ↔ src-tauri boundary rule.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RenderedEmbed {
-    /// Inline markdown/HTML text to splice into the output stream.
+    /// Markdown-level text that will be processed by CommonMark downstream.
+    /// Example: `![alt](url)` from the image renderer.
     Inline(String),
+    /// Final HTML to splice into the output — must NOT be re-processed by the
+    /// markdown parser. Example: `<iframe …>` from the iframe renderer.
+    Html(String),
+    /// A marker comment for `resolve_embeds` to resolve in a post-pass with
+    /// file I/O. Example: `<!-- moss-embed-ipynb:notebook.ipynb -->` for the
+    /// notebook renderer. The marker format is renderer-specific; downstream
+    /// resolvers match on the prefix.
+    Deferred { marker: String },
 }
 
 /// A single dimension with a unit.
@@ -211,10 +240,9 @@ impl EmbedRenderer for MarkdownEmbedRenderer {
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let anchor = build_embed_anchor(embed.section);
-        RenderedEmbed::Inline(format!(
-            "<!-- moss-embed:{}{} -->",
-            embed.resolved_path, anchor
-        ))
+        RenderedEmbed::Deferred {
+            marker: format!("<!-- moss-embed:{}{} -->", embed.resolved_path, anchor),
+        }
     }
 }
 
@@ -282,7 +310,9 @@ mod tests {
         };
         assert_eq!(
             r.render(&embed),
-            RenderedEmbed::Inline("<!-- moss-embed:posts/intro.md -->".to_string())
+            RenderedEmbed::Deferred {
+                marker: "<!-- moss-embed:posts/intro.md -->".to_string()
+            }
         );
     }
 
@@ -298,7 +328,9 @@ mod tests {
         };
         assert_eq!(
             r.render(&embed),
-            RenderedEmbed::Inline("<!-- moss-embed:guide.md#getting-started -->".to_string())
+            RenderedEmbed::Deferred {
+                marker: "<!-- moss-embed:guide.md#getting-started -->".to_string()
+            }
         );
     }
 
@@ -314,7 +346,9 @@ mod tests {
         };
         assert_eq!(
             r.render(&embed),
-            RenderedEmbed::Inline("<!-- moss-embed:guide.md#^block-xyz -->".to_string())
+            RenderedEmbed::Deferred {
+                marker: "<!-- moss-embed:guide.md#^block-xyz -->".to_string()
+            }
         );
     }
 
@@ -369,6 +403,7 @@ mod tests {
         };
         let out = match r.render(&embed) {
             RenderedEmbed::Inline(s) => s,
+            _ => panic!("image renderer should return Inline"),
         };
         assert!(out.starts_with("<img "), "expected <img tag, got: {}", out);
         assert!(out.contains("src=\"photo.jpg\""), "got: {}", out);
@@ -452,6 +487,28 @@ mod tests {
     fn test_sizing_parse_empty_returns_none() {
         assert_eq!(Sizing::parse(""), None);
         assert_eq!(Sizing::parse("   "), None);
+    }
+
+    // --- RenderedEmbed variants ---
+
+    #[test]
+    fn test_rendered_embed_html_variant() {
+        let h = RenderedEmbed::Html("<iframe src=\"x\"></iframe>".to_string());
+        match h {
+            RenderedEmbed::Html(s) => assert!(s.contains("iframe")),
+            _ => panic!("expected Html variant"),
+        }
+    }
+
+    #[test]
+    fn test_rendered_embed_deferred_variant() {
+        let d = RenderedEmbed::Deferred {
+            marker: "<!-- moss-embed-ipynb:nb.ipynb -->".to_string(),
+        };
+        match d {
+            RenderedEmbed::Deferred { marker } => assert!(marker.contains("ipynb")),
+            _ => panic!("expected Deferred variant"),
+        }
     }
 
     // --- Registry lookup ---

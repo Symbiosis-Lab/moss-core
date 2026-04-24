@@ -382,6 +382,8 @@ fn resolve_embed(
             match path_extension(&target_path).as_deref().and_then(lookup_renderer) {
                 Some(r) => match r.render(&parsed) {
                     RenderedEmbed::Inline(s) => s,
+                    RenderedEmbed::Html(s) => s,
+                    RenderedEmbed::Deferred { marker } => marker,
                 },
                 None => {
                     // Fallback: plain file link (Obsidian parity for unknown types).
