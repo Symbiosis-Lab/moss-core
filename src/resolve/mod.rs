@@ -12,6 +12,7 @@ use crate::content_graph::ContentGraph;
 
 pub mod block_refs;
 pub mod callouts;
+pub mod embed_renderer;
 pub mod embeds;
 pub mod fuzzy_path;
 pub mod markdown_refs;
