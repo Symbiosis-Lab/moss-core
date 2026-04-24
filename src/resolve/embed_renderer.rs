@@ -117,10 +117,19 @@ pub enum RenderedEmbed {
     /// Final HTML to splice into the output — must NOT be re-processed by the
     /// markdown parser. Example: `<iframe …>` from the iframe renderer.
     Html(String),
-    /// A marker comment for `resolve_embeds` to resolve in a post-pass with
-    /// file I/O. Example: `<!-- moss-embed-ipynb:notebook.ipynb -->` for the
-    /// notebook renderer. The marker format is renderer-specific; downstream
-    /// resolvers match on the prefix.
+    /// A marker comment for a post-pass resolver to expand with file I/O.
+    ///
+    /// Format convention: `<!-- <prefix>:<target> -->` where `<prefix>`
+    /// uniquely identifies the resolver (e.g. `moss-embed-ipynb`,
+    /// `moss-embed-table`, `moss-embed-plugin-<plugin-name>`) and
+    /// `<target>` is the body the resolver parses (commonly a path,
+    /// optionally with `?query#fragment|alias`).
+    ///
+    /// The resolver lives in src-tauri (where async and I/O are allowed).
+    /// Built-in prefixes are exported as pub const: [`MARKER_MARKDOWN`],
+    /// [`MARKER_IPYNB`], [`MARKER_TABLE`]. Plugin-registered renderers
+    /// emit `moss-embed-plugin-<plugin-name>:` — see
+    /// [`super::registry`] for the full two-pass dispatch design.
     Deferred { marker: String },
 }
 

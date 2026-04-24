@@ -1,10 +1,49 @@
 //! Extensible registry for embed renderers.
 //!
-//! Built-ins come from moss-core; plugins (Phase E) register at pipeline init
-//! via `with_boxed`. The default lookup in `embed_renderer::lookup_renderer`
-//! uses the built-in-only registry; pipelines with plugin renderers build
-//! their own registry and thread it through
-//! `wikilinks::resolve_wikilinks_with_registry`.
+//! Built-ins come from moss-core; plugins register at pipeline init via
+//! [`RendererRegistryBuilder::with_boxed`]. The default lookup in
+//! [`super::embed_renderer::lookup_renderer`] uses the built-in-only
+//! registry; pipelines with plugin renderers build their own registry and
+//! thread it through [`super::wikilinks::resolve_wikilinks_with_registry`].
+//!
+//! # Two-pass dispatch (plugin renderers)
+//!
+//! Plugin renderers are declared in a plugin's manifest (a `script` path
+//! pointing at a JS function) but moss-core can't execute JavaScript. The
+//! pipeline handles this with a two-pass design:
+//!
+//! ```text
+//! Pass 1 (moss-core, pure):
+//!   ![[diagram.dot]]
+//!     → PluginEmbedRenderer::render(&parsed)     (src-tauri adapter)
+//!     → RenderedEmbed::Deferred { marker: "<!-- moss-embed-plugin-graphviz:... -->" }
+//!     → marker spliced into content
+//!
+//! Pass 2 (src-tauri, async + I/O):
+//!   resolve_embeds_with_handlers scans for marker prefix
+//!     → MarkerHandlers registry dispatches to plugin IPC
+//!     → plugin script runs `dot -Tsvg`
+//!     → returned HTML spliced back into content
+//! ```
+//!
+//! The first pass stays pure; the second pass does I/O. Plugin author
+//! writes one JS function; they never touch Rust.
+//!
+//! # Built-ins-win-on-collision
+//!
+//! Built-ins are registered first in [`RendererRegistry::builtin`]. Lookup
+//! is first-match-wins, so a plugin declaring an extension that clashes
+//! with a built-in (e.g., `.html`) can't shadow the built-in — its
+//! renderer is registered in the registry but never dispatched. This is a
+//! deliberate safety property; override policy (allow plugin to replace
+//! built-in) is a future extension.
+//!
+//! # When to use which API
+//!
+//! | Pipeline type | Function | Registry used |
+//! |---|---|---|
+//! | No plugins | [`super::wikilinks::resolve_wikilinks`] | built-in only (via `lookup_renderer`) |
+//! | With plugins | [`super::wikilinks::resolve_wikilinks_with_registry`] | custom registry built at init |
 
 use super::embed_renderer::{
     EmbedRenderer, ImageRenderer, IframeRenderer, MarkdownEmbedRenderer,
