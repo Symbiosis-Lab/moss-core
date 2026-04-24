@@ -95,8 +95,11 @@ pub fn transform_callouts(content: &str) -> String {
                 title
             };
 
-            // Build the body content, preserving inner lines verbatim.
-            let body = body_lines.join("\n");
+            // Build the body content, then recurse so that a nested `> [!type]`
+            // inside the body (one `> ` shallower after stripping) is itself
+            // transformed into a callout div. The docs promise nested callouts.
+            let body = transform_callouts(&body_lines.join("\n"));
+            let body = body.trim_end_matches('\n').to_string();
 
             let escaped_title = html_escape(&display_title);
             // CommonMark requires blank lines between an HTML block tag and
@@ -307,6 +310,22 @@ mod tests {
             html_escape("<script>alert(\"xss\");</script>"),
             "&lt;script&gt;alert(&quot;xss&quot;);&lt;/script&gt;"
         );
+    }
+
+    #[test]
+    fn test_nested_callouts_recognized() {
+        // The docs promise nested callouts. Inside a callout body (after one
+        // `> ` is stripped from each line), another `> [!type]` header must
+        // itself be transformed into a callout div — not left as a plain
+        // <blockquote> with literal `[!type]` text.
+        let input = "> [!warning] Outer\n> Outer content.\n>\n> > [!tip] Inner\n> > Inner content.";
+        let output = transform_callouts(input);
+        assert!(output.contains("callout-warning"), "outer callout missing: {}", output);
+        assert!(output.contains("Outer content."), "outer body missing: {}", output);
+        assert!(output.contains("callout-tip"), "inner callout not recognized: {}", output);
+        assert!(output.contains("Inner content."), "inner body missing: {}", output);
+        // The `[!tip]` marker must not survive as literal text.
+        assert!(!output.contains("[!tip]"), "inner [!tip] marker leaked: {}", output);
     }
 
     #[test]
