@@ -131,7 +131,7 @@ pub fn relative_url(from_path: &str, to_path: &str) -> String {
 /// Unlike [`relative_url`], which uses pretty-URL directories, this function
 /// uses the *filesystem* parent directory (e.g. `posts/hello.md` -> `posts`).
 /// The extra `../` needed for pretty-URL nesting is added later by
-/// `adjust_relative_paths_for_pretty_urls` in the Tauri compile layer.
+/// `adjust_relative_paths_for_pretty_urls` in the Tauri build layer.
 /// Using `to_pretty_url_dir` here would double-count that adjustment.
 ///
 /// Use this for binary assets (images, fonts, etc.) and any reference that

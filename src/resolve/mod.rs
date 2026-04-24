@@ -1,7 +1,7 @@
 //! Centralized link resolution — ALL wikilink handling (body AND frontmatter) happens here.
 //!
 //! This module provides shared types for the resolve phase of the
-//! compilation pipeline, a fuzzy path resolver that wraps
+//! build pipeline, a fuzzy path resolver that wraps
 //! [`ContentGraph::resolve_path`](crate::content_graph::ContentGraph::resolve_path),
 //! and the top-level [`resolve_content`] function that ties all phases together.
 //!
