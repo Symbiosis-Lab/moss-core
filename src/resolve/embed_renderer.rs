@@ -197,6 +197,8 @@ fn registry() -> &'static [&'static dyn EmbedRenderer] {
             &MarkdownEmbedRenderer as &'static dyn EmbedRenderer,
             &IframeRenderer as &'static dyn EmbedRenderer,
             &PdfRenderer as &'static dyn EmbedRenderer,
+            &AudioRenderer as &'static dyn EmbedRenderer,
+            &VideoRenderer as &'static dyn EmbedRenderer,
         ]
     })
 }
@@ -384,6 +386,98 @@ impl EmbedRenderer for PdfRenderer {
             name,
         );
         RenderedEmbed::Html(html)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AudioRenderer
+// ---------------------------------------------------------------------------
+
+const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "opus"];
+
+/// Renderer for audio embeds: `![[song.mp3]]` → `<audio controls>`.
+///
+/// `preload=metadata` so the browser fetches duration/sample-rate but not the
+/// full payload until the user presses play.
+#[derive(Debug)]
+pub struct AudioRenderer;
+
+impl EmbedRenderer for AudioRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        AUDIO_EXTENSIONS
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        let url = relative_asset_path(embed.from_path, embed.resolved_path);
+        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_AUDIO);
+        let ext = path_extension_lower(embed.resolved_path);
+        let mime = audio_mime_for_ext(&ext);
+
+        let html = format!(
+            "<audio class=\"{}\" controls preload=\"metadata\"><source src=\"{}\" type=\"{}\">Your browser does not support the audio tag.</audio>",
+            classes,
+            html_escape_attr(&url),
+            mime,
+        );
+        RenderedEmbed::Html(html)
+    }
+}
+
+fn audio_mime_for_ext(ext: &str) -> &'static str {
+    match ext {
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "opus" => "audio/opus",
+        _ => "application/octet-stream",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VideoRenderer
+// ---------------------------------------------------------------------------
+
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "mov", "m4v"];
+
+/// Renderer for video embeds: `![[clip.mp4]]` → `<video controls>`.
+///
+/// `|WxH` becomes width/height attrs. `preload=metadata` so the browser
+/// fetches duration/dimensions but not the full payload until play.
+#[derive(Debug)]
+pub struct VideoRenderer;
+
+impl EmbedRenderer for VideoRenderer {
+    fn extensions(&self) -> &[&'static str] {
+        VIDEO_EXTENSIONS
+    }
+
+    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        let url = relative_asset_path(embed.from_path, embed.resolved_path);
+        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_VIDEO);
+        let (width_attr, height_attr) = dim_attrs(embed.alias);
+        let ext = path_extension_lower(embed.resolved_path);
+        let mime = video_mime_for_ext(&ext);
+
+        let html = format!(
+            "<video class=\"{}\" controls preload=\"metadata\"{}{}><source src=\"{}\" type=\"{}\">Your browser does not support the video tag.</video>",
+            classes,
+            width_attr,
+            height_attr,
+            html_escape_attr(&url),
+            mime,
+        );
+        RenderedEmbed::Html(html)
+    }
+}
+
+fn video_mime_for_ext(ext: &str) -> &'static str {
+    match ext {
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        _ => "application/octet-stream",
     }
 }
 
@@ -922,5 +1016,178 @@ mod tests {
             out
         );
         assert!(out.contains("Download doc"), "got: {}", out);
+    }
+
+    // --- AudioRenderer ---
+
+    fn audio_html(e: &ParsedEmbed) -> String {
+        match AudioRenderer.render(e) {
+            RenderedEmbed::Html(s) => s,
+            _ => panic!("expected Html"),
+        }
+    }
+
+    #[test]
+    fn test_audio_renderer_extensions() {
+        let r = AudioRenderer;
+        let exts: Vec<&&str> = r.extensions().iter().collect();
+        for e in &["mp3", "wav", "ogg", "flac", "m4a", "opus"] {
+            assert!(exts.iter().any(|&&x| x == *e), "missing: {}", e);
+        }
+    }
+
+    #[test]
+    fn test_audio_renderer_basic() {
+        let out = audio_html(&ParsedEmbed {
+            resolved_path: "assets/song.mp3",
+            from_path: "posts/hello.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(out.contains("<audio "), "got: {}", out);
+        assert!(out.contains("controls"), "got: {}", out);
+        assert!(
+            out.contains("class=\"moss-embed moss-embed-audio\""),
+            "got: {}",
+            out
+        );
+        assert!(
+            out.contains("<source src=\"../assets/song.mp3\""),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("type=\"audio/mpeg\""), "got: {}", out);
+    }
+
+    #[test]
+    fn test_audio_renderer_mime_types() {
+        let cases: &[(&str, &str)] = &[
+            ("a.mp3", "audio/mpeg"),
+            ("a.wav", "audio/wav"),
+            ("a.ogg", "audio/ogg"),
+            ("a.flac", "audio/flac"),
+            ("a.m4a", "audio/mp4"),
+            ("a.opus", "audio/opus"),
+        ];
+        for (file, mime) in cases {
+            let out = audio_html(&ParsedEmbed {
+                resolved_path: file,
+                from_path: "post.md",
+                query: None,
+                section: None,
+                alias: None,
+            });
+            assert!(
+                out.contains(&format!("type=\"{}\"", mime)),
+                "{}: got {}",
+                file,
+                out
+            );
+        }
+    }
+
+    #[test]
+    fn test_audio_renderer_preload_metadata() {
+        let out = audio_html(&ParsedEmbed {
+            resolved_path: "song.mp3",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(out.contains("preload=\"metadata\""), "got: {}", out);
+    }
+
+    // --- VideoRenderer ---
+
+    fn video_html(e: &ParsedEmbed) -> String {
+        match VideoRenderer.render(e) {
+            RenderedEmbed::Html(s) => s,
+            _ => panic!("expected Html"),
+        }
+    }
+
+    #[test]
+    fn test_video_renderer_extensions() {
+        let r = VideoRenderer;
+        let exts: Vec<&&str> = r.extensions().iter().collect();
+        for e in &["mp4", "webm", "mov", "m4v"] {
+            assert!(exts.iter().any(|&&x| x == *e), "missing: {}", e);
+        }
+    }
+
+    #[test]
+    fn test_video_renderer_basic() {
+        let out = video_html(&ParsedEmbed {
+            resolved_path: "assets/trailer.mp4",
+            from_path: "posts/hello.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(out.contains("<video "), "got: {}", out);
+        assert!(out.contains("controls"), "got: {}", out);
+        assert!(
+            out.contains("class=\"moss-embed moss-embed-video\""),
+            "got: {}",
+            out
+        );
+        assert!(
+            out.contains("<source src=\"../assets/trailer.mp4\""),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("type=\"video/mp4\""), "got: {}", out);
+    }
+
+    #[test]
+    fn test_video_renderer_with_sizing() {
+        let out = video_html(&ParsedEmbed {
+            resolved_path: "clip.mp4",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: Some("640x360"),
+        });
+        assert!(out.contains("width=\"640px\""), "got: {}", out);
+        assert!(out.contains("height=\"360px\""), "got: {}", out);
+    }
+
+    #[test]
+    fn test_video_renderer_mime_types() {
+        let cases: &[(&str, &str)] = &[
+            ("a.mp4", "video/mp4"),
+            ("a.webm", "video/webm"),
+            ("a.mov", "video/quicktime"),
+            ("a.m4v", "video/mp4"),
+        ];
+        for (file, mime) in cases {
+            let out = video_html(&ParsedEmbed {
+                resolved_path: file,
+                from_path: "post.md",
+                query: None,
+                section: None,
+                alias: None,
+            });
+            assert!(
+                out.contains(&format!("type=\"{}\"", mime)),
+                "{}: got {}",
+                file,
+                out
+            );
+        }
+    }
+
+    #[test]
+    fn test_video_renderer_preload_metadata() {
+        let out = video_html(&ParsedEmbed {
+            resolved_path: "clip.mp4",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+        });
+        assert!(out.contains("preload=\"metadata\""), "got: {}", out);
     }
 }
