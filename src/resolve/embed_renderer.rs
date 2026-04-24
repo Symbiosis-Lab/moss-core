@@ -182,6 +182,18 @@ pub trait EmbedRenderer: std::fmt::Debug + Send + Sync {
 
     /// Render the embed. Must be pure; moss-core is I/O-free.
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed;
+
+    /// Page-level HTML fragments this renderer needs in `<head>`, injected
+    /// once per page that contains at least one embed from this renderer.
+    ///
+    /// Example: `ModelViewerRenderer` returns a `<script type="module">` tag
+    /// so that `<model-viewer>` custom elements work. The build pipeline
+    /// collects and deduplicates these across all embeds on a page.
+    ///
+    /// Default: empty. Renderers with no page-level assets don't override.
+    fn head_assets(&self) -> &[&'static str] {
+        &[]
+    }
 }
 
 /// Built-in renderer registry. Initialized lazily on first lookup.
