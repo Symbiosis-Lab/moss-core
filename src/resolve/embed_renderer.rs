@@ -61,6 +61,32 @@ pub const CLASS_EMBED_3D: &str = "moss-embed-3d";
 /// Applied to tabular-data renderer output (Phase D).
 pub const CLASS_EMBED_TABLE: &str = "moss-embed-table";
 
+// ---------------------------------------------------------------------------
+// Deferred-marker prefixes (contract with src-tauri resolvers)
+// ---------------------------------------------------------------------------
+
+/// Marker prefix emitted by [`MarkdownEmbedRenderer`].
+///
+/// Format: `<!-- moss-embed:PATH[#anchor] -->`. Resolved by src-tauri's
+/// `resolve_embeds` (inlines target markdown content).
+///
+/// No `-<type>` suffix for historical reasons: this was the original embed
+/// marker before typed embeds existed. New typed markers use
+/// `moss-embed-<type>:` (see [`MARKER_IPYNB`], [`MARKER_TABLE`]).
+pub const MARKER_MARKDOWN: &str = "moss-embed";
+
+/// Marker prefix emitted by [`NotebookRenderer`].
+///
+/// Format: `<!-- moss-embed-ipynb:PATH[?query] -->`. Resolved by src-tauri
+/// via nbconvert.
+pub const MARKER_IPYNB: &str = "moss-embed-ipynb";
+
+/// Marker prefix emitted by [`TableRenderer`].
+///
+/// Format: `<!-- moss-embed-table:PATH -->`. src-tauri reads the file and
+/// calls [`crate::csv_table::render`] (a pure renderer).
+pub const MARKER_TABLE: &str = "moss-embed-table";
+
 /// An embed that has been parsed and path-resolved, ready for rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedEmbed<'a> {
@@ -294,7 +320,7 @@ impl EmbedRenderer for MarkdownEmbedRenderer {
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let anchor = build_embed_anchor(embed.section);
         RenderedEmbed::Deferred {
-            marker: format!("<!-- moss-embed:{}{} -->", embed.resolved_path, anchor),
+            marker: format!("<!-- {}:{}{} -->", MARKER_MARKDOWN, embed.resolved_path, anchor),
         }
     }
 }
@@ -537,7 +563,7 @@ impl EmbedRenderer for NotebookRenderer {
             None => embed.resolved_path.to_string(),
         };
         RenderedEmbed::Deferred {
-            marker: format!("<!-- moss-embed-ipynb:{} -->", target),
+            marker: format!("<!-- {}:{} -->", MARKER_IPYNB, target),
         }
     }
 }
@@ -620,7 +646,7 @@ impl EmbedRenderer for TableRenderer {
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         RenderedEmbed::Deferred {
-            marker: format!("<!-- moss-embed-table:{} -->", embed.resolved_path),
+            marker: format!("<!-- {}:{} -->", MARKER_TABLE, embed.resolved_path),
         }
     }
 }
@@ -860,7 +886,20 @@ mod tests {
         assert_eq!(CLASS_EMBED, "moss-embed");
         assert_eq!(CLASS_EMBED_IFRAME, "moss-embed-iframe");
         assert_eq!(CLASS_EMBED_PDF, "moss-embed-pdf");
+        assert_eq!(CLASS_EMBED_AUDIO, "moss-embed-audio");
+        assert_eq!(CLASS_EMBED_VIDEO, "moss-embed-video");
         assert_eq!(CLASS_EMBED_NOTEBOOK, "moss-embed-notebook");
+        assert_eq!(CLASS_EMBED_3D, "moss-embed-3d");
+        assert_eq!(CLASS_EMBED_TABLE, "moss-embed-table");
+    }
+
+    #[test]
+    fn test_embed_marker_prefixes_stable() {
+        // Marker prefixes are a contract between moss-core (emit) and
+        // src-tauri (resolve). Changing them breaks the resolver.
+        assert_eq!(MARKER_MARKDOWN, "moss-embed");
+        assert_eq!(MARKER_IPYNB, "moss-embed-ipynb");
+        assert_eq!(MARKER_TABLE, "moss-embed-table");
     }
 
     // --- RenderedEmbed variants ---
