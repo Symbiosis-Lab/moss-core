@@ -55,12 +55,25 @@ fn is_resolvable_target(url: &str) -> bool {
     true
 }
 
-/// Split a URL into (path, fragment_including_hash).
-fn split_fragment(url: &str) -> (&str, Option<&str>) {
-    if let Some(pos) = url.find('#') {
-        (&url[..pos], Some(&url[pos..]))
-    } else {
-        (url, None)
+/// Split a URL into (path, suffix) where `suffix` is `?query` and/or `#fragment`
+/// in source order. The path is what gets resolved against the content graph;
+/// the suffix is reattached to the resolved URL verbatim.
+///
+/// Whichever of `?` or `#` appears first ends the path. RFC 3986 specifies
+/// `?` before `#`, but mirroring wikilinks we accept either order — once the
+/// path ends, everything else (including a later `?` or `#`) is opaque suffix.
+fn split_path_suffix(url: &str) -> (&str, Option<&str>) {
+    let q = url.find('?');
+    let h = url.find('#');
+    let cut = match (q, h) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+    match cut {
+        Some(pos) => (&url[..pos], Some(&url[pos..])),
+        None => (url, None),
     }
 }
 
@@ -181,11 +194,11 @@ fn rewrite_line(
             if let Some((text, url, consumed)) = parse_link_at(&line[i..]) {
                 let mut handled = false;
                 if is_resolvable_target(url) {
-                    let (path_part, frag) = split_fragment(url);
+                    let (path_part, suffix) = split_path_suffix(url);
                     match resolve_reference(path_part, graph, from_path) {
                         ResolvedRef::Found(resolved) => {
-                            let new_url = match frag {
-                                Some(f) => format!("moss-resolved:{}{}", resolved, f),
+                            let new_url = match suffix {
+                                Some(s) => format!("moss-resolved:{}{}", resolved, s),
                                 None => format!("moss-resolved:{}", resolved),
                             };
                             out.push_str(&format!("[{}]({})", text, new_url));
@@ -399,6 +412,47 @@ mod tests {
         let input = "```inline``` [a](foo.md)";
         let r = resolve_markdown_links(input, &g, "index.md");
         assert!(r.content.contains("moss-resolved:foo.md"), "got: {}", r.content);
+    }
+
+    #[test]
+    fn query_string_preserved() {
+        let g = graph_with(&["index.md", "assets/scale-compare.html"]);
+        let r = resolve_markdown_links(
+            "[demo](scale-compare.html?a=major_pent&r=major_pent%3AD)",
+            &g,
+            "index.md",
+        );
+        assert!(
+            r.content
+                .contains("moss-resolved:assets/scale-compare.html?a=major_pent&r=major_pent%3AD"),
+            "got: {}",
+            r.content
+        );
+        assert_eq!(r.outgoing_links.len(), 1);
+        assert_eq!(r.outgoing_links[0].target_path, "assets/scale-compare.html");
+    }
+
+    #[test]
+    fn query_and_fragment_preserved() {
+        let g = graph_with(&["index.md", "assets/app.html"]);
+        let r = resolve_markdown_links("[d](app.html?x=1#sec)", &g, "index.md");
+        assert!(
+            r.content.contains("moss-resolved:assets/app.html?x=1#sec"),
+            "got: {}",
+            r.content
+        );
+    }
+
+    #[test]
+    fn fragment_before_query_preserved() {
+        // Nonstandard order — preserved as-is.
+        let g = graph_with(&["index.md", "assets/app.html"]);
+        let r = resolve_markdown_links("[d](app.html#sec?x=1)", &g, "index.md");
+        assert!(
+            r.content.contains("moss-resolved:assets/app.html#sec?x=1"),
+            "got: {}",
+            r.content
+        );
     }
 
     #[test]
