@@ -44,6 +44,21 @@ fn filename_with_ext(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Extract a path's extension, lowercased. Returns `None` when the filename
+/// has no extension (no `.` or only a leading dot like `.gitignore`).
+///
+/// Used by the stem-collision tiebreaker to honor the wikilink author's
+/// extension intent: `![[scale-compare.png]]` should win over a `.html`
+/// sibling registered later.
+fn path_extension_lower(path: &str) -> Option<String> {
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    let pos = filename.rfind('.')?;
+    if pos == 0 {
+        return None;
+    }
+    Some(filename[pos + 1..].to_ascii_lowercase())
+}
+
 /// Return the directory prefix components of a path as a Vec.
 fn dir_components(path: &str) -> Vec<&str> {
     let parts: Vec<&str> = path.split('/').collect();
@@ -57,6 +72,19 @@ fn dir_components(path: &str) -> Vec<&str> {
 /// Count the length of the longest common prefix between two component lists.
 fn common_prefix_len(a: &[&str], b: &[&str]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+}
+
+/// Score a candidate's extension against the reference's extension for the
+/// ambiguity tiebreaker. Returns 1 only when the reference carries an
+/// extension AND the candidate's matches it (case-insensitive). Returns 0
+/// otherwise so bare references — which can't express extension intent —
+/// keep their existing tiebreaker behavior.
+fn ext_match_score(ref_ext: Option<&str>, candidate: &str) -> u8 {
+    let Some(want) = ref_ext else { return 0 };
+    match path_extension_lower(candidate) {
+        Some(have) if have == want => 1,
+        _ => 0,
+    }
 }
 
 /// Score a candidate path's language-tree alignment with the source's
@@ -166,11 +194,17 @@ impl ContentGraph {
     /// 5. Folder note: `reference/index.md` or `reference/<reference>.md`
     ///
     /// Ambiguity tiebreakers, applied in order:
-    /// candidates in the same language tree as the source are preferred first;
-    /// then longest common directory prefix with `from_path`; then alphabetical.
+    /// candidates whose extension matches the reference's extension win first
+    /// (e.g. `![[scale-compare.png]]` prefers a `.png` sibling over a `.html`
+    /// sibling — only applies when the reference carries an extension);
+    /// candidates in the same language tree as the source are preferred next;
+    /// then longest common directory prefix with `from_path`; then alphabetical
+    /// by normalized path (so results are independent of registration order
+    /// when all earlier keys tie).
     pub fn resolve_path(&self, reference: &str, from_path: &str) -> Option<String> {
         let norm_ref = normalize_path(reference);
         let norm_from = normalize_path(from_path);
+        let ref_ext = path_extension_lower(&norm_ref);
 
         // Language-tree prefix of the source file, if any.
         // E.g. "zh-hans/about.md" -> Some("zh-hans").  Used to prefer
@@ -246,7 +280,17 @@ impl ContentGraph {
                         let normalized = normalize_path(&self.files[idx]);
                         let candidate_dirs = dir_components(&normalized);
                         let tree_match = lang_tree_match(&normalized, from_lang);
-                        (tree_match, common_prefix_len(&candidate_dirs, &from_dirs))
+                        let ext_match = ext_match_score(ref_ext.as_deref(), &normalized);
+                        // Final key: alphabetical-by-path, ascending (Reverse so
+                        // smaller path wins under max_by_key). Removes residual
+                        // dependence on registration order when all other keys
+                        // tie — see "then alphabetical" in the doc comment.
+                        (
+                            ext_match,
+                            tree_match,
+                            common_prefix_len(&candidate_dirs, &from_dirs),
+                            std::cmp::Reverse(normalized.clone()),
+                        )
                     });
                     if let Some(idx) = best {
                         return Some(self.files[idx].clone());
@@ -269,8 +313,10 @@ impl ContentGraph {
                     return Some(self.files[candidates[0]].clone());
                 }
                 // Ambiguity tiebreakers, in priority order:
-                //   1. Same language tree as the source (or both tree-less)
-                //   2. Longest common directory prefix with from_path
+                //   1. Reference-extension match (only when the reference has
+                //      an extension — otherwise this term is constant)
+                //   2. Same language tree as the source (or both tree-less)
+                //   3. Longest common directory prefix with from_path
                 let from_dirs = dir_components(&norm_from);
                 let best = candidates
                     .iter()
@@ -282,7 +328,17 @@ impl ContentGraph {
                         let normalized = normalize_path(&self.files[idx]);
                         let candidate_dirs = dir_components(&normalized);
                         let tree_match = lang_tree_match(&normalized, from_lang);
-                        (tree_match, common_prefix_len(&candidate_dirs, &from_dirs))
+                        let ext_match = ext_match_score(ref_ext.as_deref(), &normalized);
+                        // Final key: alphabetical-by-path, ascending (Reverse so
+                        // smaller path wins under max_by_key). Removes residual
+                        // dependence on registration order when all other keys
+                        // tie — see "then alphabetical" in the doc comment.
+                        (
+                            ext_match,
+                            tree_match,
+                            common_prefix_len(&candidate_dirs, &from_dirs),
+                            std::cmp::Reverse(normalized.clone()),
+                        )
                     });
                 if let Some(idx) = best {
                     return Some(self.files[idx].clone());
@@ -848,6 +904,161 @@ mod tests {
         assert_eq!(
             g.all_files(),
             &["Notes/MyFile.md", "Posts/Hello-World.md"]
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Stem-collision: extension-aware tiebreaker
+    //
+    // When `![[scale-compare.png]]` and `![[scale-compare.html]]` are siblings,
+    // the wikilink author's extension carries intent: `.png` should resolve to
+    // the image, `.html` to the HTML file. Without an extension preference the
+    // tiebreaker reduces to candidate registration order, which is brittle.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn stem_collision_prefers_matching_extension_png() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("interactive/scale-compare.png", "/interactive/scale-compare.png");
+        b.add_file("interactive/scale-compare.html", "/interactive/scale-compare.html");
+        let g = b.build();
+
+        assert_eq!(
+            g.resolve_path("scale-compare.png", "interactive/article.md"),
+            Some("interactive/scale-compare.png".into())
+        );
+    }
+
+    #[test]
+    fn stem_collision_prefers_matching_extension_html() {
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("interactive/scale-compare.png", "/interactive/scale-compare.png");
+        b.add_file("interactive/scale-compare.html", "/interactive/scale-compare.html");
+        let g = b.build();
+
+        assert_eq!(
+            g.resolve_path("scale-compare.html", "interactive/article.md"),
+            Some("interactive/scale-compare.html".into())
+        );
+    }
+
+    #[test]
+    fn stem_collision_independent_of_registration_order() {
+        // Same as above, with reverse insertion order. Result must not change.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("interactive/scale-compare.html", "/interactive/scale-compare.html");
+        b.add_file("interactive/scale-compare.png", "/interactive/scale-compare.png");
+        let g = b.build();
+
+        assert_eq!(
+            g.resolve_path("scale-compare.png", "interactive/article.md"),
+            Some("interactive/scale-compare.png".into())
+        );
+        assert_eq!(
+            g.resolve_path("scale-compare.html", "interactive/article.md"),
+            Some("interactive/scale-compare.html".into())
+        );
+    }
+
+    #[test]
+    fn stem_collision_bare_ref_unchanged() {
+        // A reference without an extension MUST keep existing behavior:
+        // tiebreaker falls back to (lang_tree, common_prefix). The only
+        // observable change is that ext-aware refs are now deterministic.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("interactive/scale-compare.png", "/interactive/scale-compare.png");
+        b.add_file("interactive/scale-compare.html", "/interactive/scale-compare.html");
+        let g = b.build();
+
+        // No extension on ref: returns *some* candidate (current behavior),
+        // we just assert the call succeeds rather than pinning the choice.
+        assert!(g.resolve_path("scale-compare", "interactive/article.md").is_some());
+    }
+
+    #[test]
+    fn stem_collision_md_wins_over_html_sibling() {
+        // The most common real case: a wikilink to `.md` (or no-extension
+        // markdown ref) should not get hijacked by a `.html` sibling that
+        // happens to be registered later.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("notes/guide.md", "/notes/guide");
+        b.add_file("notes/guide.html", "/notes/guide.html");
+        let g = b.build();
+
+        assert_eq!(
+            g.resolve_path("guide.md", "notes/index.md"),
+            Some("notes/guide.md".into())
+        );
+    }
+
+    #[test]
+    fn stem_collision_suffix_match_arm() {
+        // The suffix-match tiebreaker (ContentGraph::resolve_path step 2b)
+        // also benefits from extension preference. Reference is multi-component
+        // (`a/scale.png`) so it goes through the suffix-match arm, not the
+        // bare-stem arm.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("vault/a/scale.png", "/vault/a/scale.png");
+        b.add_file("vault/a/scale.html", "/vault/a/scale.html");
+        let g = b.build();
+
+        assert_eq!(
+            g.resolve_path("a/scale.png", "vault/notes/article.md"),
+            Some("vault/a/scale.png".into())
+        );
+    }
+
+    #[test]
+    fn stem_collision_ext_match_overrides_lang_tree() {
+        // Pin priority: extension match wins even when a lang-tree candidate
+        // exists. Without this, a `![[foo.png]]` in zh-hans/note.md against
+        // siblings (zh-hans/foo.html + en/foo.png) would surprise users by
+        // returning the .html file just because it shares a language tree.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("zh-hans/foo.html", "/zh-hans/foo.html");
+        b.add_file("en/foo.png", "/en/foo.png");
+        let g = b.build();
+
+        assert_eq!(
+            g.resolve_path("foo.png", "zh-hans/note.md"),
+            Some("en/foo.png".into())
+        );
+    }
+
+    #[test]
+    fn stem_collision_alphabetical_final_tiebreaker() {
+        // Bare ref + sibling stems: no extension intent, both same lang-tree,
+        // equal common-prefix. The final alphabetical tiebreaker must make
+        // the result independent of registration order.
+        let mut b1 = ContentGraphBuilder::new();
+        b1.add_file("notes/photo.png", "/notes/photo.png");
+        b1.add_file("notes/photo.html", "/notes/photo.html");
+        let g1 = b1.build();
+
+        let mut b2 = ContentGraphBuilder::new();
+        b2.add_file("notes/photo.html", "/notes/photo.html");
+        b2.add_file("notes/photo.png", "/notes/photo.png");
+        let g2 = b2.build();
+
+        // "notes/photo.html" < "notes/photo.png" alphabetically → .html wins
+        // in both insertion orders.
+        let r1 = g1.resolve_path("photo", "notes/index.md");
+        let r2 = g2.resolve_path("photo", "notes/index.md");
+        assert_eq!(r1, r2, "result must not depend on registration order");
+        assert_eq!(r1, Some("notes/photo.html".into()));
+    }
+
+    #[test]
+    fn stem_collision_case_insensitive_extension() {
+        // Author may write `.PNG`; should still match `.png` candidate.
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("interactive/photo.PNG", "/interactive/photo.png");
+        b.add_file("interactive/photo.html", "/interactive/photo.html");
+        let g = b.build();
+
+        assert_eq!(
+            g.resolve_path("photo.png", "interactive/article.md"),
+            Some("interactive/photo.PNG".into())
         );
     }
 }
