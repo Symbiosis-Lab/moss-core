@@ -136,7 +136,7 @@ pub fn relative_url(from_path: &str, to_path: &str) -> String {
 ///
 /// Use this for binary assets (images, fonts, etc.) and any reference that
 /// should keep its file extension in the URL.
-pub(crate) fn relative_asset_path(from_path: &str, to_path: &str) -> String {
+pub fn relative_asset_path(from_path: &str, to_path: &str) -> String {
     let from_dir = parent_dir(from_path);
     let from_parts: Vec<&str> = if from_dir.is_empty() {
         vec![]
