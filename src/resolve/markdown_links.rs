@@ -44,8 +44,10 @@ fn is_resolvable_target(url: &str) -> bool {
     if url.starts_with("mailto:") || url.starts_with("tel:") || url.starts_with("data:") {
         return false;
     }
-    // Wikilink-generated markers -- handled by wikilinks phase, not us.
-    if url.starts_with("moss-resolved:") {
+    // moss-internal markers -- handled by other pipeline phases, not us.
+    // Filtering them here also prevents an author-written `[x](moss-newtab:y)`
+    // from accidentally driving the post-processor that strips that prefix.
+    if url.starts_with("moss-resolved:") || url.starts_with("moss-newtab:") {
         return false;
     }
     // Absolute filesystem paths -- treat as opaque.
