@@ -500,15 +500,26 @@ fn audio_mime_for_ext(ext: &str) -> &'static str {
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "mov", "m4v"];
 
-/// Renderer for video embeds: `![[clip.mp4]]` → `<video controls>`.
+/// Renderer for video embeds: `![[clip.mp4]]` → `<video src="..." controls>`.
 ///
 /// `|WxH` becomes width/height attrs. `preload=metadata` so the browser
 /// fetches duration/dimensions but not the full payload until play.
 ///
-/// Note: `.mov` is codec-dependent. Safari plays QuickTime natively; Chrome
-/// and Firefox accept the MIME but decode only if the container's video
-/// codec is supported (usually H.264). Prefer `.mp4` or `.webm` for
-/// cross-browser reliability.
+/// Output form: single `src=` attribute on `<video>` (no `<source>` child).
+/// REQUIRED — the downstream rewriter
+/// `src-tauri/src/build/media/placeholder.rs::add_video_placeholder_attributes`
+/// matches `<video\s+[^>]*?src="...">` to perform `.mov→.mp4` conversion and
+/// inject `data-placeholder-src`, `poster`, and `data-thumb-src`. moss
+/// converts `.mov` source files to `.mp4` during build, so a raw `.mov`
+/// reference would 404. Output the format the rewriter understands; the
+/// browser sniffs MIME from the URL extension after rewriting, no explicit
+/// `type=` needed. This matches the historical moss output shape that
+/// liu-guo.com still ships.
+///
+/// Note: `.mov` is codec-dependent at the source. Safari plays QuickTime
+/// natively; Chrome/Firefox accept the MIME but decode only if the
+/// container's video codec is supported (usually H.264). The `.mov→.mp4`
+/// rewriter solves this in practice — served files end as `.mp4`.
 #[derive(Debug)]
 pub struct VideoRenderer;
 
@@ -521,31 +532,15 @@ impl EmbedRenderer for VideoRenderer {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_VIDEO);
         let (width_attr, height_attr) = dim_attrs(embed.alias);
-        let ext = path_extension_lower(embed.resolved_path);
-        let mime = video_mime_for_ext(&ext);
 
         let html = format!(
-            "<video class=\"{}\" controls preload=\"metadata\"{}{}><source src=\"{}\" type=\"{}\">Your browser does not support the video tag.</video>",
+            "<video class=\"{}\" src=\"{}\" controls preload=\"metadata\"{}{}></video>",
             classes,
+            html_escape_attr(&url),
             width_attr,
             height_attr,
-            html_escape_attr(&url),
-            mime,
         );
         RenderedEmbed::Html(html)
-    }
-}
-
-fn video_mime_for_ext(ext: &str) -> &'static str {
-    match ext {
-        "mp4" | "m4v" => "video/mp4",
-        "webm" => "video/webm",
-        "mov" => "video/quicktime",
-        _ => {
-            // Defensive: registry-gated; see audio_mime_for_ext.
-            debug_assert!(false, "unmapped video extension: {}", ext);
-            "application/octet-stream"
-        }
     }
 }
 
@@ -1325,12 +1320,24 @@ mod tests {
             "got: {}",
             out
         );
+        // Single src= attribute on <video>, not nested <source>. Required so
+        // the downstream add_video_placeholder_attributes rewriter can match
+        // the element and perform .mov→.mp4 conversion + placeholder injection.
         assert!(
-            out.contains("<source src=\"../assets/trailer.mp4\""),
-            "got: {}",
+            out.contains(" src=\"../assets/trailer.mp4\""),
+            "expected single src attribute, got: {}",
             out
         );
-        assert!(out.contains("type=\"video/mp4\""), "got: {}", out);
+        assert!(
+            !out.contains("<source"),
+            "must not emit <source> child (rewriter only matches <video src=>), got: {}",
+            out
+        );
+        assert!(
+            out.ends_with("</video>"),
+            "must end with closing </video>, got: {}",
+            out
+        );
     }
 
     #[test]
@@ -1346,26 +1353,37 @@ mod tests {
         assert!(out.contains("height=\"360px\""), "got: {}", out);
     }
 
+    /// `.mov` source files are valid input — moss converts them to `.mp4`
+    /// during build via `add_video_placeholder_attributes`. The renderer
+    /// emits the path verbatim with `.mov`; the rewriter swaps the extension
+    /// and stores the original in `data-placeholder-src`. This test covers
+    /// only the renderer's contribution: it must emit the original extension
+    /// without trying to be clever about MIME types or rewriting.
     #[test]
-    fn test_video_renderer_mime_types() {
-        let cases: &[(&str, &str)] = &[
-            ("a.mp4", "video/mp4"),
-            ("a.webm", "video/webm"),
-            ("a.mov", "video/quicktime"),
-            ("a.m4v", "video/mp4"),
-        ];
-        for (file, mime) in cases {
+    fn test_video_renderer_emits_original_extension() {
+        for ext in ["mp4", "webm", "mov", "m4v"] {
+            let path = format!("clip.{}", ext);
             let out = video_html(&ParsedEmbed {
-                resolved_path: file,
+                resolved_path: &path,
                 from_path: "post.md",
                 query: None,
                 section: None,
                 alias: None,
             });
             assert!(
-                out.contains(&format!("type=\"{}\"", mime)),
-                "{}: got {}",
-                file,
+                out.contains(&format!(" src=\"clip.{}\"", ext)),
+                "{}: src must reflect original extension, got {}",
+                ext,
+                out
+            );
+            // No type= attribute: the browser sniffs MIME from the URL after
+            // the rewriter has finalized the path. Carrying a stale type=
+            // (e.g. video/quicktime for .mov that has been rewritten to .mp4)
+            // would either be ignored or worse, mislead the decoder.
+            assert!(
+                !out.contains("type="),
+                "{}: must not emit type= (rewriter changes extension later), got {}",
+                ext,
                 out
             );
         }
