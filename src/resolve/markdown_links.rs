@@ -455,6 +455,21 @@ mod tests {
         );
     }
 
+    /// Regression: `[![alt](image-path)](target?query)` — markdown link wrapping
+    /// a markdown image (the shape produced by `[![[image.png]]](target.html?q)`
+    /// after the wikilinks pass rewrites the embed to `![alt](path)`).
+    #[test]
+    fn link_wrapping_image_with_query_resolves() {
+        let g = graph_with(&["index.md", "assets/scale-compare.html", "assets/scale-compare.png"]);
+        let input = "[![scale-compare](assets/scale-compare.png)](scale-compare.html?a=major_pent&r=major_pent%3AD)";
+        let r = resolve_markdown_links(input, &g, "index.md");
+        assert!(
+            r.content.contains("moss-resolved:assets/scale-compare.html?a=major_pent&r=major_pent%3AD"),
+            "outer link not resolved or query dropped. got: {}",
+            r.content
+        );
+    }
+
     #[test]
     fn fenced_block_skipped() {
         let g = graph_with(&["index.md", "文字/文字.md"]);
