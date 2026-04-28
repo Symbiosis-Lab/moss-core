@@ -453,6 +453,17 @@ const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "opus"];
 ///
 /// `preload=metadata` so the browser fetches duration/sample-rate but not the
 /// full payload until the user presses play.
+///
+/// Output form: `<audio><source src="..." type="..."></audio>` (HTML5
+/// multi-source). This is safe today because no audio extension rewriter
+/// exists in src-tauri — audio files pass through unchanged. If a future
+/// converter is introduced (e.g., `.flac→.mp3` for size, `.m4a→.opus` for
+/// browser parity, see #504), this renderer must switch to the single
+/// `src=` form for the same reason `VideoRenderer` did: the
+/// `add_*_placeholder_attributes` regex pattern in
+/// `src-tauri/src/build/media/placeholder.rs` matches `<tag\s+[^>]*?src=>`,
+/// not nested `<source>` children. See #593 and the docstring on
+/// `VideoRenderer` for the full failure mode.
 #[derive(Debug)]
 pub struct AudioRenderer;
 
@@ -505,16 +516,27 @@ const VIDEO_EXTENSIONS: &[&str] = &["mp4", "webm", "mov", "m4v"];
 /// `|WxH` becomes width/height attrs. `preload=metadata` so the browser
 /// fetches duration/dimensions but not the full payload until play.
 ///
-/// Output form: single `src=` attribute on `<video>` (no `<source>` child).
-/// REQUIRED — the downstream rewriter
-/// `src-tauri/src/build/media/placeholder.rs::add_video_placeholder_attributes`
-/// matches `<video\s+[^>]*?src="...">` to perform `.mov→.mp4` conversion and
-/// inject `data-placeholder-src`, `poster`, and `data-thumb-src`. moss
-/// converts `.mov` source files to `.mp4` during build, so a raw `.mov`
-/// reference would 404. Output the format the rewriter understands; the
-/// browser sniffs MIME from the URL extension after rewriting, no explicit
-/// `type=` needed. This matches the historical moss output shape that
-/// liu-guo.com still ships.
+/// Output form: single `src=` attribute on `<video>` (no `<source>` child),
+/// no `type=` attribute. Two coupled reasons:
+///
+/// 1. **`type=` would go stale.** The downstream rewriter
+///    `src-tauri/src/build/media/placeholder.rs::add_video_placeholder_attributes`
+///    rewrites the `src` extension from `.mov` to `.mp4` after the renderer
+///    runs (moss converts `.mov` source files to `.mp4` during build, so a
+///    raw `.mov` reference would 404). Any explicit `type="video/quicktime"`
+///    emitted here would survive the rewrite as a lie. Browser sniffing
+///    from the rewritten URL extension is more reliable than a stale type
+///    hint.
+///
+/// 2. **The rewriter regex requires single-`src=` form.** It matches
+///    `<video\s+[^>]*?src="...">` — `src=` must be on the `<video>` tag
+///    itself, not on a nested `<source>` child. With nested `<source>`,
+///    the regex no-ops and the `.mov→.mp4` rewrite + `data-placeholder-src`
+///    + `poster` + `data-thumb-src` injection all silently drop. This
+///    constraint is load-bearing; see #592 for an integration test that
+///    pins it across the cross-crate boundary, and #593 for the audio
+///    asymmetry. This shape also matches the historical moss output that
+///    liu-guo.com still ships.
 ///
 /// Note: `.mov` is codec-dependent at the source. Safari plays QuickTime
 /// natively; Chrome/Firefox accept the MIME but decode only if the
