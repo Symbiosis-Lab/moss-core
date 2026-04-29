@@ -308,6 +308,15 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
+    BuiltinField {
+        name: "heading",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        priority: 80,
+        description: "Show the article heading (filename) at the top of the page",
+        group: "Navigation & Visibility",
+        ..FIELD_DEFAULTS
+    },
 
     // --- Layout & Presentation ---
     BuiltinField {
