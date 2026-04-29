@@ -99,7 +99,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         required: true,
         priority: 10,
-        description: "Page title",
+        description: "Chrome label: drives <title>, og:title, RSS, nav, breadcrumb, link cards. The visible page heading is the filename — this field does not affect it.",
         group: "Common",
         ..FIELD_DEFAULTS
     },
