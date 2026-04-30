@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ast;
 pub mod content_graph;
 pub mod csv_table;
 pub mod home;
