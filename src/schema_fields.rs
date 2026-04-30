@@ -291,6 +291,15 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
+        name: "slot",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 80,
+        description: "Named slot to inject this page into (e.g. footer-left). Recognized values are validated at build time.",
+        group: "Navigation & Visibility",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "unlisted",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
