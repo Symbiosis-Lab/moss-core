@@ -16,6 +16,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::document::Document;
 use super::node::{Block, Inline};
+use super::shortcode_extract::{extract_shortcodes, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
 
 /// Parse markdown into a typed [`Document`].
@@ -23,13 +24,23 @@ use super::url::Url;
 /// This is the AST entry point. The input is post-resolve markdown (the
 /// upstream resolve pipeline has already rewritten wikilinks into standard
 /// markdown links with `moss-resolved:` prefixes).
+///
+/// Two-stage parse:
+/// 1. [`extract_shortcodes`] pre-scans for `:::name` blocks, replacing
+///    each with a sentinel HTML comment.
+/// 2. Pulldown-cmark parses the substituted markdown into events; each
+///    sentinel comes back as a `Block::Other` raw HTML.
+/// 3. A final pass walks the AST and substitutes `Block::Other` sentinel
+///    payloads with the corresponding typed [`Block::Shortcode`].
 pub fn parse(markdown: &str) -> Document {
+    let extraction = extract_shortcodes(markdown);
+
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
 
-    let parser = Parser::new_ext(markdown, options);
+    let parser = Parser::new_ext(&extraction.markdown_with_placeholders, options);
     let events: Vec<Event<'_>> = parser.collect();
 
     let mut blocks = Vec::new();
@@ -41,7 +52,29 @@ pub fn parse(markdown: &str) -> Document {
         }
         i += advance.max(1);
     }
+
+    // Substitute sentinel placeholders with their typed Shortcode variants.
+    substitute_shortcode_placeholders(&mut blocks, &extraction.extracted);
+
     Document::from_blocks(blocks)
+}
+
+/// Walk top-level blocks; replace any `Block::Other` whose payload is a
+/// `<!--MOSS_SHORTCODE_N-->` sentinel with the corresponding typed
+/// [`Block::Shortcode`].
+fn substitute_shortcode_placeholders(blocks: &mut Vec<Block>, extracted: &[ExtractedShortcode]) {
+    for block in blocks.iter_mut() {
+        if let Block::Other(html) = block {
+            if let Some(index) = parse_placeholder(html) {
+                if let Some(entry) = extracted.iter().find(|e| e.index == index) {
+                    *block = Block::Shortcode(entry.shortcode.clone());
+                }
+            }
+        }
+        // Future: descend into BlockQuote / List items / Callouts when
+        // shortcodes inside those constructs are modeled. Phase B Tasks
+        // 7-10 only need top-level shortcodes.
+    }
 }
 
 /// Parse one block-level construct starting at `events[start]`. Returns
@@ -615,4 +648,79 @@ mod tests {
             other => panic!("expected Paragraph, got {other:?}"),
         }
     }
+
+    // -----------------------------------------------------------------
+    // Phase B Task 7: :::subscribe end-to-end
+    // -----------------------------------------------------------------
+
+    use super::super::shortcode::Shortcode;
+
+    #[test]
+    fn parses_subscribe_block_into_typed_shortcode() {
+        let md = ":::subscribe\ndescription: Get updates\nbutton: Sign me up\n:::\n";
+        let doc = parse(md);
+        // Should find one Block::Shortcode(Subscribe) at top level.
+        let mut found: Option<&Shortcode> = None;
+        for block in &doc.blocks {
+            if let Block::Shortcode(sc) = block {
+                found = Some(sc);
+                break;
+            }
+        }
+        let sc = found.expect("expected Block::Shortcode");
+        match sc {
+            Shortcode::Subscribe(args) => {
+                assert_eq!(args.description.as_deref(), Some("Get updates"));
+                assert_eq!(args.button.as_deref(), Some("Sign me up"));
+            }
+        }
+    }
+
+    #[test]
+    fn subscribe_block_does_not_leave_sentinel_in_other_block() {
+        let md = ":::subscribe\ndescription: x\n:::\n";
+        let doc = parse(md);
+        // No Block::Other should contain the sentinel string.
+        for block in &doc.blocks {
+            if let Block::Other(html) = block {
+                assert!(
+                    !html.contains("MOSS_SHORTCODE"),
+                    "unsubstituted sentinel remained in AST: {html:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn subscribe_inside_paragraph_text_is_not_extracted() {
+        // Adversarial: `:::subscribe` appearing inside running prose
+        // (not as a block opener on its own line) is not a shortcode.
+        // The extractor only matches when `:::name` is on its own line.
+        let md = "Read more about :::subscribe in the docs.\n";
+        let doc = parse(md);
+        for block in &doc.blocks {
+            assert!(
+                !matches!(block, Block::Shortcode(_)),
+                "`:::subscribe` inline-text was wrongly extracted as a shortcode"
+            );
+        }
+    }
+
+    #[test]
+    fn subscribe_block_alongside_other_content_preserves_order() {
+        let md = "# H\n\nfirst para\n\n:::subscribe\ndescription: d\n:::\n\nlast para\n";
+        let doc = parse(md);
+        let kinds: Vec<&'static str> = doc
+            .blocks
+            .iter()
+            .map(|b| match b {
+                Block::Heading { .. } => "h",
+                Block::Paragraph(_) => "p",
+                Block::Shortcode(_) => "sc",
+                _ => "x",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["h", "p", "sc", "p"]);
+    }
 }
+

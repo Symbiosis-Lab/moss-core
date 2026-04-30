@@ -1,8 +1,8 @@
 //! Typed shortcode AST nodes.
 //!
-//! Each shortcode is a closed enum variant with fully-typed arguments. The
-//! variants are added during Phase B of the typed-AST migration; in Phase A
-//! the enum is empty so the AST module compiles end-to-end.
+//! Each shortcode is a closed enum variant with fully-typed arguments.
+//! Variants land per-shortcode in Phase B (one variant per migration
+//! commit) of the typed-AST migration.
 //!
 //! Migration order (Phase B): Subscribe, Buttons, Gallery, Hero, Grid.
 
@@ -10,20 +10,35 @@ use serde::{Deserialize, Serialize};
 
 /// A typed shortcode block.
 ///
-/// Phase A: empty stub. Variants land per-shortcode in Phase B (one
-/// variant per migration commit). The empty enum is intentionally an
-/// uninhabited type — `match sc {}` is exhaustive — so no consumer can
-/// ship a half-migrated state.
+/// Variants:
+/// - [`Shortcode::Subscribe`] — inline subscribe form (description + button)
+///
+/// Phase B migrations add one variant per commit. Empty enum was the
+/// Phase A stub; Phase B Task 7 introduces the first real variant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Shortcode {}
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Shortcode {
+    /// `:::subscribe` — inline newsletter signup form.
+    ///
+    /// Body is parsed as `key: value` lines; recognized keys are
+    /// `description` and `button`. Unknown keys are ignored (matches
+    /// the existing rewriter's behavior; structured diagnostics are
+    /// out-of-scope for this migration — see plan §Out-of-scope).
+    Subscribe(SubscribeShortcode),
+}
+
+/// Arguments for [`Shortcode::Subscribe`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscribeShortcode {
+    /// Optional override for the form's descriptive text.
+    pub description: Option<String>,
+    /// Optional override for the submit button label.
+    pub button: Option<String>,
+}
 
 /// Identifier for a shortcode kind, used for AST queries (e.g.
 /// `has_shortcode(&doc, ShortcodeKind::Subscribe)` to gate feature
 /// detection without scanning source files).
-///
-/// Kept as a separate enum rather than `std::mem::discriminant(&Shortcode)`
-/// so callers can match on it without owning a `Shortcode` value, and so
-/// the kind set is stable across feature additions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShortcodeKind {
@@ -36,11 +51,10 @@ pub enum ShortcodeKind {
 
 impl Shortcode {
     /// Return the [`ShortcodeKind`] of this shortcode.
-    ///
-    /// Phase A: unreachable since the enum is empty. Per-variant arms
-    /// land in Phase B.
     pub fn kind(&self) -> ShortcodeKind {
-        match *self {}
+        match self {
+            Shortcode::Subscribe(_) => ShortcodeKind::Subscribe,
+        }
     }
 }
 
@@ -74,5 +88,43 @@ mod tests {
             let back: ShortcodeKind = serde_json::from_str(&s).expect("deserialize");
             assert_eq!(kind, back);
         }
+    }
+
+    #[test]
+    fn subscribe_kind_method_returns_subscribe() {
+        let sc = Shortcode::Subscribe(SubscribeShortcode::default());
+        assert_eq!(sc.kind(), ShortcodeKind::Subscribe);
+    }
+
+    #[test]
+    fn subscribe_with_description_and_button() {
+        let sc = Shortcode::Subscribe(SubscribeShortcode {
+            description: Some("Get updates".to_string()),
+            button: Some("Subscribe".to_string()),
+        });
+        match &sc {
+            Shortcode::Subscribe(args) => {
+                assert_eq!(args.description.as_deref(), Some("Get updates"));
+                assert_eq!(args.button.as_deref(), Some("Subscribe"));
+            }
+        }
+    }
+
+    #[test]
+    fn subscribe_default_has_none_description_and_button() {
+        let args = SubscribeShortcode::default();
+        assert!(args.description.is_none());
+        assert!(args.button.is_none());
+    }
+
+    #[test]
+    fn subscribe_round_trips_through_serde() {
+        let sc = Shortcode::Subscribe(SubscribeShortcode {
+            description: Some("d".to_string()),
+            button: Some("b".to_string()),
+        });
+        let s = serde_json::to_string(&sc).expect("serialize");
+        let back: Shortcode = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(sc, back);
     }
 }

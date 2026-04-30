@@ -36,6 +36,7 @@ pub mod node;
 pub mod parser;
 pub mod render;
 pub mod shortcode;
+pub mod shortcode_extract;
 pub mod url;
 pub mod visit;
 
@@ -44,6 +45,6 @@ pub use hooks::{DefaultHooks, RenderHooks};
 pub use node::{Block, Inline};
 pub use parser::parse;
 pub use render::render_document;
-pub use shortcode::{Shortcode, ShortcodeKind};
+pub use shortcode::{Shortcode, ShortcodeKind, SubscribeShortcode};
 pub use url::{ResolvedUrl, Url, UrlKind};
 pub use visit::{has_shortcode_recursive, visit_blocks, visit_urls_mut};

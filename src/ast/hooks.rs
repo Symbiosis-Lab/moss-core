@@ -64,11 +64,26 @@ pub trait RenderHooks {
 
     /// Emit a shortcode block as HTML.
     ///
-    /// Phase A: uninhabited — `match *sc {}`. Phase B variants override
-    /// this on `PipelineHooks` to produce the site-specific HTML each
-    /// shortcode emits today.
-    fn render_shortcode(&self, _out: &mut String, sc: &Shortcode) {
-        match *sc {}
+    /// The default impl produces a minimal HTML skeleton suitable for the
+    /// moss-core test harness; site-specific HTML (subscribe forms, button
+    /// styles, gallery grids) lives in src-tauri's `PipelineHooks` impl
+    /// because it depends on filesystem context (site_id, lang, asset
+    /// paths) that moss-core doesn't have.
+    fn render_shortcode(&self, out: &mut String, sc: &Shortcode) {
+        match sc {
+            Shortcode::Subscribe(args) => {
+                out.push_str(r#"<div class="moss-subscribe-form">"#);
+                if let Some(desc) = &args.description {
+                    out.push_str("<p>");
+                    out.push_str(&escape_text(desc));
+                    out.push_str("</p>");
+                }
+                out.push_str("<button>");
+                out.push_str(&escape_text(args.button.as_deref().unwrap_or("Subscribe")));
+                out.push_str("</button>");
+                out.push_str("</div>");
+            }
+        }
     }
 
     /// Emit `<h1>...</h1>` (or h2/h3/...) for a heading.
