@@ -31,15 +31,19 @@
 //! - moss-core stays pure Rust: zero I/O, zero async.
 
 pub mod document;
+pub mod hooks;
 pub mod node;
 pub mod parser;
+pub mod render;
 pub mod shortcode;
 pub mod url;
 pub mod visit;
 
 pub use document::Document;
+pub use hooks::{DefaultHooks, RenderHooks};
 pub use node::{Block, Inline};
 pub use parser::parse;
+pub use render::render_document;
 pub use shortcode::{Shortcode, ShortcodeKind};
 pub use url::{ResolvedUrl, Url, UrlKind};
 pub use visit::{has_shortcode_recursive, visit_blocks, visit_urls_mut};
