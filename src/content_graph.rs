@@ -112,20 +112,28 @@ fn lang_tree_match(candidate: &str, from_lang: Option<&str>) -> u8 {
 
 /// Generate a URL slug from a relative file path.
 ///
-/// Strips the file extension, normalizes separators to `/`, and lowercases.
+/// Strips the file extension, normalizes separators to `/`, lowercases, and
+/// sanitizes each segment: drops ASCII punctuation that is neither alphanumeric
+/// nor a word separator, normalizes spaces/underscores to hyphens, collapses
+/// runs of hyphens, trims edges. Non-ASCII characters (CJK, Cyrillic, Greek,
+/// etc.) pass through unchanged.
+///
 /// Examples:
 /// - `"posts/Hello World.md"` -> `"posts/hello-world"`
 /// - `"guides/Setup.md"` -> `"guides/setup"`
+/// - `"news/Farewell, and Erase on BroadwayWorld.md"`
+///   -> `"news/farewell-and-erase-on-broadwayworld"`
+/// - `"posts/Hello (World)!.md"` -> `"posts/hello-world"`
+/// - `"posts/foo--bar.md"` -> `"posts/foo-bar"`
 /// - `"image.png"` -> `"image"`
-/// - `"deep/path/to/file.txt"` -> `"deep/path/to/file"`
+/// - `"视频/视频.md"` -> `"视频/视频"`  (non-ASCII passes through)
 pub fn generate_slug(relative_path: &str) -> String {
     // Normalize separators
     let normalized = relative_path.replace('\\', "/");
 
-    // Strip extension
+    // Strip extension only if the last `.` is in the filename part (after last /).
     let without_ext = match normalized.rfind('.') {
         Some(dot_pos) => {
-            // Only strip if the dot is in the filename part (after last /)
             let last_slash = normalized.rfind('/').unwrap_or(0);
             if dot_pos > last_slash {
                 &normalized[..dot_pos]
@@ -136,10 +144,46 @@ pub fn generate_slug(relative_path: &str) -> String {
         None => &normalized,
     };
 
-    // Lowercase and replace spaces with hyphens
+    // Sanitize each path segment independently so hyphen-collapse + edge-trim
+    // operate within a segment without touching the path separators.
     without_ext
-        .to_lowercase()
-        .replace(' ', "-")
+        .split('/')
+        .map(sanitize_slug_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Sanitize a single path segment: drop ASCII punctuation, normalize
+/// space/underscore to hyphen, collapse runs of hyphens, trim edges.
+fn sanitize_slug_segment(segment: &str) -> String {
+    let lowered = segment.to_lowercase();
+
+    let mut buf = String::with_capacity(lowered.len());
+    for c in lowered.chars() {
+        if c.is_alphanumeric() {
+            buf.push(c);
+        } else if c == ' ' || c == '-' || c == '_' {
+            buf.push('-');
+        }
+        // else: drop ASCII punctuation (',', '.', '!', '(', ')', etc.) and
+        // control characters.
+    }
+
+    // Collapse consecutive hyphens, then trim leading/trailing.
+    let mut collapsed = String::with_capacity(buf.len());
+    let mut prev_hyphen = false;
+    for c in buf.chars() {
+        if c == '-' {
+            if !prev_hyphen {
+                collapsed.push('-');
+            }
+            prev_hyphen = true;
+        } else {
+            collapsed.push(c);
+            prev_hyphen = false;
+        }
+    }
+    collapsed.trim_matches('-').to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +805,45 @@ mod tests {
             generate_slug("deep/path/to/file.txt"),
             "deep/path/to/file"
         );
+    }
+
+    #[test]
+    fn test_generate_slug_strips_ascii_punctuation() {
+        assert_eq!(
+            generate_slug("news/Farewell, and Erase on BroadwayWorld.md"),
+            "news/farewell-and-erase-on-broadwayworld"
+        );
+        assert_eq!(generate_slug("posts/Hello (World)!.md"), "posts/hello-world");
+        assert_eq!(generate_slug("posts/it's-mine.md"), "posts/its-mine");
+        assert_eq!(generate_slug("posts/foo:bar.md"), "posts/foobar");
+    }
+
+    #[test]
+    fn test_generate_slug_collapses_consecutive_hyphens() {
+        assert_eq!(generate_slug("posts/foo--bar.md"), "posts/foo-bar");
+        assert_eq!(generate_slug("posts/foo - bar.md"), "posts/foo-bar");
+        assert_eq!(generate_slug("posts/a---b.md"), "posts/a-b");
+    }
+
+    #[test]
+    fn test_generate_slug_trims_leading_trailing_hyphens_per_segment() {
+        assert_eq!(generate_slug("posts/-hello.md"), "posts/hello");
+        assert_eq!(generate_slug("posts/hello-.md"), "posts/hello");
+    }
+
+    #[test]
+    fn test_generate_slug_preserves_non_ascii() {
+        assert_eq!(generate_slug("视频/视频.md"), "视频/视频");
+        assert_eq!(
+            generate_slug("posts/AI 带来写作的黄金时代.md"),
+            "posts/ai-带来写作的黄金时代"
+        );
+    }
+
+    #[test]
+    fn test_generate_slug_preserves_path_separators() {
+        assert_eq!(generate_slug("a/b/c.md"), "a/b/c");
+        assert_eq!(generate_slug("a, b/c.md"), "a-b/c");
     }
 
     // When both index.md and self-named exist, filename stem match (step 3)
