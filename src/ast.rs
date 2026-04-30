@@ -32,10 +32,12 @@
 
 pub mod document;
 pub mod node;
+pub mod parser;
 pub mod shortcode;
 pub mod url;
 
 pub use document::Document;
 pub use node::{Block, Inline};
+pub use parser::parse;
 pub use shortcode::{Shortcode, ShortcodeKind};
 pub use url::{ResolvedUrl, Url, UrlKind};
