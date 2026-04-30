@@ -54,18 +54,22 @@ pub fn parse(markdown: &str) -> Document {
     }
 
     // Substitute sentinel placeholders with their typed Shortcode variants.
-    substitute_shortcode_placeholders(&mut blocks, &extraction.extracted);
+    substitute_shortcode_placeholders(&mut blocks, &extraction.nonce, &extraction.extracted);
 
     Document::from_blocks(blocks)
 }
 
 /// Walk top-level blocks; replace any `Block::Other` whose payload is a
-/// `<!--MOSS_SHORTCODE_N-->` sentinel with the corresponding typed
+/// `<!--MOSS_SC_{nonce}_{index}-->` sentinel with the corresponding typed
 /// [`Block::Shortcode`].
-fn substitute_shortcode_placeholders(blocks: &mut Vec<Block>, extracted: &[ExtractedShortcode]) {
+fn substitute_shortcode_placeholders(
+    blocks: &mut Vec<Block>,
+    nonce: &str,
+    extracted: &[ExtractedShortcode],
+) {
     for block in blocks.iter_mut() {
         if let Block::Other(html) = block {
-            if let Some(index) = parse_placeholder(html) {
+            if let Some(index) = parse_placeholder(nonce, html) {
                 if let Some(entry) = extracted.iter().find(|e| e.index == index) {
                     *block = Block::Shortcode(entry.shortcode.clone());
                 }

@@ -3,7 +3,7 @@
 //! Walks the markdown line-by-line, tracking fenced code blocks (so
 //! `:::buttons` inside a code fence stays inert) and recognizing
 //! `:::name ...args` / `:::` openers/closers. Each block is replaced with
-//! a sentinel HTML comment (`<!--MOSS_SHORTCODE_N-->`) that pulldown-cmark
+//! a sentinel HTML comment (`<!--MOSS_SC_{nonce}_N-->`) that pulldown-cmark
 //! emits as a `Block::Other` raw HTML; the final parser pass walks the
 //! AST and substitutes the sentinels with typed [`Shortcode`] variants.
 //!
@@ -40,6 +40,14 @@ pub struct ExtractionResult {
     pub markdown_with_placeholders: String,
     /// One entry per extracted block, indexed by sentinel number.
     pub extracted: Vec<ExtractedShortcode>,
+    /// Per-extraction nonce (8 hex chars). Derived from a hash of the
+    /// input markdown so it's deterministic but collision-resistant
+    /// against authored content. The placeholder format is
+    /// `<!--MOSS_SC_{nonce}_{index}-->`; an authored markdown comment
+    /// matching that exact shape would have to embed the same hash of
+    /// itself, which is computationally improbable for any input shorter
+    /// than the SHA universe.
+    pub nonce: String,
 }
 
 /// Recognized shortcode names (Phase B Task 7+ adds variants here).
@@ -202,17 +210,42 @@ fn parse_subscribe_body(body: &str) -> SubscribeShortcode {
 /// The sentinel HTML comment used to mark an extracted shortcode in the
 /// markdown source. Pulldown-cmark emits these as [`Event::Html`] inside
 /// a [`Tag::HtmlBlock`], which surfaces as [`Block::Other`] in our AST.
-pub fn placeholder_for(index: usize) -> String {
-    format!("<!--MOSS_SHORTCODE_{index}-->")
+///
+/// `nonce` is the per-extraction hash from [`ExtractionResult::nonce`],
+/// which forecloses the namespace-collision case where an author writes
+/// `<!--MOSS_SC_*-->` literally in their markdown.
+pub fn placeholder_for(nonce: &str, index: usize) -> String {
+    format!("<!--MOSS_SC_{nonce}_{index}-->")
 }
 
-/// Try to interpret a [`Block::Other`] payload as a shortcode placeholder.
-/// Returns the `index` if it matches.
-pub fn parse_placeholder(html: &str) -> Option<usize> {
+/// Try to interpret a [`Block::Other`] payload as a shortcode placeholder
+/// matching the given `nonce`. Returns the `index` if it matches.
+///
+/// Any sentinel with a different (or absent) nonce is rejected — that's
+/// what makes authored content with a similar comment shape inert.
+pub fn parse_placeholder(nonce: &str, html: &str) -> Option<usize> {
     let trim = html.trim();
-    let inner = trim.strip_prefix("<!--MOSS_SHORTCODE_")?;
+    let prefix = format!("<!--MOSS_SC_{nonce}_");
+    let inner = trim.strip_prefix(&prefix)?;
     let inner = inner.strip_suffix("-->")?;
     inner.parse::<usize>().ok()
+}
+
+/// Compute the per-extraction nonce from the input markdown. Uses
+/// `std::hash::DefaultHasher` (FxHash-like; not cryptographic, but good
+/// enough to make a literal authored-content collision computationally
+/// improbable for any short input). Returns 8 hex characters.
+fn compute_nonce(input: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    input.hash(&mut hasher);
+    // Truncate to 32 bits for an 8-char hex; collisions across two
+    // sites are not a concern (each extraction uses its own nonce
+    // for its own substitution). Per-extraction collision-resistance
+    // requires only that the nonce differs from any literal string
+    // in the same input — 32 bits is overkill for that.
+    let h = hasher.finish() as u32;
+    format!("{h:08x}")
 }
 
 /// Walk the markdown line-by-line, replace `:::name` blocks with sentinels.
@@ -223,6 +256,7 @@ pub fn parse_placeholder(html: &str) -> Option<usize> {
 /// blocks pass through verbatim (the legacy string-rewriter still
 /// processes them during the staged migration).
 pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
+    let nonce = compute_nonce(markdown);
     let mut output = String::with_capacity(markdown.len());
     let mut extracted: Vec<ExtractedShortcode> = Vec::new();
     let lines: Vec<&str> = markdown.lines().collect();
@@ -284,7 +318,7 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
             let body = body_lines.join("\n");
             if let Some(sc) = parse_shortcode_block(name, args, &body) {
                 let index = extracted.len();
-                output.push_str(&placeholder_for(index));
+                output.push_str(&placeholder_for(&nonce, index));
                 output.push('\n');
                 extracted.push(ExtractedShortcode {
                     index,
@@ -312,6 +346,7 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
     ExtractionResult {
         markdown_with_placeholders: output,
         extracted,
+        nonce,
     }
 }
 
@@ -351,8 +386,22 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
 
 /// True if `trimmed` is a closing fence with the specified arity (`:::`
 /// for arity 3, `::::` for arity 4, etc.).
+///
+/// Matches the legacy `parse_fence_close` semantics in
+/// `src-tauri/src/build/shortcode.rs:857`: a closer is N colons followed
+/// by optional whitespace only. A line `::: extra` is NOT a closer
+/// (it's content). Without this match, authors who pasted text after
+/// the closer would see different behavior between the typed-AST path
+/// and the legacy grid parser, surfacing as silent content corruption.
 fn is_close_fence(trimmed: &str, arity: usize) -> bool {
-    trimmed.len() == arity && trimmed.chars().all(|c| c == ':')
+    if trimmed.len() < arity {
+        return false;
+    }
+    let (colons, rest) = trimmed.split_at(arity);
+    if !colons.chars().all(|c| c == ':') {
+        return false;
+    }
+    rest.chars().all(char::is_whitespace)
 }
 
 #[cfg(test)]
@@ -381,7 +430,7 @@ mod tests {
         }
         assert!(result
             .markdown_with_placeholders
-            .contains("<!--MOSS_SHORTCODE_0-->"));
+            .contains(&placeholder_for(&result.nonce, 0)));
         assert!(!result.markdown_with_placeholders.contains(":::subscribe"));
     }
 
@@ -471,24 +520,66 @@ mod tests {
         assert_eq!(result.extracted[1].index, 1);
         assert!(result
             .markdown_with_placeholders
-            .contains("<!--MOSS_SHORTCODE_0-->"));
+            .contains(&placeholder_for(&result.nonce, 0)));
         assert!(result
             .markdown_with_placeholders
-            .contains("<!--MOSS_SHORTCODE_1-->"));
+            .contains(&placeholder_for(&result.nonce, 1)));
     }
 
     #[test]
     fn parse_placeholder_round_trips_index() {
+        let nonce = "deadbeef";
         for index in [0, 1, 5, 99] {
-            let s = placeholder_for(index);
-            assert_eq!(parse_placeholder(&s), Some(index));
+            let s = placeholder_for(nonce, index);
+            assert_eq!(parse_placeholder(nonce, &s), Some(index));
         }
     }
 
     #[test]
     fn parse_placeholder_rejects_non_placeholder_html() {
-        assert!(parse_placeholder("<div>hi</div>").is_none());
-        assert!(parse_placeholder("<!--just a comment-->").is_none());
+        let nonce = "deadbeef";
+        assert!(parse_placeholder(nonce, "<div>hi</div>").is_none());
+        assert!(parse_placeholder(nonce, "<!--just a comment-->").is_none());
+    }
+
+    #[test]
+    fn parse_placeholder_rejects_wrong_nonce() {
+        // Authored content collision case: an author writes a literal
+        // <!--MOSS_SC_*_0--> in their markdown. parse_placeholder requires
+        // the same nonce as this extraction's session, so a mismatched
+        // nonce returns None. This forecloses the authored-content
+        // namespace collision.
+        let s = placeholder_for("aaaa1111", 5);
+        assert_eq!(parse_placeholder("bbbb2222", &s), None);
+    }
+
+    #[test]
+    fn extract_uses_content_derived_nonce() {
+        // The nonce is deterministic per input — calling extract_shortcodes
+        // twice on the same input produces the same nonce.
+        let md = ":::subscribe\n:::\n";
+        let r1 = extract_shortcodes(md);
+        let r2 = extract_shortcodes(md);
+        assert_eq!(r1.nonce, r2.nonce);
+        // Different inputs produce different nonces (with overwhelming
+        // probability — collision impossible to exhibit here).
+        let r3 = extract_shortcodes(":::subscribe\ndescription: x\n:::\n");
+        assert_ne!(r1.nonce, r3.nonce);
+    }
+
+    #[test]
+    fn nonce_makes_authored_collision_inert() {
+        // If an author writes a literal placeholder-shape comment, my
+        // nonce will differ from theirs, so the substitution leaves
+        // their text alone.
+        let md = ":::subscribe\n:::\n\nLook: <!--MOSS_SC_00000000_0-->\n";
+        let result = extract_shortcodes(md);
+        // The author's comment survives because the embedded nonce
+        // differs from the computed one (probability of collision = 1/2^32).
+        assert_ne!(result.nonce, "00000000");
+        assert!(result
+            .markdown_with_placeholders
+            .contains("MOSS_SC_00000000_0"));
     }
 
     #[test]
@@ -660,6 +751,58 @@ mod tests {
         let md = "```\n:::buttons\n[t](u)\n:::\n```\n";
         let result = extract_shortcodes(md);
         assert!(result.extracted.is_empty());
+    }
+
+    #[test]
+    fn extract_markdown_link_rejects_text_with_close_bracket() {
+        // Pinning test (code-review P2): the parser uses find(']') for the
+        // first close-bracket. A link text containing ']' silently fails
+        // to parse and the line is skipped (silently — matches legacy
+        // shortcode.rs::extract_markdown_link). If/when this is relaxed,
+        // this test fails and the change is deliberate.
+        let md = ":::buttons\n[a]b](u)\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => assert!(args.items.is_empty()),
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn extract_markdown_link_requires_trailing_paren() {
+        // Pinning test: trailing content after `)` causes the link to be
+        // rejected (matches legacy behavior).
+        let md = ":::buttons\n[t](u) <!-- trailing -->\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => assert!(args.items.is_empty()),
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn close_fence_with_trailing_whitespace_is_recognized() {
+        // Whitespace after the colons is allowed (matches legacy
+        // parse_fence_close at shortcode.rs:857).
+        let md = ":::subscribe\nbutton: x\n:::   \n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+    }
+
+    #[test]
+    fn close_fence_with_trailing_text_is_not_recognized() {
+        // P1 #2 fix: `::: more text` does NOT close the block. Without
+        // this match against legacy semantics, an author who pasted text
+        // after the closer would see different behavior between the
+        // typed-AST path and the legacy grid parser.
+        let md = ":::subscribe\nbutton: x\n::: more text\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        // The first `:::` is body content; the second `:::` is the closer.
+        match &result.extracted[0].shortcode {
+            Shortcode::Subscribe(args) => assert_eq!(args.button.as_deref(), Some("x")),
+            _ => panic!("expected Subscribe"),
+        }
     }
 
     // ---- Gallery (Phase B Task 9) ----
