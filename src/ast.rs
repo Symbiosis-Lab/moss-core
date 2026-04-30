@@ -35,9 +35,11 @@ pub mod node;
 pub mod parser;
 pub mod shortcode;
 pub mod url;
+pub mod visit;
 
 pub use document::Document;
 pub use node::{Block, Inline};
 pub use parser::parse;
 pub use shortcode::{Shortcode, ShortcodeKind};
 pub use url::{ResolvedUrl, Url, UrlKind};
+pub use visit::{has_shortcode_recursive, visit_blocks, visit_urls_mut};
