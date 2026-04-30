@@ -30,6 +30,12 @@
 //!   `Url::Resolved`; emitting `Url::Unresolved` is a bug.
 //! - moss-core stays pure Rust: zero I/O, zero async.
 
+pub mod document;
+pub mod node;
+pub mod shortcode;
 pub mod url;
 
+pub use document::Document;
+pub use node::{Block, Inline};
+pub use shortcode::{Shortcode, ShortcodeKind};
 pub use url::{ResolvedUrl, Url, UrlKind};
