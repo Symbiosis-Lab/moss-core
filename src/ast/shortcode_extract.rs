@@ -18,7 +18,9 @@
 //!   (pulldown-cmark passes HTML comments through `Event::Html` as
 //!   `Block::HtmlBlock`).
 
-use super::shortcode::{ButtonItem, ButtonsShortcode, Shortcode, SubscribeShortcode};
+use super::shortcode::{
+    ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, Shortcode, SubscribeShortcode,
+};
 use super::url::Url;
 
 /// One extracted shortcode block, with its body parsed into a typed variant.
@@ -48,13 +50,94 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> Option<Shortcode
     match name {
         "subscribe" => Some(Shortcode::Subscribe(parse_subscribe_body(body))),
         "buttons" => Some(Shortcode::Buttons(parse_buttons_body(args, body))),
-        // Phase B 9-11 add: gallery, hero, grid.
+        "gallery" => Some(Shortcode::Gallery(parse_gallery_body(args, body))),
+        // Phase B 10-11 add: hero, grid.
         _ => None,
     }
 }
 
+fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
+    // Args: `N {.classes}` where N is optional columns count.
+    let (positional, classes) = split_positional_and_classes(args);
+    let columns = if positional.is_empty() {
+        None
+    } else {
+        positional.parse::<u32>().ok()
+    };
+    let mut items: Vec<GalleryItem> = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Each line: `path|attrs`, `![alt](path)|attrs`, or bare `path`.
+        // The pipe split (if any) is BEFORE the markdown-image pattern check.
+        let (src_raw, attrs) = split_pipe(trimmed);
+        let (src_url, alt) = match parse_markdown_image(src_raw) {
+            Some((alt, path)) => (path, alt),
+            None => (src_raw.trim().to_string(), String::new()),
+        };
+        items.push(GalleryItem {
+            src: Url::unresolved(src_url),
+            alt,
+            attrs: attrs.to_string(),
+        });
+    }
+    GalleryShortcode {
+        columns,
+        classes,
+        items,
+    }
+}
+
+/// Split `args` into `(positional_text, classes)` from `{.foo .bar}` syntax.
+/// Mirrors `extract_attrs` in `src-tauri/src/build/shortcode.rs`.
+fn split_positional_and_classes(args: &str) -> (String, String) {
+    let trimmed = args.trim();
+    if let Some(brace_start) = trimmed.find('{') {
+        if let Some(brace_end) = trimmed[brace_start..].find('}') {
+            let positional = trimmed[..brace_start].trim().to_string();
+            let inner = &trimmed[brace_start + 1..brace_start + brace_end];
+            let mut classes = Vec::new();
+            for token in inner.split_whitespace() {
+                if let Some(class) = token.strip_prefix('.') {
+                    if !class.is_empty() {
+                        classes.push(class);
+                    }
+                }
+            }
+            return (positional, classes.join(" "));
+        }
+    }
+    (trimmed.to_string(), String::new())
+}
+
+/// Split `s` on `|` into `(before, after)`. If no pipe, returns `(s, "")`.
+fn split_pipe(s: &str) -> (&str, &str) {
+    match s.find('|') {
+        Some(pos) => (&s[..pos], s[pos + 1..].trim()),
+        None => (s, ""),
+    }
+}
+
+/// Parse `![alt](path)` into `(alt, path)`. Returns `None` if not a
+/// markdown image. Mirrors the legacy parser at shortcode.rs:1615.
+fn parse_markdown_image(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    let rest = s.strip_prefix("![")?;
+    let close_bracket = rest.find("](")?;
+    let alt = &rest[..close_bracket];
+    let after = &rest[close_bracket + 2..];
+    let close_paren = after.rfind(')')?;
+    let path = &after[..close_paren];
+    if path.contains('(') {
+        return None;
+    }
+    Some((alt.to_string(), path.to_string()))
+}
+
 fn parse_buttons_body(args: &str, body: &str) -> ButtonsShortcode {
-    let classes = parse_class_attrs(args);
+    let (_positional, classes) = split_positional_and_classes(args);
     let mut items: Vec<ButtonItem> = Vec::new();
     for line in body.lines() {
         let trimmed = line.trim();
@@ -70,28 +153,6 @@ fn parse_buttons_body(args: &str, body: &str) -> ButtonsShortcode {
         // Non-link lines silently ignored (matches legacy behavior).
     }
     ButtonsShortcode { classes, items }
-}
-
-/// Parse `{.foo .bar}` style class attributes into a space-separated string.
-/// Mirrors `extract_attrs` in `src-tauri/src/build/shortcode.rs`.
-fn parse_class_attrs(args: &str) -> String {
-    let trimmed = args.trim();
-    let inner = match trimmed
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-    {
-        Some(s) => s,
-        None => return String::new(),
-    };
-    let mut classes = Vec::new();
-    for token in inner.split_whitespace() {
-        if let Some(class) = token.strip_prefix('.') {
-            if !class.is_empty() {
-                classes.push(class);
-            }
-        }
-    }
-    classes.join(" ")
 }
 
 /// Extract a markdown link `[text](url)` from a single trimmed line.
@@ -392,14 +453,13 @@ mod tests {
 
     #[test]
     fn unknown_shortcode_passes_through_verbatim() {
-        // `:::gallery` is not yet migrated (Phase B Task 9 lands later);
+        // `:::hero` is not yet migrated (Phase B Task 10 lands later);
         // the extractor must NOT consume it. Legacy rewriter still
-        // handles it. After all shortcodes are migrated, this test moves
-        // to use a definitely-unrecognized name (e.g. `:::nonexistent`).
-        let md = ":::gallery\nimg.jpg\n:::\n";
+        // handles it.
+        let md = ":::hero\n![[bg.jpg]]\n:::\n";
         let result = extract_shortcodes(md);
         assert!(result.extracted.is_empty());
-        assert!(result.markdown_with_placeholders.contains(":::gallery"));
+        assert!(result.markdown_with_placeholders.contains(":::hero"));
     }
 
     #[test]
@@ -600,5 +660,91 @@ mod tests {
         let md = "```\n:::buttons\n[t](u)\n:::\n```\n";
         let result = extract_shortcodes(md);
         assert!(result.extracted.is_empty());
+    }
+
+    // ---- Gallery (Phase B Task 9) ----
+
+    #[test]
+    fn extracts_gallery_with_bare_paths() {
+        let md = ":::gallery\nphoto1.jpg\nphoto2.png\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Gallery(args) => {
+                assert!(args.columns.is_none());
+                assert_eq!(args.items.len(), 2);
+                assert_eq!(args.items[0].alt, "");
+                match &args.items[0].src {
+                    Url::Unresolved(s) => assert_eq!(s, "photo1.jpg"),
+                    _ => panic!("expected Unresolved"),
+                }
+            }
+            _ => panic!("expected Gallery"),
+        }
+    }
+
+    #[test]
+    fn extracts_gallery_with_columns_arg() {
+        let md = ":::gallery 4\na.jpg\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Gallery(args) => assert_eq!(args.columns, Some(4)),
+            _ => panic!("expected Gallery"),
+        }
+    }
+
+    #[test]
+    fn extracts_gallery_with_classes() {
+        let md = ":::gallery 3 {.showcase}\na.jpg\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Gallery(args) => {
+                assert_eq!(args.columns, Some(3));
+                assert_eq!(args.classes, "showcase");
+            }
+            _ => panic!("expected Gallery"),
+        }
+    }
+
+    #[test]
+    fn extracts_gallery_with_markdown_image_syntax() {
+        let md = ":::gallery\n![A photo](photo.jpg)\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Gallery(args) => {
+                assert_eq!(args.items[0].alt, "A photo");
+                match &args.items[0].src {
+                    Url::Unresolved(s) => assert_eq!(s, "photo.jpg"),
+                    _ => panic!("expected Unresolved"),
+                }
+            }
+            _ => panic!("expected Gallery"),
+        }
+    }
+
+    #[test]
+    fn extracts_gallery_with_pipe_attrs() {
+        let md = ":::gallery\nphoto.jpg|cover top\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Gallery(args) => {
+                assert_eq!(args.items[0].attrs, "cover top");
+                match &args.items[0].src {
+                    Url::Unresolved(s) => assert_eq!(s, "photo.jpg"),
+                    _ => panic!("expected Unresolved"),
+                }
+            }
+            _ => panic!("expected Gallery"),
+        }
+    }
+
+    #[test]
+    fn gallery_skips_blank_lines() {
+        let md = ":::gallery\n\na.jpg\n\nb.jpg\n\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Gallery(args) => assert_eq!(args.items.len(), 2),
+            _ => panic!("expected Gallery"),
+        }
     }
 }

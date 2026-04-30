@@ -100,6 +100,11 @@ where
                 callback(&mut item.url);
             }
         }
+        Shortcode::Gallery(args) => {
+            for item in &mut args.items {
+                callback(&mut item.src);
+            }
+        }
     }
 }
 

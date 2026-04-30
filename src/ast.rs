@@ -45,6 +45,9 @@ pub use hooks::{DefaultHooks, RenderHooks};
 pub use node::{Block, Inline};
 pub use parser::parse;
 pub use render::render_document;
-pub use shortcode::{ButtonItem, ButtonsShortcode, Shortcode, ShortcodeKind, SubscribeShortcode};
+pub use shortcode::{
+    ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, Shortcode, ShortcodeKind,
+    SubscribeShortcode,
+};
 pub use url::{ResolvedUrl, Url, UrlKind};
 pub use visit::{has_shortcode_recursive, visit_blocks, visit_urls_mut};

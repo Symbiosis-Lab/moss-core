@@ -83,6 +83,51 @@ pub trait RenderHooks {
                 out.push_str("</button>");
                 out.push_str("</div>");
             }
+            Shortcode::Gallery(args) => {
+                let mut class_attr = String::from("moss-gallery");
+                if !args.classes.is_empty() {
+                    class_attr.push(' ');
+                    class_attr.push_str(&args.classes);
+                }
+                let style_attr = match args.columns {
+                    Some(n) => format!(r#" style="--gallery-columns: {n}""#),
+                    None => String::new(),
+                };
+                out.push_str(r#"<div class=""#);
+                out.push_str(&escape_attr(&class_attr));
+                out.push('"');
+                out.push_str(&style_attr);
+                out.push('>');
+                for item in &args.items {
+                    out.push_str(r#"<div class="moss-gallery-item"><img src=""#);
+                    let src_str = match &item.src {
+                        crate::ast::url::Url::Resolved(r) => r.href.clone(),
+                        crate::ast::url::Url::Unresolved(s) => {
+                            debug_assert!(
+                                false,
+                                "Url::Unresolved({s:?}) reached render_shortcode \
+                                 — visit_urls_mut missing for Gallery"
+                            );
+                            s.clone()
+                        }
+                    };
+                    // Legacy gallery emits src verbatim (no escape) and no
+                    // src trim, mirroring shortcode.rs:1651-1653. Match
+                    // byte-for-byte.
+                    out.push_str(&src_str);
+                    out.push_str(r#"" alt=""#);
+                    out.push_str(&item.alt);
+                    out.push_str(r#"" loading="lazy""#);
+                    let style = crate::media::parse_media_attrs(&item.attrs);
+                    if let Some(s) = style.to_inline_style() {
+                        out.push_str(r#" style=""#);
+                        out.push_str(&s);
+                        out.push('"');
+                    }
+                    out.push_str("></div>");
+                }
+                out.push_str("</div>");
+            }
             Shortcode::Buttons(args) => {
                 if args.items.is_empty() {
                     return;

@@ -40,6 +40,13 @@ pub enum Shortcode {
     /// construction: `RenderHooks::render_shortcode` reads `Url::Resolved`,
     /// so a missing visitor is a debug-time crash.
     Buttons(ButtonsShortcode),
+    /// `:::gallery N {.classname}` — image gallery with optional columns.
+    ///
+    /// `N` (positional integer) sets `--gallery-columns` CSS variable.
+    /// Body is one image reference per line: `![alt](path)`, bare
+    /// `path.jpg`, or `path|attrs` for media attributes (passed through
+    /// to the renderer's inline style).
+    Gallery(GalleryShortcode),
 }
 
 /// Arguments for [`Shortcode::Subscribe`].
@@ -71,6 +78,30 @@ pub struct ButtonItem {
     pub url: Url,
 }
 
+/// Arguments for [`Shortcode::Gallery`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GalleryShortcode {
+    /// Optional column count for `--gallery-columns` CSS variable.
+    pub columns: Option<u32>,
+    /// Extra CSS classes for the wrapping `<div>` (from `{.foo .bar}`).
+    pub classes: String,
+    /// Each gallery image's src + alt + media attrs.
+    pub items: Vec<GalleryItem>,
+}
+
+/// One image in a [`GalleryShortcode`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GalleryItem {
+    /// Image source URL. Flows through resolver before rendering.
+    pub src: Url,
+    /// Alt text (from `![alt](...)` syntax). Empty if author used bare path.
+    pub alt: String,
+    /// Pipe-suffix media attributes verbatim (e.g. "cover top",
+    /// "1.5:1 contain"). Empty if no pipe in the source.
+    /// The renderer parses this via `moss_core::media::parse_media_attrs`.
+    pub attrs: String,
+}
+
 /// Identifier for a shortcode kind, used for AST queries (e.g.
 /// `has_shortcode(&doc, ShortcodeKind::Subscribe)` to gate feature
 /// detection without scanning source files).
@@ -90,6 +121,7 @@ impl Shortcode {
         match self {
             Shortcode::Subscribe(_) => ShortcodeKind::Subscribe,
             Shortcode::Buttons(_) => ShortcodeKind::Buttons,
+            Shortcode::Gallery(_) => ShortcodeKind::Gallery,
         }
     }
 }
@@ -212,6 +244,67 @@ mod tests {
             items: vec![ButtonItem {
                 text: "Go".to_string(),
                 url: Url::unresolved("/x"),
+            }],
+        });
+        let s = serde_json::to_string(&sc).expect("serialize");
+        let back: Shortcode = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(sc, back);
+    }
+
+    // ---- Gallery ----
+
+    #[test]
+    fn gallery_kind_method_returns_gallery() {
+        let sc = Shortcode::Gallery(GalleryShortcode::default());
+        assert_eq!(sc.kind(), ShortcodeKind::Gallery);
+    }
+
+    #[test]
+    fn gallery_items_carry_unresolved_urls() {
+        let sc = Shortcode::Gallery(GalleryShortcode {
+            columns: Some(3),
+            classes: String::new(),
+            items: vec![
+                GalleryItem {
+                    src: Url::unresolved("a.jpg"),
+                    alt: "A".to_string(),
+                    attrs: String::new(),
+                },
+                GalleryItem {
+                    src: Url::unresolved("b.jpg"),
+                    alt: "B".to_string(),
+                    attrs: "cover top".to_string(),
+                },
+            ],
+        });
+        match &sc {
+            Shortcode::Gallery(args) => {
+                assert_eq!(args.columns, Some(3));
+                assert_eq!(args.items.len(), 2);
+                assert!(args.items[0].src.is_unresolved());
+                assert_eq!(args.items[1].attrs, "cover top");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn gallery_default_no_columns_no_items() {
+        let args = GalleryShortcode::default();
+        assert!(args.columns.is_none());
+        assert!(args.items.is_empty());
+        assert!(args.classes.is_empty());
+    }
+
+    #[test]
+    fn gallery_round_trips_through_serde() {
+        let sc = Shortcode::Gallery(GalleryShortcode {
+            columns: Some(4),
+            classes: "showcase".to_string(),
+            items: vec![GalleryItem {
+                src: Url::unresolved("p.png"),
+                alt: "Photo".to_string(),
+                attrs: "1:1 contain".to_string(),
             }],
         });
         let s = serde_json::to_string(&sc).expect("serialize");
