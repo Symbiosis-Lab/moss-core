@@ -18,7 +18,8 @@
 //!   (pulldown-cmark passes HTML comments through `Event::Html` as
 //!   `Block::HtmlBlock`).
 
-use super::shortcode::{Shortcode, SubscribeShortcode};
+use super::shortcode::{ButtonItem, ButtonsShortcode, Shortcode, SubscribeShortcode};
+use super::url::Url;
 
 /// One extracted shortcode block, with its body parsed into a typed variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,12 +41,77 @@ pub struct ExtractionResult {
 }
 
 /// Recognized shortcode names (Phase B Task 7+ adds variants here).
-fn parse_shortcode_block(name: &str, body: &str) -> Option<Shortcode> {
+///
+/// `args` is the trailing text after `:::name ` on the opening line
+/// (e.g. for `:::buttons {.primary}`, args is `{.primary}`).
+fn parse_shortcode_block(name: &str, args: &str, body: &str) -> Option<Shortcode> {
     match name {
         "subscribe" => Some(Shortcode::Subscribe(parse_subscribe_body(body))),
-        // Phase B 8-11 add: buttons, gallery, hero, grid.
+        "buttons" => Some(Shortcode::Buttons(parse_buttons_body(args, body))),
+        // Phase B 9-11 add: gallery, hero, grid.
         _ => None,
     }
+}
+
+fn parse_buttons_body(args: &str, body: &str) -> ButtonsShortcode {
+    let classes = parse_class_attrs(args);
+    let mut items: Vec<ButtonItem> = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((text, url)) = extract_markdown_link(trimmed) {
+            items.push(ButtonItem {
+                text,
+                url: Url::unresolved(url),
+            });
+        }
+        // Non-link lines silently ignored (matches legacy behavior).
+    }
+    ButtonsShortcode { classes, items }
+}
+
+/// Parse `{.foo .bar}` style class attributes into a space-separated string.
+/// Mirrors `extract_attrs` in `src-tauri/src/build/shortcode.rs`.
+fn parse_class_attrs(args: &str) -> String {
+    let trimmed = args.trim();
+    let inner = match trimmed
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+    {
+        Some(s) => s,
+        None => return String::new(),
+    };
+    let mut classes = Vec::new();
+    for token in inner.split_whitespace() {
+        if let Some(class) = token.strip_prefix('.') {
+            if !class.is_empty() {
+                classes.push(class);
+            }
+        }
+    }
+    classes.join(" ")
+}
+
+/// Extract a markdown link `[text](url)` from a single trimmed line.
+/// Returns `(text, url)` if the line is a single link, else `None`.
+fn extract_markdown_link(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    if !s.starts_with('[') {
+        return None;
+    }
+    let close_bracket = s.find(']')?;
+    let text = &s[1..close_bracket];
+    let after = &s[close_bracket + 1..];
+    if !after.starts_with('(') || !after.ends_with(')') {
+        return None;
+    }
+    let url = &after[1..after.len() - 1];
+    if url.is_empty() {
+        return None;
+    }
+    Some((text.to_string(), url.to_string()))
 }
 
 fn parse_subscribe_body(body: &str) -> SubscribeShortcode {
@@ -129,15 +195,14 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
             continue;
         }
 
-        // Try to recognize a `:::name` opener.
-        if let Some((name, _args)) = parse_shortcode_opener(trimmed) {
-            // Look for the matching `:::` closer on a subsequent line.
+        // Try to recognize a `:::name` (or `::::name`, etc.) opener.
+        if let Some((arity, name, args)) = parse_shortcode_opener(trimmed) {
+            // Look for the matching closer (same arity) on a subsequent line.
             let mut body_lines: Vec<&str> = Vec::new();
             let mut j = i + 1;
             let mut closed = false;
             while j < lines.len() {
-                let body_trim = lines[j].trim();
-                if body_trim == ":::" {
+                if is_close_fence(lines[j].trim(), arity) {
                     closed = true;
                     break;
                 }
@@ -156,7 +221,7 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
 
             // Try to parse the block as a known shortcode.
             let body = body_lines.join("\n");
-            if let Some(sc) = parse_shortcode_block(name, &body) {
+            if let Some(sc) = parse_shortcode_block(name, args, &body) {
                 let index = extracted.len();
                 output.push_str(&placeholder_for(index));
                 output.push('\n');
@@ -170,7 +235,7 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
             }
 
             // Unrecognized name: emit verbatim. The legacy rewriter
-            // may still process it (e.g. `:::buttons` until Phase B Task 8).
+            // still handles this kind until its Phase B migration commit.
             output.push_str(line);
             output.push('\n');
             i += 1;
@@ -199,13 +264,19 @@ fn detect_code_fence_open(trimmed: &str) -> Option<String> {
     }
 }
 
-fn parse_shortcode_opener(trimmed: &str) -> Option<(&str, &str)> {
-    let rest = trimmed.strip_prefix(":::")?;
-    if rest.is_empty() || rest.starts_with(':') {
-        // Just `:::` (closer) or `::::...` — not an opener.
+/// Parse an opening fence line into (colon_count, name, args). Returns
+/// `None` if the line is not an opener.
+///
+/// Accepts any colon count >= 3 (`:::name`, `::::name`, `:::::name`, ...).
+/// The colon count is preserved so the closer must match the same arity
+/// (allows nested shortcodes like `::::buttons` inside `:::grid`).
+fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
+    let colons = trimmed.chars().take_while(|&c| c == ':').count();
+    if colons < 3 {
         return None;
     }
-    // Name = letters/digits/underscores; rest of line is args.
+    let rest = &trimmed[colons..];
+    // Name = letters/digits/underscores/hyphens; rest of line is args.
     let name_end = rest
         .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
         .unwrap_or(rest.len());
@@ -214,7 +285,13 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(&str, &str)> {
     }
     let name = &rest[..name_end];
     let args = rest[name_end..].trim();
-    Some((name, args))
+    Some((colons, name, args))
+}
+
+/// True if `trimmed` is a closing fence with the specified arity (`:::`
+/// for arity 3, `::::` for arity 4, etc.).
+fn is_close_fence(trimmed: &str, arity: usize) -> bool {
+    trimmed.len() == arity && trimmed.chars().all(|c| c == ':')
 }
 
 #[cfg(test)]
@@ -239,6 +316,7 @@ mod tests {
                 assert_eq!(args.description.as_deref(), Some("Get updates"));
                 assert_eq!(args.button.as_deref(), Some("Sign me up"));
             }
+            other => panic!("expected Subscribe, got {other:?}"),
         }
         assert!(result
             .markdown_with_placeholders
@@ -255,6 +333,7 @@ mod tests {
                 assert_eq!(args.description.as_deref(), Some("Get updates"));
                 assert!(args.button.is_none());
             }
+            other => panic!("expected Subscribe, got {other:?}"),
         }
     }
 
@@ -267,6 +346,7 @@ mod tests {
                 assert!(args.description.is_none());
                 assert!(args.button.is_none());
             }
+            other => panic!("expected Subscribe, got {other:?}"),
         }
     }
 
@@ -279,6 +359,7 @@ mod tests {
                 assert_eq!(args.button.as_deref(), Some("Go"));
                 assert!(args.description.is_none());
             }
+            other => panic!("expected Subscribe, got {other:?}"),
         }
     }
 
@@ -311,12 +392,14 @@ mod tests {
 
     #[test]
     fn unknown_shortcode_passes_through_verbatim() {
-        // `:::buttons` is not yet migrated (Phase B Task 8); the
-        // extractor must NOT consume it. Legacy rewriter still handles it.
-        let md = ":::buttons\n[t](u)\n:::\n";
+        // `:::gallery` is not yet migrated (Phase B Task 9 lands later);
+        // the extractor must NOT consume it. Legacy rewriter still
+        // handles it. After all shortcodes are migrated, this test moves
+        // to use a definitely-unrecognized name (e.g. `:::nonexistent`).
+        let md = ":::gallery\nimg.jpg\n:::\n";
         let result = extract_shortcodes(md);
         assert!(result.extracted.is_empty());
-        assert!(result.markdown_with_placeholders.contains(":::buttons"));
+        assert!(result.markdown_with_placeholders.contains(":::gallery"));
     }
 
     #[test]
@@ -352,7 +435,7 @@ mod tests {
     fn parse_shortcode_opener_recognizes_simple_name() {
         assert_eq!(
             parse_shortcode_opener(":::subscribe"),
-            Some(("subscribe", ""))
+            Some((3, "subscribe", ""))
         );
     }
 
@@ -360,17 +443,162 @@ mod tests {
     fn parse_shortcode_opener_extracts_args() {
         assert_eq!(
             parse_shortcode_opener(":::grid 3 1:2:1"),
-            Some(("grid", "3 1:2:1"))
+            Some((3, "grid", "3 1:2:1"))
         );
     }
 
     #[test]
-    fn parse_shortcode_opener_rejects_bare_closer() {
-        assert!(parse_shortcode_opener(":::").is_none());
+    fn parse_shortcode_opener_recognizes_quadruple_colon() {
+        // ::::buttons is the standard way to nest a shortcode inside
+        // a :::grid cell. The arity is preserved so the closer matches.
+        assert_eq!(
+            parse_shortcode_opener("::::buttons"),
+            Some((4, "buttons", ""))
+        );
     }
 
     #[test]
-    fn parse_shortcode_opener_rejects_quadruple_colon() {
-        assert!(parse_shortcode_opener("::::buttons").is_none());
+    fn parse_shortcode_opener_rejects_two_colons() {
+        // Two colons is not a fence.
+        assert!(parse_shortcode_opener("::name").is_none());
+    }
+
+    #[test]
+    fn extracts_quadruple_colon_buttons() {
+        // ::::buttons inside hypothetical grid context. We just test the
+        // extractor in isolation; grid integration lands in Task 11.
+        let md = "::::buttons\n[Tickets](go/)\n::::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.items.len(), 1);
+                assert_eq!(args.items[0].text, "Tickets");
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn extracts_quadruple_buttons_inside_unrecognized_grid() {
+        // The realistic SoCiviC pattern: `::::buttons` (4-colon) nested
+        // inside a `:::grid` (3-colon, not yet migrated). The extractor
+        // must recognize the 4-colon buttons block while leaving the
+        // 3-colon grid markers verbatim for the legacy grid rewriter.
+        let md = ":::grid 2\n::::buttons\n[Tickets](go/)\n::::\n---\nfooter cell\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        assert!(matches!(
+            result.extracted[0].shortcode,
+            Shortcode::Buttons(_)
+        ));
+        // The grid markers must survive verbatim for the legacy rewriter.
+        assert!(result.markdown_with_placeholders.contains(":::grid 2"));
+        assert!(result.markdown_with_placeholders.contains("---\nfooter"));
+        assert!(!result.markdown_with_placeholders.contains("::::buttons"));
+    }
+
+    #[test]
+    fn arity_mismatch_does_not_close_block() {
+        // A `:::` closer inside a `::::buttons` block must NOT close it.
+        // Body content can contain `:::` strings as text (in code blocks
+        // or grid cell separators when nested differently).
+        let md = "::::buttons\n[t](u)\n:::\n[t2](u2)\n::::\n";
+        let result = extract_shortcodes(md);
+        // Only one extraction (the ::::buttons block).
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                // Both links should be captured (the `:::` was just body text).
+                assert_eq!(args.items.len(), 2);
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    // ---- Buttons (Phase B Task 8) ----
+
+    #[test]
+    fn extracts_buttons_block_with_one_link() {
+        let md = ":::buttons\n[Documentation](docs/)\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert!(args.classes.is_empty());
+                assert_eq!(args.items.len(), 1);
+                assert_eq!(args.items[0].text, "Documentation");
+                match &args.items[0].url {
+                    Url::Unresolved(s) => assert_eq!(s, "docs/"),
+                    _ => panic!("expected Unresolved"),
+                }
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn extracts_buttons_block_with_multiple_links() {
+        let md = ":::buttons\n[Docs](docs/)\n[GitHub](https://github.com)\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.items.len(), 2);
+                assert_eq!(args.items[0].text, "Docs");
+                assert_eq!(args.items[1].text, "GitHub");
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn extracts_buttons_block_with_class_attrs() {
+        let md = ":::buttons {.primary .large}\n[Go](go/)\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.classes, "primary large");
+                assert_eq!(args.items.len(), 1);
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn extracts_buttons_with_moss_resolved_url_intact() {
+        // The upstream resolve pipeline rewrites internal links to
+        // moss-resolved:foo.md before the AST sees them. The extractor
+        // must preserve the prefix verbatim — visit_urls_mut classifies it.
+        let md = ":::buttons\n[Docs](moss-resolved:docs/index.md)\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => match &args.items[0].url {
+                Url::Unresolved(s) => assert_eq!(s, "moss-resolved:docs/index.md"),
+                _ => panic!("expected Unresolved"),
+            },
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn buttons_skips_non_link_lines() {
+        // Non-link lines (commentary, blank lines) are silently skipped
+        // — matches the legacy rewriter behavior.
+        let md = ":::buttons\nNot a link, just text.\n[Real](real/)\n\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.items.len(), 1);
+                assert_eq!(args.items[0].text, "Real");
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn buttons_inside_code_fence_is_not_extracted() {
+        let md = "```\n:::buttons\n[t](u)\n:::\n```\n";
+        let result = extract_shortcodes(md);
+        assert!(result.extracted.is_empty());
     }
 }

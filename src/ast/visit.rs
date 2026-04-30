@@ -79,13 +79,26 @@ where
                 visit_urls_in_block(nested, callback);
             }
         }
-        Block::Shortcode(_) => {
-            // Phase A: Shortcode is empty (uninhabited). Per-variant URL
-            // descent (Buttons.items.url, Gallery.items.src, Grid.cells, ...)
-            // lands alongside each Phase B migration.
+        Block::Shortcode(sc) => {
+            visit_urls_in_shortcode(sc, callback);
         }
         Block::CodeBlock { .. } | Block::ThematicBreak | Block::Other(_) => {
             // No URLs in these.
+        }
+    }
+}
+
+fn visit_urls_in_shortcode<F>(sc: &mut super::shortcode::Shortcode, callback: &mut F)
+where
+    F: FnMut(&mut Url),
+{
+    use super::shortcode::Shortcode;
+    match sc {
+        Shortcode::Subscribe(_) => {} // No URLs.
+        Shortcode::Buttons(args) => {
+            for item in &mut args.items {
+                callback(&mut item.url);
+            }
         }
     }
 }

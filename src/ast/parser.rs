@@ -673,6 +673,7 @@ mod tests {
                 assert_eq!(args.description.as_deref(), Some("Get updates"));
                 assert_eq!(args.button.as_deref(), Some("Sign me up"));
             }
+            other => panic!("expected Subscribe, got {other:?}"),
         }
     }
 

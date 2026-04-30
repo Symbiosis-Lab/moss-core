@@ -83,6 +83,72 @@ pub trait RenderHooks {
                 out.push_str("</button>");
                 out.push_str("</div>");
             }
+            Shortcode::Buttons(args) => {
+                if args.items.is_empty() {
+                    return;
+                }
+                let mut class_attr = String::from("moss-buttons");
+                if !args.classes.is_empty() {
+                    class_attr.push(' ');
+                    class_attr.push_str(&args.classes);
+                }
+                out.push_str(r#"<div class=""#);
+                out.push_str(&escape_attr(&class_attr));
+                out.push_str(r#"">"#);
+                for (i, item) in args.items.iter().enumerate() {
+                    let primary_class = if i == 0 {
+                        "moss-btn moss-btn-primary"
+                    } else {
+                        "moss-btn moss-btn-secondary"
+                    };
+                    let track = item
+                        .text
+                        .to_lowercase()
+                        .replace(|c: char| !c.is_alphanumeric(), "-")
+                        .trim_matches('-')
+                        .to_string();
+                    let resolved = match &item.url {
+                        crate::ast::url::Url::Resolved(r) => r,
+                        crate::ast::url::Url::Unresolved(s) => {
+                            debug_assert!(
+                                false,
+                                "Url::Unresolved({s:?}) reached render_shortcode \
+                                 — visit_urls_mut missing for Buttons"
+                            );
+                            // Release: emit href as-is so we don't crash.
+                            out.push_str(r#"<a href=""#);
+                            out.push_str(&escape_attr(s));
+                            out.push_str(r#"" class=""#);
+                            out.push_str(primary_class);
+                            out.push_str(r#"" data-track=""#);
+                            out.push_str(&escape_attr(&track));
+                            out.push_str(r#"">"#);
+                            out.push_str(&escape_text(&item.text));
+                            out.push_str("</a>");
+                            continue;
+                        }
+                    };
+                    out.push_str(r#"<a href=""#);
+                    out.push_str(&escape_attr(&resolved.href));
+                    out.push_str(r#"" class=""#);
+                    out.push_str(primary_class);
+                    // Wikilink kind adds class="wikilink" suffix; collapse
+                    // both classes into a single class attribute.
+                    if matches!(resolved.kind, crate::ast::url::UrlKind::Wikilink) {
+                        out.push_str(" wikilink");
+                    }
+                    out.push_str(r#"" data-track=""#);
+                    out.push_str(&escape_attr(&track));
+                    out.push_str(r#"""#);
+                    if matches!(resolved.kind, crate::ast::url::UrlKind::AssetNewtab) {
+                        out.push_str(r#" target="_blank" rel="noopener""#);
+                    }
+                    out.push('>');
+                    out.push_str(&escape_text(&item.text));
+                    out.push_str("</a>");
+                }
+                out.push_str("</div>");
+            }
         }
     }
 

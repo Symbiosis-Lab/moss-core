@@ -8,13 +8,15 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::url::Url;
+
 /// A typed shortcode block.
 ///
 /// Variants:
 /// - [`Shortcode::Subscribe`] — inline subscribe form (description + button)
+/// - [`Shortcode::Buttons`] — list of action buttons with markdown links
 ///
-/// Phase B migrations add one variant per commit. Empty enum was the
-/// Phase A stub; Phase B Task 7 introduces the first real variant.
+/// Phase B migrations add one variant per commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Shortcode {
@@ -25,6 +27,19 @@ pub enum Shortcode {
     /// the existing rewriter's behavior; structured diagnostics are
     /// out-of-scope for this migration — see plan §Out-of-scope).
     Subscribe(SubscribeShortcode),
+    /// `:::buttons {.classname}` — list of action buttons.
+    ///
+    /// Body is one markdown link per line (`[text](url)`). The first
+    /// button gets the primary class; subsequent buttons get secondary.
+    /// Optional `{.classname}` extra classes attach to the wrapping div.
+    ///
+    /// URLs flow through [`Url::Unresolved`] at parse time;
+    /// [`crate::ast::visit::visit_urls_mut`] (or src-tauri's
+    /// `apply_typed_shortcodes`) classifies them into [`Url::Resolved`]
+    /// before rendering. The resolver-bypass class is closed by
+    /// construction: `RenderHooks::render_shortcode` reads `Url::Resolved`,
+    /// so a missing visitor is a debug-time crash.
+    Buttons(ButtonsShortcode),
 }
 
 /// Arguments for [`Shortcode::Subscribe`].
@@ -34,6 +49,26 @@ pub struct SubscribeShortcode {
     pub description: Option<String>,
     /// Optional override for the submit button label.
     pub button: Option<String>,
+}
+
+/// Arguments for [`Shortcode::Buttons`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ButtonsShortcode {
+    /// Extra CSS classes for the wrapping `<div>` (from `{.foo .bar}`).
+    pub classes: String,
+    /// Each button's text + URL. The first item renders as primary, the
+    /// rest as secondary. Empty list = the shortcode renders nothing.
+    pub items: Vec<ButtonItem>,
+}
+
+/// One button in a [`ButtonsShortcode`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ButtonItem {
+    /// Display text inside the `<a>` tag.
+    pub text: String,
+    /// Click target. Author input as parsed; flows through
+    /// [`crate::ast::visit::visit_urls_mut`] before reaching the renderer.
+    pub url: Url,
 }
 
 /// Identifier for a shortcode kind, used for AST queries (e.g.
@@ -54,6 +89,7 @@ impl Shortcode {
     pub fn kind(&self) -> ShortcodeKind {
         match self {
             Shortcode::Subscribe(_) => ShortcodeKind::Subscribe,
+            Shortcode::Buttons(_) => ShortcodeKind::Buttons,
         }
     }
 }
@@ -107,6 +143,7 @@ mod tests {
                 assert_eq!(args.description.as_deref(), Some("Get updates"));
                 assert_eq!(args.button.as_deref(), Some("Subscribe"));
             }
+            other => panic!("expected Subscribe, got {other:?}"),
         }
     }
 
@@ -122,6 +159,60 @@ mod tests {
         let sc = Shortcode::Subscribe(SubscribeShortcode {
             description: Some("d".to_string()),
             button: Some("b".to_string()),
+        });
+        let s = serde_json::to_string(&sc).expect("serialize");
+        let back: Shortcode = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(sc, back);
+    }
+
+    // ---- Buttons ----
+
+    #[test]
+    fn buttons_kind_method_returns_buttons() {
+        let sc = Shortcode::Buttons(ButtonsShortcode::default());
+        assert_eq!(sc.kind(), ShortcodeKind::Buttons);
+    }
+
+    #[test]
+    fn buttons_items_carry_unresolved_urls() {
+        let sc = Shortcode::Buttons(ButtonsShortcode {
+            classes: String::new(),
+            items: vec![
+                ButtonItem {
+                    text: "Docs".to_string(),
+                    url: Url::unresolved("docs/"),
+                },
+                ButtonItem {
+                    text: "GitHub".to_string(),
+                    url: Url::unresolved("https://github.com"),
+                },
+            ],
+        });
+        match &sc {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.items.len(), 2);
+                assert!(args.items[0].url.is_unresolved());
+                assert!(args.items[1].url.is_unresolved());
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn buttons_default_has_no_items() {
+        let args = ButtonsShortcode::default();
+        assert!(args.items.is_empty());
+        assert!(args.classes.is_empty());
+    }
+
+    #[test]
+    fn buttons_round_trips_through_serde() {
+        let sc = Shortcode::Buttons(ButtonsShortcode {
+            classes: "primary".to_string(),
+            items: vec![ButtonItem {
+                text: "Go".to_string(),
+                url: Url::unresolved("/x"),
+            }],
         });
         let s = serde_json::to_string(&sc).expect("serialize");
         let back: Shortcode = serde_json::from_str(&s).expect("deserialize");
