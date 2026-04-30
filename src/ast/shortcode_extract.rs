@@ -393,15 +393,24 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
 /// (it's content). Without this match, authors who pasted text after
 /// the closer would see different behavior between the typed-AST path
 /// and the legacy grid parser, surfacing as silent content corruption.
+///
+/// Implemented via char iteration (NOT `split_at(arity)`) because the
+/// `arity` is a count of `:` characters (always ASCII, 1 byte each), but
+/// the `trimmed` line might start with multi-byte UTF-8 characters
+/// (e.g. `[申请测试版](...)` from Chinese-language buttons). `split_at`
+/// is byte-indexed and would panic mid-character on such lines. Char
+/// iteration sidesteps the issue and is also slightly faster — we early-exit
+/// on the first non-`:` character.
 fn is_close_fence(trimmed: &str, arity: usize) -> bool {
-    if trimmed.len() < arity {
-        return false;
+    let mut chars = trimmed.chars();
+    for _ in 0..arity {
+        match chars.next() {
+            Some(':') => {}
+            _ => return false,
+        }
     }
-    let (colons, rest) = trimmed.split_at(arity);
-    if !colons.chars().all(|c| c == ':') {
-        return false;
-    }
-    rest.chars().all(char::is_whitespace)
+    // Remaining chars (if any) must all be whitespace.
+    chars.all(char::is_whitespace)
 }
 
 #[cfg(test)]
@@ -785,6 +794,59 @@ mod tests {
         // Whitespace after the colons is allowed (matches legacy
         // parse_fence_close at shortcode.rs:857).
         let md = ":::subscribe\nbutton: x\n:::   \n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+    }
+
+    #[test]
+    fn is_close_fence_handles_multibyte_utf8_lines() {
+        // Regression test for the moss-releases panic at byte index 3
+        // (inside `申`) of `[申请测试版](#青苔正在封闭测试)`. The buggy
+        // `split_at(arity)` was byte-indexed; this line happens to be
+        // longer than 3 bytes but the first 3 bytes land mid-character
+        // because `[` (1 byte) + `申` (3 bytes, bytes 1..4). Char-based
+        // iteration sidesteps the issue.
+        assert!(!is_close_fence("[申请测试版](#青苔正在封闭测试)", 3));
+        assert!(!is_close_fence("[申请测试版](#青苔正在封闭测试)", 4));
+        // CJK lines that would have panicked the old split_at variant.
+        assert!(!is_close_fence("中文内容", 3));
+        assert!(!is_close_fence("日本語", 3));
+        // Truly closing lines still match.
+        assert!(is_close_fence(":::", 3));
+        assert!(is_close_fence("::::", 4));
+    }
+
+    #[test]
+    fn extract_shortcodes_handles_buttons_with_cjk_link_text() {
+        // End-to-end regression for the moss-releases site bug: a
+        // :::buttons block containing a markdown link with CJK text
+        // and a CJK URL anchor. The extractor must not panic, must
+        // extract the buttons block, and must capture both items.
+        let md = ":::buttons\n[申请测试版](#青苔正在封闭测试)\n[文档](docs/)\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.items.len(), 2);
+                assert_eq!(args.items[0].text, "申请测试版");
+                match &args.items[0].url {
+                    Url::Unresolved(s) => assert_eq!(s, "#青苔正在封闭测试"),
+                    _ => panic!("expected Unresolved"),
+                }
+                assert_eq!(args.items[1].text, "文档");
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn extract_shortcodes_does_not_panic_on_arbitrary_cjk_content() {
+        // Smoke test against the shape that triggered the moss-releases
+        // panic: a document with mixed CJK content INCLUDING lines that
+        // start with multi-byte characters but happen to have byte
+        // length ≥ arity. None of these are close-fence candidates;
+        // the extractor must scan past them without panic.
+        let md = "# 标题\n\n中文段落，混合 English 单词。\n\n:::buttons\n[申请测试版](#锚点)\n:::\n\n## 二级标题\n\n更多内容。\n";
         let result = extract_shortcodes(md);
         assert_eq!(result.extracted.len(), 1);
     }
