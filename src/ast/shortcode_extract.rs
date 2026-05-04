@@ -62,17 +62,18 @@ pub struct ExtractionResult {
 /// or fall back to the unknown-name renderer.
 const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero", "grid"];
 
-/// Names still owned by the legacy regex pass in
-/// `src-tauri/src/build/shortcode.rs`. The extractor leaves these
-/// verbatim so the legacy rewriter can process them. The set shrinks
-/// to empty as Step 2 of the unified-grammar migration ports each
-/// to a typed variant.
-const LEGACY_PASSTHROUGH: &[&str] = &["toc"];
+/// Step 2c of issue #613 emptied the legacy passthrough list — every
+/// shortcode name is now either typed (`TYPED_KNOWN`) or unknown
+/// (renders as `<div class="moss-unknown-shortcode">`). The constant
+/// is retained as a documented marker for any future migration that
+/// needs the same staged-passthrough mechanism.
+const LEGACY_PASSTHROUGH: &[&str] = &[];
 
 fn is_typed_known(name: &str) -> bool {
     TYPED_KNOWN.contains(&name)
 }
 
+#[allow(dead_code)]
 fn is_legacy_passthrough(name: &str) -> bool {
     LEGACY_PASSTHROUGH.contains(&name)
 }
@@ -1737,12 +1738,19 @@ mod tests {
     // the Hero section above.
 
     #[test]
-    fn legacy_passthrough_toc_emits_verbatim() {
+    fn toc_now_renders_as_unknown_shortcode() {
+        // Step 2c removed `:::toc` without replacement. Sites still using
+        // it fall through to the moss-unknown-shortcode wrapper with a
+        // build warning. moss-releases content rewrite (Step 3) deletes
+        // its 3 :::toc blocks.
         let md = ":::toc\n:::\n";
         let result = extract_shortcodes(md);
-        assert!(result.extracted.is_empty());
-        assert!(result.warnings.is_empty());
-        assert!(result.markdown_with_placeholders.contains(":::toc"));
+        assert!(result.extracted.is_empty(), "toc is no longer typed");
+        assert_eq!(result.warnings.len(), 1, "unknown-name fallback warning");
+        assert!(result.warnings[0].contains("toc"));
+        assert!(result
+            .markdown_with_placeholders
+            .contains(r#"data-name="toc""#));
     }
 
     // ---- Hero (Step 2) ----
