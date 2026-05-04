@@ -105,6 +105,11 @@ where
                 callback(&mut item.src);
             }
         }
+        Shortcode::Hero(args) => {
+            if let Some(image) = args.image.as_mut() {
+                callback(image);
+            }
+        }
     }
 }
 

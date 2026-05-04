@@ -46,6 +46,16 @@ pub enum Shortcode {
     /// `path.jpg`, or `path|attrs` for media attributes (passed through
     /// to the renderer's inline style).
     Gallery(GalleryShortcode),
+    /// `:::hero {image=path}` — full-width hero section with media + overlay.
+    ///
+    /// New grammar: `image` attribute carries the path. Backward-compat:
+    /// when `image` is absent, the extractor scans the first non-empty
+    /// body line for a media reference (`![[path]]`, `![alt](path)`, or
+    /// bare media filename).
+    ///
+    /// The pipeline hoists the rendered hero HTML into the article
+    /// template's hero slot — it does NOT render inline.
+    Hero(HeroShortcode),
 }
 
 /// Arguments for [`Shortcode::Subscribe`].
@@ -101,6 +111,23 @@ pub struct GalleryItem {
     pub attrs: String,
 }
 
+/// Arguments for [`Shortcode::Hero`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeroShortcode {
+    /// Image source URL. `None` if neither the `image` attribute nor the
+    /// first body line provided one — the renderer emits a section with
+    /// no `<img>` in that case. Flows through resolver before rendering.
+    pub image: Option<Url>,
+    /// Pipe-suffix media attributes verbatim (e.g. "cover top",
+    /// "1.5:1 contain"). Empty if no pipe in the source.
+    pub attrs: String,
+    /// Extra CSS classes for the wrapping `<section>` (from `{.foo .bar}`).
+    pub classes: String,
+    /// Markdown source for the overlay content. Renderer processes this
+    /// via the surrounding markdown pipeline.
+    pub overlay_markdown: String,
+}
+
 /// Identifier for a shortcode kind, used for AST queries (e.g.
 /// `has_shortcode(&doc, ShortcodeKind::Subscribe)` to gate feature
 /// detection without scanning source files).
@@ -121,6 +148,7 @@ impl Shortcode {
             Shortcode::Subscribe(_) => ShortcodeKind::Subscribe,
             Shortcode::Buttons(_) => ShortcodeKind::Buttons,
             Shortcode::Gallery(_) => ShortcodeKind::Gallery,
+            Shortcode::Hero(_) => ShortcodeKind::Hero,
         }
     }
 }

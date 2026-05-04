@@ -21,7 +21,8 @@
 use super::attrs::{brace_depth, gather_multi_line_attrs};
 use super::cells::split_cells;
 use super::shortcode::{
-    ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, Shortcode, SubscribeShortcode,
+    ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, HeroShortcode, Shortcode,
+    SubscribeShortcode,
 };
 use super::url::Url;
 
@@ -59,14 +60,14 @@ pub struct ExtractionResult {
 /// Names recognized by the typed AST. Other names that look like
 /// shortcodes pass through to the legacy regex (`is_legacy_passthrough`)
 /// or fall back to the unknown-name renderer.
-const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery"];
+const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero"];
 
 /// Names still owned by the legacy regex pass in
 /// `src-tauri/src/build/shortcode.rs`. The extractor leaves these
 /// verbatim so the legacy rewriter can process them. The set shrinks
 /// to empty as Step 2 of the unified-grammar migration ports each
 /// to a typed variant.
-const LEGACY_PASSTHROUGH: &[&str] = &["grid", "hero", "toc"];
+const LEGACY_PASSTHROUGH: &[&str] = &["grid", "toc"];
 
 fn is_typed_known(name: &str) -> bool {
     TYPED_KNOWN.contains(&name)
@@ -85,9 +86,112 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> Option<Shortcode
         "subscribe" => Some(Shortcode::Subscribe(parse_subscribe_args(args))),
         "buttons" => Some(Shortcode::Buttons(parse_buttons_body(args, body))),
         "gallery" => Some(Shortcode::Gallery(parse_gallery_body(args, body))),
-        // Phase B 10-11 add: hero, grid.
+        "hero" => Some(Shortcode::Hero(parse_hero(args, body))),
+        // Step 2 still has: grid.
         _ => None,
     }
+}
+
+/// Parse a `:::hero {image=path .class}` block.
+///
+/// Image source priority:
+/// 1. `image=path` attribute (new grammar).
+/// 2. First non-empty body line, if it looks like a media reference
+///    (`![[path|attrs]]`, `![alt](path|attrs)`, or bare media filename).
+///    This is the moss-releases backward-compat path; Step 3 rewrites
+///    those blocks to use the `image=` attribute.
+/// 3. None — renderer emits a `<section>` with no `<img>`.
+fn parse_hero(args: &str, body: &str) -> HeroShortcode {
+    let parsed = super::attrs::parse_attrs(args).unwrap_or_default();
+    let classes = parsed.class_string();
+
+    if let Some(image_value) = parsed.get("image") {
+        let (path, attrs_str) = crate::media::split_pipe(image_value);
+        return HeroShortcode {
+            image: if path.trim().is_empty() {
+                None
+            } else {
+                Some(Url::unresolved(path.trim().to_string()))
+            },
+            attrs: attrs_str.to_string(),
+            classes,
+            overlay_markdown: body.trim().to_string(),
+        };
+    }
+
+    // Body-image fallback: scan first non-empty line for a media reference.
+    let mut overlay_lines: Vec<&str> = Vec::new();
+    let mut image_path: Option<String> = None;
+    let mut image_attrs = String::new();
+    let mut found_image = false;
+    for line in body.lines() {
+        if !found_image && !line.trim().is_empty() {
+            if let Some((path, attrs_str)) = parse_hero_media_line(line) {
+                image_path = Some(path);
+                image_attrs = attrs_str;
+                found_image = true;
+                continue;
+            }
+            // First non-empty line wasn't a media reference — keep it as overlay.
+            found_image = true;
+        }
+        overlay_lines.push(line);
+    }
+    HeroShortcode {
+        image: image_path.map(Url::unresolved),
+        attrs: image_attrs,
+        classes,
+        overlay_markdown: overlay_lines.join("\n").trim().to_string(),
+    }
+}
+
+/// File extensions recognized as media for hero body-image fallback.
+const HERO_MEDIA_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "webp", "avif", "svg", "mp4", "webm", "mov",
+];
+
+fn is_bare_hero_media(s: &str) -> bool {
+    let (path_part, _) = crate::media::split_pipe(s);
+    let path = path_part.trim();
+    path.rfind('.')
+        .map(|dot| {
+            let ext = &path[dot + 1..];
+            HERO_MEDIA_EXTENSIONS
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(ext))
+        })
+        .unwrap_or(false)
+}
+
+/// Parse a line as a media reference. Returns `(path, attrs_str)`.
+fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+
+    // Wikilink embed: ![[path|attrs]]
+    if trimmed.starts_with("![[") && trimmed.ends_with("]]") {
+        let inner = &trimmed[3..trimmed.len() - 2];
+        let (path, attrs_str) = crate::media::split_pipe(inner);
+        return Some((path.trim().to_string(), attrs_str.to_string()));
+    }
+
+    // Standard markdown image: ![alt](path|attrs)
+    if trimmed.starts_with("![") {
+        if let Some(paren_open) = trimmed.find("](") {
+            if trimmed.ends_with(')') {
+                let inner = &trimmed[paren_open + 2..trimmed.len() - 1];
+                let (path, attrs_str) = crate::media::split_pipe(inner);
+                return Some((path.trim().to_string(), attrs_str.to_string()));
+            }
+        }
+    }
+
+    // Bare media filename: photo.jpg or photo.jpg|contain
+    if is_bare_hero_media(trimmed) {
+        let (path, attrs_str) = crate::media::split_pipe(trimmed);
+        return Some((path.trim().to_string(), attrs_str.to_string()));
+    }
+
+    None
 }
 
 fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
@@ -716,14 +820,22 @@ mod tests {
     }
 
     #[test]
-    fn unknown_shortcode_passes_through_verbatim() {
-        // `:::hero` is not yet migrated (Phase B Task 10 lands later);
-        // the extractor must NOT consume it. Legacy rewriter still
-        // handles it.
+    fn extracts_hero_block_with_body_image_typed() {
+        // Step 2: :::hero is now a typed variant. The extractor consumes
+        // it and produces Shortcode::Hero with the body-image fallback
+        // populating args.image when no `image=` attribute is present.
         let md = ":::hero\n![[bg.jpg]]\n:::\n";
         let result = extract_shortcodes(md);
-        assert!(result.extracted.is_empty());
-        assert!(result.markdown_with_placeholders.contains(":::hero"));
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => match &args.image {
+                Some(Url::Unresolved(s)) => assert_eq!(s, "bg.jpg"),
+                _ => panic!("expected Unresolved bg.jpg"),
+            },
+            _ => panic!("expected Hero"),
+        }
+        // The literal `:::hero` should be replaced by a sentinel.
+        assert!(!result.markdown_with_placeholders.contains(":::hero"));
     }
 
     #[test]
@@ -1311,14 +1423,9 @@ mod tests {
         assert!(result.markdown_with_placeholders.contains(":::grid 2"));
     }
 
-    #[test]
-    fn legacy_passthrough_hero_emits_verbatim() {
-        let md = ":::hero\n# Title\n:::\n";
-        let result = extract_shortcodes(md);
-        assert!(result.extracted.is_empty());
-        assert!(result.warnings.is_empty());
-        assert!(result.markdown_with_placeholders.contains(":::hero"));
-    }
+    // Hero left LEGACY_PASSTHROUGH in Step 2 — it's now a typed variant.
+    // The replacement test (`extracts_hero_block_with_no_image`) lives in
+    // the Hero section above.
 
     #[test]
     fn legacy_passthrough_toc_emits_verbatim() {
@@ -1327,6 +1434,89 @@ mod tests {
         assert!(result.extracted.is_empty());
         assert!(result.warnings.is_empty());
         assert!(result.markdown_with_placeholders.contains(":::toc"));
+    }
+
+    // ---- Hero (Step 2) ----
+
+    #[test]
+    fn extracts_hero_block_with_no_image() {
+        let md = ":::hero\n# A House of Daowu\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1, "hero should be extracted");
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert!(args.image.is_none());
+                assert_eq!(args.overlay_markdown, "# A House of Daowu");
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+        // The literal `:::hero` should not survive in the output.
+        assert!(!result.markdown_with_placeholders.contains(":::hero"));
+    }
+
+    #[test]
+    fn extracts_hero_block_with_wikilink_body_image() {
+        let md = ":::hero\n![[panorama.jpg]]\n# Welcome\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                match &args.image {
+                    Some(Url::Unresolved(s)) => assert_eq!(s, "panorama.jpg"),
+                    other => panic!("expected Unresolved url, got {other:?}"),
+                }
+                assert_eq!(args.overlay_markdown, "# Welcome");
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_hero_block_with_image_attr() {
+        let md = ":::hero {image=cover.jpg}\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                match &args.image {
+                    Some(Url::Unresolved(s)) => assert_eq!(s, "cover.jpg"),
+                    other => panic!("expected Unresolved, got {other:?}"),
+                }
+                assert_eq!(args.overlay_markdown, "# Title");
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_hero_block_with_image_attr_and_pipe_attrs() {
+        // The pipe character isn't in the bareword set, so values containing
+        // `|` must be quoted under the unified grammar.
+        let md = r#":::hero {image="cover.jpg|contain top"}
+:::
+"#;
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                match &args.image {
+                    Some(Url::Unresolved(s)) => assert_eq!(s, "cover.jpg"),
+                    _ => panic!("expected Unresolved"),
+                }
+                assert_eq!(args.attrs, "contain top");
+            }
+            _ => panic!("expected Hero"),
+        }
+    }
+
+    #[test]
+    fn extracts_hero_block_with_classes() {
+        let md = ":::hero {.full .center}\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert_eq!(args.classes, "full center");
+            }
+            _ => panic!("expected Hero"),
+        }
     }
 
     // ---- Adversarial cases for Step 1 (D/E semantics) ----

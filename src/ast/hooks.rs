@@ -197,6 +197,45 @@ pub trait RenderHooks {
                 }
                 out.push_str("</div>");
             }
+            Shortcode::Hero(args) => {
+                // Test-harness skeleton; the production renderer in
+                // src-tauri's PipelineHooks routes the image through the
+                // resolver, runs media-attrs into a style attribute, and
+                // processes the overlay markdown to HTML. This default
+                // emits a minimal `<section class="moss-hero">` so unit
+                // tests can pattern-match on the wrapper without
+                // depending on the full pipeline.
+                let mut class_attr = String::from("moss-hero");
+                if !args.classes.is_empty() {
+                    class_attr.push(' ');
+                    class_attr.push_str(&args.classes);
+                }
+                out.push_str(r#"<section class=""#);
+                out.push_str(&escape_attr(&class_attr));
+                out.push_str(r#"">"#);
+                if let Some(image) = &args.image {
+                    let src = match image {
+                        crate::ast::url::Url::Resolved(r) => r.href.clone(),
+                        crate::ast::url::Url::Unresolved(s) => {
+                            debug_assert!(
+                                false,
+                                "Url::Unresolved({s:?}) reached render_shortcode \
+                                 — visit_urls_mut missing for Hero"
+                            );
+                            s.clone()
+                        }
+                    };
+                    out.push_str(r#"<img src=""#);
+                    out.push_str(&escape_attr(&src));
+                    out.push_str(r#"" alt="" />"#);
+                }
+                if !args.overlay_markdown.is_empty() {
+                    out.push_str(r#"<div class="moss-hero-content">"#);
+                    out.push_str(&escape_text(&args.overlay_markdown));
+                    out.push_str("</div>");
+                }
+                out.push_str("</section>");
+            }
         }
     }
 
