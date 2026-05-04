@@ -45,16 +45,16 @@ pub struct HeadingInputs<'a> {
     /// Frontmatter `heading` field. `Some(false)` opts out; `Some(true)`,
     /// `None`, and missing all mean "show".
     pub heading_field: Option<bool>,
-    /// Pre-rendered hero HTML, if any. When it contains an `<h1>` tag the
-    /// hero owns the title slot and the article heading is hidden.
-    /// The editor passes `None` (no shortcode pipeline available); accept the
-    /// narrow inconsistency.
+    /// Pipeline-only input: pre-rendered hero HTML. When it contains an
+    /// `<h1>` tag the hero owns the title slot and the article heading is
+    /// hidden. The editor passes `None` and accepts the narrow inconsistency
+    /// (no shortcode pipeline at edit time). See issue #609 follow-ups.
     pub hero_html: Option<&'a str>,
-    /// `true` iff this file has been promoted to its folder's home via
-    /// `translationKey: home` (issue #587). Caller derives from `page_map`
-    /// because moss-core has no I/O. The filename-only home detection
-    /// (`home::is_home_file`) is handled internally; this flag is the
-    /// page_map override.
+    /// Pipeline-only input: `true` iff the file is promoted to its folder's
+    /// home via `translationKey: home` (issue #587). Pipeline derives from
+    /// `page_map`; the editor passes `false` (no built page_map at edit
+    /// time). The filename-only home detection runs internally; this flag
+    /// is the page_map-only override.
     pub is_translation_home: bool,
 }
 
