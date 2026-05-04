@@ -1329,6 +1329,98 @@ mod tests {
         assert!(result.markdown_with_placeholders.contains(":::toc"));
     }
 
+    // ---- Adversarial cases for Step 1 (D/E semantics) ----
+
+    #[test]
+    fn nested_css_region_outer_closes_at_first_inner_close() {
+        // Pinning test: same-arity nested `:::{.outer}` containing
+        // `:::{.inner}` is NOT a Step 1 feature. The outer block closes at
+        // the inner block's `:::` because both fences are arity 3.
+        // Authors who need nesting must use mismatched arities
+        // (`::::{.outer}` containing `:::{.inner}`).
+        //
+        // This test pins the current behavior so a future regression
+        // surfaces.
+        let md = ":::{.outer}\n:::{.inner}\nbody\n:::\n:::\n";
+        let result = extract_shortcodes(md);
+        let out = &result.markdown_with_placeholders;
+        // The outer `<div class="outer">` opens.
+        assert!(out.contains("<div class=\"outer\""));
+        // The inner `:::{.inner}` opener is left as literal text in the
+        // outer body — the outer fence closed at the first arity-3 `:::`.
+        assert!(out.contains(":::{.inner}"));
+    }
+
+    #[test]
+    fn nested_css_region_higher_arity_outer_wraps_inner_as_text() {
+        // `::::{.outer}` (arity 4) survives past the inner `:::` close.
+        // Step 1 is non-recursive: the inner `:::{.inner}` is not
+        // re-extracted — it's emitted as literal markdown text inside
+        // the outer's body div. Pulldown-cmark renders the literal text
+        // as plain content.
+        //
+        // Step 2 may add recursive extraction; this test pins the
+        // current behavior so a future change is visible.
+        let md = "::::{.outer}\n:::{.inner}\nbody\n:::\n::::\n";
+        let result = extract_shortcodes(md);
+        let out = &result.markdown_with_placeholders;
+        // Outer wrapper opens.
+        assert!(out.contains("<div class=\"outer\">"));
+        // Inner is NOT extracted — its source text is preserved verbatim
+        // inside the outer body.
+        assert!(out.contains(":::{.inner}"));
+    }
+
+    #[test]
+    fn css_region_containing_typed_subscribe_is_not_recursively_extracted() {
+        // Same-arity nesting: outer `:::{.wrapper}` closes at the first
+        // matching `:::`, so the inner `:::subscribe` is never seen.
+        let md = ":::{.wrapper}\n:::subscribe\n:::\n:::\n";
+        let result = extract_shortcodes(md);
+        // The wrapper opens. No subscribe is extracted because the
+        // outer block consumed its arity-3 closer at the inner block's
+        // first `:::`.
+        assert!(result.markdown_with_placeholders.contains("<div class=\"wrapper\""));
+        // Subscribe is NOT extracted in Step 1.
+        assert!(result.extracted.is_empty());
+    }
+
+    #[test]
+    fn higher_arity_wrapper_keeps_typed_subscribe_as_text() {
+        // `::::{.wrapper}` (arity 4) keeps the subscribe block intact in
+        // its body — but Step 1 doesn't recurse, so the subscribe is
+        // still NOT extracted (it lives in the body markdown verbatim).
+        // Pulldown-cmark renders the literal `:::subscribe` text.
+        //
+        // For Step 2 to support typed-shortcodes-inside-CssRegion, the
+        // extractor needs a recursive pass; that's tracked as a Step 2
+        // follow-up.
+        let md = "::::{.wrapper}\n:::subscribe\n:::\n::::\n";
+        let result = extract_shortcodes(md);
+        // Outer wrapper opens.
+        assert!(result.markdown_with_placeholders.contains("<div class=\"wrapper\""));
+        // Subscribe is NOT extracted (no recursion in Step 1).
+        assert!(result.extracted.is_empty());
+        // The literal subscribe text passes through into the body.
+        assert!(result.markdown_with_placeholders.contains(":::subscribe"));
+    }
+
+    #[test]
+    fn unknown_name_with_plus_plus_plus_in_body_passes_through() {
+        // The `+++` cell divider is a Buttons-and-Grid concern, not
+        // generic shortcode body syntax. Unknown blocks should emit
+        // their body verbatim including any `+++` lines. Authors who
+        // misspell `:::buttons` as `:::buttosn` shouldn't see their
+        // dividers eaten.
+        let md = ":::buttosn\n[a](u)\n+++\n[b](v)\n:::\n";
+        let result = extract_shortcodes(md);
+        let out = &result.markdown_with_placeholders;
+        assert!(out.contains(r#"data-name="buttosn""#));
+        assert!(out.contains("[a](u)"));
+        assert!(out.contains("+++"));
+        assert!(out.contains("[b](v)"));
+    }
+
     #[test]
     fn parse_shortcode_opener_recognizes_empty_name_with_attrs() {
         assert_eq!(
