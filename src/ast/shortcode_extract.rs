@@ -1660,6 +1660,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn extracts_grid_with_empty_middle_cell() {
+        // Two consecutive `+++` dividers leave a middle cell empty.
+        // Legacy behavior preserved this; verify the typed extractor
+        // does too.
+        let md = ":::grid 3\nA\n+++\n+++\nC\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.cells.len(), 3);
+                assert_eq!(grid.cells[0], "A");
+                assert_eq!(grid.cells[1], "");
+                assert_eq!(grid.cells[2], "C");
+            }
+            _ => panic!("expected Grid"),
+        }
+    }
+
+    #[test]
+    fn nested_grid_via_arity_is_unsupported_authoring() {
+        // Pinning test: `::::grid` (arity 4) wrapping `:::grid` (arity 3)
+        // does NOT cleanly nest. The outer fence's body captures the
+        // inner literally, but `split_grid_cells` then splits the outer's
+        // body on the inner's `+++` divider — mis-attributing the inner's
+        // cells to the outer. There's no separate "nested-cell-divider"
+        // syntax in moss, so this nesting pattern isn't supported.
+        //
+        // Authors who need a "grid inside a grid" should use a CSS region
+        // wrapper (`::::{.outer-grid}`) and set CSS-only column rules.
+        // This test pins the actual extraction behavior so a future
+        // refactor that changes it is visible.
+        let md = "::::grid 1\n:::grid 2\nA\n+++\nB\n:::\n::::\n";
+        let result = extract_shortcodes(md);
+        // The outer ::::grid is extracted; the inner is captured as
+        // literal text and the +++ inside the inner triggers the outer's
+        // own cell split. The inner Grid is NOT a top-level entry.
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(outer) => {
+                assert_eq!(outer.columns, 1);
+                // The +++ in the inner's body split the OUTER's cells,
+                // which is the documented limitation.
+                assert!(outer.cells.len() >= 2,
+                    "outer's body got split by inner's +++, demonstrating the \
+                     unsupported-nesting failure mode");
+            }
+            _ => panic!("expected Grid"),
+        }
+    }
+
+    #[test]
+    fn extracts_grid_with_compound_link_cell_text_preserved() {
+        // moss-releases pattern: a cell whose entire body is a single
+        // markdown link wrapping multiple block children. The extractor
+        // captures it verbatim; src-tauri's render_card_html runs
+        // detect_compound_link to auto-promote to `.moss-grid-card`.
+        let md = ":::grid 2 {.work-cards}\n[![[poster.jpg]]\n#### Title\nbody](/url)\n+++\n[Card 2](/url2)\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.classes, "work-cards");
+                assert_eq!(grid.cells.len(), 2);
+                // Compound-link cell preserved verbatim for renderer.
+                assert!(grid.cells[0].contains("[![[poster.jpg]]"));
+                assert!(grid.cells[0].contains("#### Title"));
+                assert!(grid.cells[0].contains("body](/url)"));
+                assert_eq!(grid.cells[1], "[Card 2](/url2)");
+            }
+            _ => panic!("expected Grid"),
+        }
+    }
+
     // Hero left LEGACY_PASSTHROUGH in Step 2 — it's now a typed variant.
     // The replacement test (`extracts_hero_block_with_no_image`) lives in
     // the Hero section above.
