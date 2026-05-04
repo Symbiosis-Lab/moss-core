@@ -57,9 +57,9 @@ pub struct ExtractionResult {
     pub warnings: Vec<String>,
 }
 
-/// Names recognized by the typed AST. Other names that look like
-/// shortcodes pass through to the legacy regex (`is_legacy_passthrough`)
-/// or fall back to the unknown-name renderer.
+/// Names recognized by the typed AST. Other names fall through to the
+/// unknown-name renderer (`<div class="moss-unknown-shortcode" data-name="…">`)
+/// with a build warning.
 const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero", "grid"];
 
 /// Step 2c of issue #613 emptied the legacy passthrough list — every
@@ -814,12 +814,11 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
 /// True if `trimmed` is a closing fence with the specified arity (`:::`
 /// for arity 3, `::::` for arity 4, etc.).
 ///
-/// Matches the legacy `parse_fence_close` semantics in
-/// `src-tauri/src/build/shortcode.rs:857`: a closer is N colons followed
-/// by optional whitespace only. A line `::: extra` is NOT a closer
-/// (it's content). Without this match, authors who pasted text after
-/// the closer would see different behavior between the typed-AST path
-/// and the legacy grid parser, surfacing as silent content corruption.
+/// Closer semantics: N colons followed by optional whitespace only. A
+/// line like `::: extra` is NOT a closer (it's body content). This was
+/// the legacy `parse_fence_close` contract; the typed extractor preserves
+/// it so author content with trailing text after `:::` still parses the
+/// same way.
 ///
 /// Implemented via char iteration (NOT `split_at(arity)`) because the
 /// `arity` is a count of `:` characters (always ASCII, 1 byte each), but
