@@ -92,19 +92,38 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> Option<Shortcode
     }
 }
 
-/// Parse a `:::hero {image=path .class}` block.
+/// Parse a `:::hero` block in any of three syntactic forms.
 ///
 /// Image source priority:
-/// 1. `image=path` attribute (new grammar).
-/// 2. First non-empty body line, if it looks like a media reference
-///    (`![[path|attrs]]`, `![alt](path|attrs)`, or bare media filename).
-///    This is the moss-releases backward-compat path; Step 3 rewrites
-///    those blocks to use the `image=` attribute.
-/// 3. None — renderer emits a `<section>` with no `<img>`.
+/// 1. `image=path` attribute in the `{...}` block (new grammar).
+/// 2. **Directive-line path**: `:::hero ./path.jpg` or
+///    `:::hero ./path.jpg|attrs` or `:::hero ./path.jpg {.classes}` —
+///    moss-releases / client-site backward-compat. The path appears as
+///    raw text before any `{...}` attribute block.
+/// 3. **Body-image fallback**: scan first non-empty body line for a
+///    media reference (`![[path|attrs]]`, `![alt](path|attrs)`, or
+///    bare media filename). Step 3 of the grammar migration rewrites
+///    these to use the `image=` attribute.
+/// 4. None — renderer emits a `<section>` with no `<img>`.
 fn parse_hero(args: &str, body: &str) -> HeroShortcode {
-    let parsed = super::attrs::parse_attrs(args).unwrap_or_default();
+    let trimmed_args = args.trim();
+
+    // Split args on the first `{` to separate the directive-line path
+    // (if any) from the attribute block (if any).
+    let (positional, attr_block) = match trimmed_args.find('{') {
+        Some(pos) => (trimmed_args[..pos].trim(), &trimmed_args[pos..]),
+        None => (trimmed_args, ""),
+    };
+
+    // Parse the attribute block, if present.
+    let parsed = if attr_block.is_empty() {
+        Default::default()
+    } else {
+        super::attrs::parse_attrs(attr_block).unwrap_or_default()
+    };
     let classes = parsed.class_string();
 
+    // Priority 1: `image=` attribute.
     if let Some(image_value) = parsed.get("image") {
         let (path, attrs_str) = crate::media::split_pipe(image_value);
         return HeroShortcode {
@@ -119,7 +138,24 @@ fn parse_hero(args: &str, body: &str) -> HeroShortcode {
         };
     }
 
-    // Body-image fallback: scan first non-empty line for a media reference.
+    // Priority 2: directive-line path (legacy syntax). When the
+    // positional text is non-empty, treat it as the image path with
+    // optional `|attrs` pipe suffix. Body becomes pure overlay markdown.
+    if !positional.is_empty() {
+        let (path, attrs_str) = crate::media::split_pipe(positional);
+        return HeroShortcode {
+            image: if path.trim().is_empty() {
+                None
+            } else {
+                Some(Url::unresolved(path.trim().to_string()))
+            },
+            attrs: attrs_str.to_string(),
+            classes,
+            overlay_markdown: body.trim().to_string(),
+        };
+    }
+
+    // Priority 3: body-image fallback. Scan first non-empty line.
     let mut overlay_lines: Vec<&str> = Vec::new();
     let mut image_path: Option<String> = None;
     let mut image_attrs = String::new();
@@ -1514,6 +1550,60 @@ mod tests {
         match &result.extracted[0].shortcode {
             Shortcode::Hero(args) => {
                 assert_eq!(args.classes, "full center");
+            }
+            _ => panic!("expected Hero"),
+        }
+    }
+
+    #[test]
+    fn extracts_hero_block_with_directive_line_path() {
+        // Legacy syntax used by Yi-website and chps-site:
+        // `:::hero ./path.jpg` (image path on the directive line, empty body).
+        // Step 3 rewrites these blocks to `:::hero {image=./path.jpg}`,
+        // but the typed extractor must keep producing the same Hero AST
+        // node until then to avoid silently dropping the homepage hero.
+        let md = ":::hero ./assets/header.png\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => match &args.image {
+                Some(Url::Unresolved(s)) => assert_eq!(s, "./assets/header.png"),
+                other => panic!("expected Unresolved ./assets/header.png, got {other:?}"),
+            },
+            _ => panic!("expected Hero"),
+        }
+    }
+
+    #[test]
+    fn extracts_hero_block_with_directive_line_path_and_pipe_attrs() {
+        let md = ":::hero ./bg.jpg|contain top\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                match &args.image {
+                    Some(Url::Unresolved(s)) => assert_eq!(s, "./bg.jpg"),
+                    _ => panic!("expected Unresolved"),
+                }
+                assert_eq!(args.attrs, "contain top");
+            }
+            _ => panic!("expected Hero"),
+        }
+    }
+
+    #[test]
+    fn extracts_hero_block_with_directive_line_path_and_classes() {
+        // `:::hero ./path.jpg {.landing}` — directive-line path AND
+        // an attribute block (classes only, no `image=` to avoid conflict).
+        let md = ":::hero ./bg.jpg {.landing}\n# Welcome\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                match &args.image {
+                    Some(Url::Unresolved(s)) => assert_eq!(s, "./bg.jpg"),
+                    _ => panic!("expected Unresolved"),
+                }
+                assert_eq!(args.classes, "landing");
+                assert_eq!(args.overlay_markdown, "# Welcome");
             }
             _ => panic!("expected Hero"),
         }
