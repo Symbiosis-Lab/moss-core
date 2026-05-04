@@ -10,6 +10,7 @@ pub mod content_graph;
 pub mod csv_table;
 pub mod home;
 pub mod frontmatter;
+pub mod heading;
 pub mod link_candidates;
 pub mod heading_anchor;
 pub mod media;
