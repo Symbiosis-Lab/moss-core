@@ -24,9 +24,14 @@
 //! structural problems (unterminated quote, bad key, no closing brace).
 //! Renderers are responsible for validating typed values like `cols=int`.
 
-use std::collections::HashMap;
-
 /// Parsed attribute block.
+///
+/// `kvs` is a `Vec<(String, String)>` (not a `HashMap`) so iteration is
+/// stable and matches source order — important for deterministic HTML
+/// attribute output, snapshot tests, and diagnostics that point at the
+/// offending entry. Last-write-wins on duplicate keys is enforced in the
+/// parser, so callers can use [`AttrBlock::get`] without seeing stale
+/// values.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AttrBlock {
     /// `.classname` shortcuts, in source order. Duplicates preserved so
@@ -34,8 +39,9 @@ pub struct AttrBlock {
     pub classes: Vec<String>,
     /// Last `#id` shortcut wins (multiple ids is malformed but not fatal).
     pub id: Option<String>,
-    /// `key=value` pairs. Last write wins when a key repeats.
-    pub kvs: HashMap<String, String>,
+    /// `key=value` pairs in source order. Last write wins when a key
+    /// repeats — the parser drops earlier entries on collision.
+    pub kvs: Vec<(String, String)>,
 }
 
 impl AttrBlock {
@@ -45,12 +51,25 @@ impl AttrBlock {
 
     /// Convenience for renderers: get the value for a key.
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.kvs.get(key).map(String::as_str)
+        self.kvs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     /// Space-joined class list, ready for `class="..."`.
     pub fn class_string(&self) -> String {
         self.classes.join(" ")
+    }
+
+    /// Set a key/value pair, replacing any existing entry for `key`
+    /// in place to preserve source order of unrelated entries.
+    fn set_kv(&mut self, key: String, value: String) {
+        if let Some(slot) = self.kvs.iter_mut().find(|(k, _)| k == &key) {
+            slot.1 = value;
+        } else {
+            self.kvs.push((key, value));
+        }
     }
 }
 
@@ -119,7 +138,7 @@ pub fn parse_attrs(input: &str) -> Result<AttrBlock, AttrError> {
                         chars.next();
                         skip_ws_inline(&mut chars);
                         let value = read_value(&mut chars, &key)?;
-                        block.kvs.insert(key, value);
+                        block.set_kv(key, value);
                     }
                     _ => {
                         // Bare key (no `=value`): treat as a class for
@@ -261,6 +280,94 @@ where
             Some((_, ch)) => s.push(ch),
         }
     }
+}
+
+// ── Multi-line opener support ────────────────────────────────────────
+//
+// The shortcode extractor needs to know when an opener line's `{`
+// doesn't close on the same line, so it can absorb subsequent lines
+// into the attribute block before parsing. These helpers live here
+// (next to `parse_attrs`) because they're grammar primitives, not
+// extraction helpers — any future consumer that sees a partial attr
+// block (e.g. an editor decoration that wants to highlight the live
+// state of a fenced div as the user types) needs them too.
+
+/// Quote-aware brace-depth tracker. Returns the depth after consuming
+/// `s`, starting from `start_depth`.
+///
+/// Tracks `"`-quoted strings so that `{` and `}` inside a value like
+/// `key="{name}"` don't shift the depth. Backslash escapes inside a
+/// string consume the next character verbatim.
+pub fn brace_depth(s: &str, start_depth: i32) -> i32 {
+    let mut depth = start_depth;
+    let mut in_quote = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if in_quote {
+            match c {
+                '"' => in_quote = false,
+                '\\' => {
+                    chars.next();
+                }
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_quote = true,
+            '{' => depth += 1,
+            '}' => depth = (depth - 1).max(0),
+            _ => {}
+        }
+    }
+    depth
+}
+
+/// If `single_line_args` opens a `{` that doesn't close on the same line,
+/// scan `following_lines` and join them onto args until the brace closes.
+///
+/// Returns `(extended_args_owned, lines_consumed)` where:
+/// - `extended_args_owned = Some(s)` when multi-line scanning happened.
+///   `None` means the single-line args already balance and the caller
+///   should keep using the original `&str`.
+/// - `lines_consumed` is how many lines after the opener were absorbed
+///   into the attribute block. The body starts at
+///   `following_lines[lines_consumed..]`.
+///
+/// Brace balancing tracks ASCII `{` and `}` outside quoted strings. A
+/// `\"`-escape inside a quoted string is recognized so authored content
+/// like `key="say \"hi\""` doesn't desynchronize the scanner.
+///
+/// If the brace never closes (ill-formed input), returns the gathered
+/// content verbatim so the caller can pass it on; the attribute parser
+/// will emit a structural error and the block falls through to the
+/// pass-through path.
+pub fn gather_multi_line_attrs(
+    single_line_args: &str,
+    following_lines: &[&str],
+) -> (Option<String>, usize) {
+    let depth_after_first = brace_depth(single_line_args, 0);
+    if depth_after_first == 0 {
+        return (None, 0);
+    }
+
+    let mut combined = single_line_args.to_string();
+    let mut depth = depth_after_first;
+    let mut consumed = 0;
+    for &line in following_lines {
+        // Insert a newline so the attribute parser sees the line break
+        // as whitespace (its grammar treats all whitespace identically).
+        combined.push('\n');
+        combined.push_str(line);
+        consumed += 1;
+        depth = brace_depth(line, depth);
+        if depth == 0 {
+            return (Some(combined), consumed);
+        }
+    }
+
+    // Brace never closed within the document.
+    (Some(combined), consumed)
 }
 
 #[cfg(test)]
@@ -580,5 +687,90 @@ mod tests {
         // first. Tolerate leading whitespace.
         let b = ok("  {.foo}");
         assert_eq!(b.classes, vec!["foo"]);
+    }
+
+    // ── brace-depth tracker ──────────────────────────────────────────
+
+    #[test]
+    fn brace_depth_tracks_simple_open_close() {
+        assert_eq!(brace_depth("{}", 0), 0);
+        assert_eq!(brace_depth("{", 0), 1);
+        assert_eq!(brace_depth("}", 1), 0);
+    }
+
+    #[test]
+    fn brace_depth_ignores_braces_in_quoted_strings() {
+        assert_eq!(brace_depth(r#"{key="{name}"}"#, 0), 0);
+        assert_eq!(brace_depth(r#"{key="{"}"#, 0), 0);
+    }
+
+    #[test]
+    fn brace_depth_handles_escaped_quote() {
+        assert_eq!(brace_depth(r#"{label="say \"hi\""}"#, 0), 0);
+    }
+
+    #[test]
+    fn brace_depth_clamps_at_zero_for_orphan_close() {
+        // A stray `}` with no matching `{` shouldn't go negative —
+        // depth-0 input followed by `}` stays 0.
+        assert_eq!(brace_depth("}", 0), 0);
+    }
+
+    // ── multi-line attr gather ───────────────────────────────────────
+
+    #[test]
+    fn gather_no_brace_returns_none_zero_consumed() {
+        let (out, consumed) = gather_multi_line_attrs("plain text", &["following"]);
+        assert!(out.is_none());
+        assert_eq!(consumed, 0);
+    }
+
+    #[test]
+    fn gather_balanced_single_line_returns_none() {
+        let (out, consumed) = gather_multi_line_attrs("{.foo}", &["body"]);
+        assert!(out.is_none());
+        assert_eq!(consumed, 0);
+    }
+
+    #[test]
+    fn gather_two_line_block_returns_combined() {
+        let (out, consumed) = gather_multi_line_attrs("{", &[".foo", "}", "body"]);
+        assert_eq!(consumed, 2);
+        let combined = out.expect("multi-line should return a combined string");
+        let parsed = parse_attrs(&combined).expect("combined attrs should parse");
+        assert_eq!(parsed.classes, vec!["foo"]);
+    }
+
+    #[test]
+    fn gather_three_line_block_with_kvs() {
+        let (out, consumed) = gather_multi_line_attrs(
+            "{",
+            &["  placeholder=\"you@domain.com\"", "  button=\"Go\"", "}", "body"],
+        );
+        assert_eq!(consumed, 3);
+        let parsed = parse_attrs(&out.unwrap()).unwrap();
+        assert_eq!(parsed.get("placeholder"), Some("you@domain.com"));
+        assert_eq!(parsed.get("button"), Some("Go"));
+    }
+
+    #[test]
+    fn gather_unclosed_returns_what_it_has() {
+        let (out, consumed) = gather_multi_line_attrs("{", &[".foo", ".bar"]);
+        // Both lines were consumed, brace never closed.
+        assert_eq!(consumed, 2);
+        // The combined string is returned even though it's unparseable.
+        assert!(out.is_some());
+    }
+
+    #[test]
+    fn gather_quoted_brace_does_not_count() {
+        // A `}` inside a quoted value must not close the block prematurely.
+        let (out, consumed) = gather_multi_line_attrs(
+            "{",
+            &[r#"  template="say }"#, r#"  end"#, "}"],
+        );
+        // Three lines absorbed (the closing brace is on the third).
+        assert_eq!(consumed, 3);
+        assert!(out.is_some());
     }
 }

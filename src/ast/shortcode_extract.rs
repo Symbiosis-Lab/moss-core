@@ -18,6 +18,8 @@
 //!   (pulldown-cmark passes HTML comments through `Event::Html` as
 //!   `Block::HtmlBlock`).
 
+use super::attrs::{brace_depth, gather_multi_line_attrs};
+use super::cells::split_cells;
 use super::shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, Shortcode, SubscribeShortcode,
 };
@@ -98,13 +100,30 @@ fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
     }
 }
 
-/// Split `args` into `(positional_text, classes)` from `{.foo .bar}` syntax.
-/// Mirrors `extract_attrs` in `src-tauri/src/build/shortcode.rs`.
+/// Split `args` into `(positional_text, classes)` from `{...}` syntax.
+///
+/// Routes the attribute portion through [`crate::ast::attrs::parse_attrs`]
+/// so the unified grammar's full surface (`.class`, `#id`, `key=value`,
+/// quoted values, multi-line) is recognized — even though the legacy
+/// shortcodes (Subscribe / Buttons / Gallery) only consume the class
+/// list today. Step 2 migrates Hero / Grid; once they read `kvs` and
+/// `id` via `parse_attrs` directly, this helper retires.
+///
+/// Falls back to the legacy whitespace-tokenized class scan when
+/// `parse_attrs` returns `Err` (malformed attrs, unterminated quote,
+/// etc.) so existing content with edge-case `{}` shapes still parses
+/// the way it did before.
 fn split_positional_and_classes(args: &str) -> (String, String) {
     let trimmed = args.trim();
     if let Some(brace_start) = trimmed.find('{') {
         if let Some(brace_end) = trimmed[brace_start..].find('}') {
             let positional = trimmed[..brace_start].trim().to_string();
+            let attr_block_str = &trimmed[brace_start..=brace_start + brace_end];
+            if let Ok(parsed) = super::attrs::parse_attrs(attr_block_str) {
+                return (positional, parsed.class_string());
+            }
+            // Legacy fallback for malformed inputs that the structured
+            // parser rejects (e.g. unterminated quote on a single line).
             let inner = &trimmed[brace_start + 1..brace_start + brace_end];
             let mut classes = Vec::new();
             for token in inner.split_whitespace() {
@@ -147,18 +166,24 @@ fn parse_markdown_image(s: &str) -> Option<(String, String)> {
 fn parse_buttons_body(args: &str, body: &str) -> ButtonsShortcode {
     let (_positional, classes) = split_positional_and_classes(args);
     let mut items: Vec<ButtonItem> = Vec::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+    // Split the body on `+++` cell dividers (unified grammar).
+    // Bodies without `+++` produce a single cell containing the entire
+    // body — backward-compatible with the legacy "one link per line"
+    // shape.
+    for cell in split_cells(body) {
+        for line in cell.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some((text, url)) = extract_markdown_link(trimmed) {
+                items.push(ButtonItem {
+                    text,
+                    url: Url::unresolved(url),
+                });
+            }
+            // Non-link lines silently ignored (matches legacy behavior).
         }
-        if let Some((text, url)) = extract_markdown_link(trimmed) {
-            items.push(ButtonItem {
-                text,
-                url: Url::unresolved(url),
-            });
-        }
-        // Non-link lines silently ignored (matches legacy behavior).
     }
     ButtonsShortcode { classes, items }
 }
@@ -395,87 +420,6 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
     let name = &rest[..name_end];
     let args = rest[name_end..].trim();
     Some((colons, name, args))
-}
-
-/// If `single_line_args` opens a `{` that doesn't close on the same line,
-/// scan `following_lines` and join them onto args until the brace closes.
-///
-/// Returns `(extended_args_owned, lines_consumed)` where:
-/// - `extended_args_owned = Some(s)` when multi-line scanning happened.
-///   `None` means the single-line args already balance and the caller
-///   should keep using the original `&str`.
-/// - `lines_consumed` is how many lines after the opener were absorbed
-///   into the attribute block. The body starts at
-///   `following_lines[lines_consumed..]`.
-///
-/// Brace balancing tracks ASCII `{` and `}` outside quoted strings. A
-/// `\"`-escape inside a quoted string is recognized so authored content
-/// like `key="say \"hi\""` doesn't desynchronize the scanner.
-///
-/// If the brace never closes (ill-formed input), returns the gathered
-/// content verbatim so the caller can pass it on; the attribute parser
-/// will emit a structural error and the block falls through to the
-/// pass-through path.
-fn gather_multi_line_attrs(
-    single_line_args: &str,
-    following_lines: &[&str],
-) -> (Option<String>, usize) {
-    let depth_after_first = brace_depth(single_line_args, 0);
-    if depth_after_first == 0 {
-        return (None, 0);
-    }
-
-    // Otherwise, gather lines until the brace closes.
-    let mut combined = single_line_args.to_string();
-    let mut depth = depth_after_first;
-    let mut consumed = 0;
-    for &line in following_lines {
-        // Insert a newline so the attribute parser sees the line break
-        // as whitespace (its grammar treats all whitespace identically).
-        combined.push('\n');
-        combined.push_str(line);
-        consumed += 1;
-        depth = brace_depth(line, depth);
-        if depth == 0 {
-            return (Some(combined), consumed);
-        }
-    }
-
-    // Brace never closed within the document: return what we have.
-    // The attribute parser will surface the structural error; the
-    // extractor emits the source verbatim in the unclosed-block branch.
-    (Some(combined), consumed)
-}
-
-/// Quote-aware brace-depth tracker. Returns the depth after consuming
-/// `s`, starting from `start_depth`.
-///
-/// Tracks `"`-quoted strings so that `{` and `}` inside a value like
-/// `key="{name}"` don't shift the depth. Backslash escapes inside a
-/// string consume the next character verbatim.
-fn brace_depth(s: &str, start_depth: i32) -> i32 {
-    let mut depth = start_depth;
-    let mut in_quote = false;
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if in_quote {
-            match c {
-                '"' => in_quote = false,
-                '\\' => {
-                    chars.next();
-                }
-                _ => {}
-            }
-            continue;
-        }
-        match c {
-            '"' => in_quote = true,
-            '{' => depth += 1,
-            '}' => depth = (depth - 1).max(0),
-            _ => {}
-        }
-    }
-    depth
 }
 
 /// True if `trimmed` is a closing fence with the specified arity (`:::`
@@ -1048,29 +992,9 @@ mod tests {
     }
 
     // ---- Multi-line attribute blocks (Step 1 Task B) ----
-
-    #[test]
-    fn brace_depth_tracks_simple_open_close() {
-        assert_eq!(brace_depth("{}", 0), 0);
-        assert_eq!(brace_depth("{", 0), 1);
-        assert_eq!(brace_depth("}", 1), 0);
-        assert_eq!(brace_depth("{ ", 0), 1);
-        assert_eq!(brace_depth(" }", 1), 0);
-    }
-
-    #[test]
-    fn brace_depth_ignores_braces_inside_quoted_strings() {
-        // `key="{name}"` should leave depth unchanged.
-        assert_eq!(brace_depth(r#"{key="{name}"}"#, 0), 0);
-        // Open brace inside string with no close shouldn't shift.
-        assert_eq!(brace_depth(r#"{key="{"}"#, 0), 0);
-    }
-
-    #[test]
-    fn brace_depth_handles_escaped_quote() {
-        // `\"` inside string keeps us in-string, doesn't terminate it.
-        assert_eq!(brace_depth(r#"{label="say \"hi\""}"#, 0), 0);
-    }
+    // Low-level brace_depth and gather_multi_line_attrs unit tests live
+    // in `attrs.rs` next to those helpers. The tests below pin the
+    // extractor's end-to-end behavior on multi-line attribute blocks.
 
     #[test]
     fn extracts_buttons_with_multi_line_attrs() {
