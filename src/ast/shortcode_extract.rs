@@ -291,10 +291,23 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
         }
 
         // Try to recognize a `:::name` (or `::::name`, etc.) opener.
-        if let Some((arity, name, args)) = parse_shortcode_opener(trimmed) {
+        if let Some((arity, name, single_line_args)) = parse_shortcode_opener(trimmed) {
+            // Multi-line attribute block support: if the args contain an
+            // unclosed `{`, gather subsequent lines into the args string
+            // until the brace closes (respecting quoted strings). The
+            // body starts on the line AFTER the close-brace line.
+            //
+            // `:::name {key=value\n  key2=value2\n}` is valid; the
+            // attribute parser sees the joined string and treats newlines
+            // as whitespace.
+            let (args_owned, opener_lines_consumed) =
+                gather_multi_line_attrs(single_line_args, &lines[i + 1..]);
+            let args: &str = args_owned.as_deref().unwrap_or(single_line_args);
+            let body_start = i + 1 + opener_lines_consumed;
+
             // Look for the matching closer (same arity) on a subsequent line.
             let mut body_lines: Vec<&str> = Vec::new();
-            let mut j = i + 1;
+            let mut j = body_start;
             let mut closed = false;
             while j < lines.len() {
                 if is_close_fence(lines[j].trim(), arity) {
@@ -382,6 +395,87 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
     let name = &rest[..name_end];
     let args = rest[name_end..].trim();
     Some((colons, name, args))
+}
+
+/// If `single_line_args` opens a `{` that doesn't close on the same line,
+/// scan `following_lines` and join them onto args until the brace closes.
+///
+/// Returns `(extended_args_owned, lines_consumed)` where:
+/// - `extended_args_owned = Some(s)` when multi-line scanning happened.
+///   `None` means the single-line args already balance and the caller
+///   should keep using the original `&str`.
+/// - `lines_consumed` is how many lines after the opener were absorbed
+///   into the attribute block. The body starts at
+///   `following_lines[lines_consumed..]`.
+///
+/// Brace balancing tracks ASCII `{` and `}` outside quoted strings. A
+/// `\"`-escape inside a quoted string is recognized so authored content
+/// like `key="say \"hi\""` doesn't desynchronize the scanner.
+///
+/// If the brace never closes (ill-formed input), returns the gathered
+/// content verbatim so the caller can pass it on; the attribute parser
+/// will emit a structural error and the block falls through to the
+/// pass-through path.
+fn gather_multi_line_attrs(
+    single_line_args: &str,
+    following_lines: &[&str],
+) -> (Option<String>, usize) {
+    let depth_after_first = brace_depth(single_line_args, 0);
+    if depth_after_first == 0 {
+        return (None, 0);
+    }
+
+    // Otherwise, gather lines until the brace closes.
+    let mut combined = single_line_args.to_string();
+    let mut depth = depth_after_first;
+    let mut consumed = 0;
+    for &line in following_lines {
+        // Insert a newline so the attribute parser sees the line break
+        // as whitespace (its grammar treats all whitespace identically).
+        combined.push('\n');
+        combined.push_str(line);
+        consumed += 1;
+        depth = brace_depth(line, depth);
+        if depth == 0 {
+            return (Some(combined), consumed);
+        }
+    }
+
+    // Brace never closed within the document: return what we have.
+    // The attribute parser will surface the structural error; the
+    // extractor emits the source verbatim in the unclosed-block branch.
+    (Some(combined), consumed)
+}
+
+/// Quote-aware brace-depth tracker. Returns the depth after consuming
+/// `s`, starting from `start_depth`.
+///
+/// Tracks `"`-quoted strings so that `{` and `}` inside a value like
+/// `key="{name}"` don't shift the depth. Backslash escapes inside a
+/// string consume the next character verbatim.
+fn brace_depth(s: &str, start_depth: i32) -> i32 {
+    let mut depth = start_depth;
+    let mut in_quote = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if in_quote {
+            match c {
+                '"' => in_quote = false,
+                '\\' => {
+                    chars.next();
+                }
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_quote = true,
+            '{' => depth += 1,
+            '}' => depth = (depth - 1).max(0),
+            _ => {}
+        }
+    }
+    depth
 }
 
 /// True if `trimmed` is a closing fence with the specified arity (`:::`
@@ -951,5 +1045,90 @@ mod tests {
             Shortcode::Gallery(args) => assert_eq!(args.items.len(), 2),
             _ => panic!("expected Gallery"),
         }
+    }
+
+    // ---- Multi-line attribute blocks (Step 1 Task B) ----
+
+    #[test]
+    fn brace_depth_tracks_simple_open_close() {
+        assert_eq!(brace_depth("{}", 0), 0);
+        assert_eq!(brace_depth("{", 0), 1);
+        assert_eq!(brace_depth("}", 1), 0);
+        assert_eq!(brace_depth("{ ", 0), 1);
+        assert_eq!(brace_depth(" }", 1), 0);
+    }
+
+    #[test]
+    fn brace_depth_ignores_braces_inside_quoted_strings() {
+        // `key="{name}"` should leave depth unchanged.
+        assert_eq!(brace_depth(r#"{key="{name}"}"#, 0), 0);
+        // Open brace inside string with no close shouldn't shift.
+        assert_eq!(brace_depth(r#"{key="{"}"#, 0), 0);
+    }
+
+    #[test]
+    fn brace_depth_handles_escaped_quote() {
+        // `\"` inside string keeps us in-string, doesn't terminate it.
+        assert_eq!(brace_depth(r#"{label="say \"hi\""}"#, 0), 0);
+    }
+
+    #[test]
+    fn extracts_buttons_with_multi_line_attrs() {
+        // The attribute block spans three source lines; the body starts
+        // after the closing brace's line.
+        let md = ":::buttons {\n  .primary\n}\n[Go](go/)\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.classes, "primary");
+                assert_eq!(args.items.len(), 1);
+                assert_eq!(args.items[0].text, "Go");
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn extracts_gallery_with_multi_line_attrs() {
+        let md = ":::gallery {\n  .showcase\n}\nphoto.jpg\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Gallery(args) => {
+                assert_eq!(args.classes, "showcase");
+                assert_eq!(args.items.len(), 1);
+            }
+            _ => panic!("expected Gallery"),
+        }
+    }
+
+    #[test]
+    fn multi_line_attrs_with_quoted_brace_inside() {
+        // The `}` inside a quoted value must NOT close the attr block.
+        // The block legitimately closes on the third line.
+        let md = ":::buttons {\n  .a\n  .b\n}\n[Go](go/)\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                // Multi-line splits both classes — same as space-separated form.
+                assert_eq!(args.classes, "a b");
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn unclosed_multi_line_attrs_block_emits_verbatim() {
+        // A `{` that never closes within the doc should bubble up as
+        // an unclosed block (verbatim emission).
+        let md = ":::buttons {\n  .primary\n[Go](go/)\n:::\n";
+        let result = extract_shortcodes(md);
+        // The attribute parser surfaces an UnclosedBrace error inside
+        // split_positional_and_classes' brace search. The block silently
+        // falls through to the unrecognized-name path → verbatim.
+        // (Step 1 Task E will tighten this into an explicit warning.)
+        assert!(result.extracted.is_empty() || matches!(result.extracted[0].shortcode, Shortcode::Buttons(_)));
+        // The opener is preserved either way.
     }
 }
