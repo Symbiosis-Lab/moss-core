@@ -22,10 +22,9 @@ use super::url::Url;
 pub enum Shortcode {
     /// `:::subscribe` — inline newsletter signup form.
     ///
-    /// Body is parsed as `key: value` lines; recognized keys are
-    /// `description` and `button`. Unknown keys are ignored (matches
-    /// the existing rewriter's behavior; structured diagnostics are
-    /// out-of-scope for this migration — see plan §Out-of-scope).
+    /// Configuration is via attributes (`placeholder`, `button`); body
+    /// must be empty under the unified grammar. Description text and
+    /// any framing prose live in the surrounding markdown.
     Subscribe(SubscribeShortcode),
     /// `:::buttons {.classname}` — list of action buttons.
     ///
@@ -52,8 +51,8 @@ pub enum Shortcode {
 /// Arguments for [`Shortcode::Subscribe`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscribeShortcode {
-    /// Optional override for the form's descriptive text.
-    pub description: Option<String>,
+    /// Optional override for the email input's placeholder text.
+    pub placeholder: Option<String>,
     /// Optional override for the submit button label.
     pub button: Option<String>,
 }
@@ -165,14 +164,14 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_with_description_and_button() {
+    fn subscribe_with_placeholder_and_button() {
         let sc = Shortcode::Subscribe(SubscribeShortcode {
-            description: Some("Get updates".to_string()),
+            placeholder: Some("you@example.com".to_string()),
             button: Some("Subscribe".to_string()),
         });
         match &sc {
             Shortcode::Subscribe(args) => {
-                assert_eq!(args.description.as_deref(), Some("Get updates"));
+                assert_eq!(args.placeholder.as_deref(), Some("you@example.com"));
                 assert_eq!(args.button.as_deref(), Some("Subscribe"));
             }
             other => panic!("expected Subscribe, got {other:?}"),
@@ -180,16 +179,16 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_default_has_none_description_and_button() {
+    fn subscribe_default_has_none_placeholder_and_button() {
         let args = SubscribeShortcode::default();
-        assert!(args.description.is_none());
+        assert!(args.placeholder.is_none());
         assert!(args.button.is_none());
     }
 
     #[test]
     fn subscribe_round_trips_through_serde() {
         let sc = Shortcode::Subscribe(SubscribeShortcode {
-            description: Some("d".to_string()),
+            placeholder: Some("p".to_string()),
             button: Some("b".to_string()),
         });
         let s = serde_json::to_string(&sc).expect("serialize");

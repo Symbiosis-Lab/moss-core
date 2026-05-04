@@ -72,12 +72,15 @@ pub trait RenderHooks {
     fn render_shortcode(&self, out: &mut String, sc: &Shortcode) {
         match sc {
             Shortcode::Subscribe(args) => {
+                // Test-harness skeleton; src-tauri's PipelineHooks renders
+                // the production HTML (form action URL, language defaults,
+                // status spans). Description prose moved out of the
+                // shortcode under the unified grammar.
+                let placeholder = args.placeholder.as_deref().unwrap_or("you@example.com");
                 out.push_str(r#"<div class="moss-subscribe-form">"#);
-                if let Some(desc) = &args.description {
-                    out.push_str("<p>");
-                    out.push_str(&escape_text(desc));
-                    out.push_str("</p>");
-                }
+                out.push_str(r#"<input type="email" placeholder=""#);
+                out.push_str(&escape_attr(placeholder));
+                out.push_str(r#"" />"#);
                 out.push_str("<button>");
                 out.push_str(&escape_text(args.button.as_deref().unwrap_or("Subscribe")));
                 out.push_str("</button>");

@@ -661,7 +661,9 @@ mod tests {
 
     #[test]
     fn parses_subscribe_block_into_typed_shortcode() {
-        let md = ":::subscribe\ndescription: Get updates\nbutton: Sign me up\n:::\n";
+        let md = r#":::subscribe {placeholder="you@domain.com" button="Sign me up"}
+:::
+"#;
         let doc = parse(md);
         // Should find one Block::Shortcode(Subscribe) at top level.
         let mut found: Option<&Shortcode> = None;
@@ -674,7 +676,7 @@ mod tests {
         let sc = found.expect("expected Block::Shortcode");
         match sc {
             Shortcode::Subscribe(args) => {
-                assert_eq!(args.description.as_deref(), Some("Get updates"));
+                assert_eq!(args.placeholder.as_deref(), Some("you@domain.com"));
                 assert_eq!(args.button.as_deref(), Some("Sign me up"));
             }
             other => panic!("expected Subscribe, got {other:?}"),
@@ -683,7 +685,7 @@ mod tests {
 
     #[test]
     fn subscribe_block_does_not_leave_sentinel_in_other_block() {
-        let md = ":::subscribe\ndescription: x\n:::\n";
+        let md = ":::subscribe\n:::\n";
         let doc = parse(md);
         // No Block::Other should contain the sentinel string.
         for block in &doc.blocks {

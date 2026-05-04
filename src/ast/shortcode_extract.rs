@@ -82,7 +82,7 @@ fn is_legacy_passthrough(name: &str) -> bool {
 /// (e.g. for `:::buttons {.primary}`, args is `{.primary}`).
 fn parse_shortcode_block(name: &str, args: &str, body: &str) -> Option<Shortcode> {
     match name {
-        "subscribe" => Some(Shortcode::Subscribe(parse_subscribe_body(body))),
+        "subscribe" => Some(Shortcode::Subscribe(parse_subscribe_args(args))),
         "buttons" => Some(Shortcode::Buttons(parse_buttons_body(args, body))),
         "gallery" => Some(Shortcode::Gallery(parse_gallery_body(args, body))),
         // Phase B 10-11 add: hero, grid.
@@ -232,26 +232,29 @@ fn extract_markdown_link(s: &str) -> Option<(String, String)> {
     Some((text.to_string(), url.to_string()))
 }
 
-fn parse_subscribe_body(body: &str) -> SubscribeShortcode {
-    let mut description: Option<String> = None;
-    let mut button: Option<String> = None;
-    for line in body.lines() {
-        let trim = line.trim();
-        if trim.is_empty() {
-            continue;
-        }
-        if let Some(idx) = trim.find(':') {
-            let key = trim[..idx].trim();
-            let value = trim[idx + 1..].trim();
-            match key {
-                "description" if !value.is_empty() => description = Some(value.to_string()),
-                "button" if !value.is_empty() => button = Some(value.to_string()),
-                _ => {} // unknown / empty value — silently ignored, matches existing rewriter
-            }
-        }
-    }
+/// Parse `:::subscribe {placeholder="..." button="..."}` into a typed struct.
+///
+/// Reads `placeholder` and `button` from the attribute block; ignores
+/// classes/id (the renderer uses fixed `moss-subscribe` chrome). Body
+/// must be empty under the unified grammar — caller is responsible for
+/// surfacing a deprecation warning if non-empty.
+fn parse_subscribe_args(args: &str) -> SubscribeShortcode {
+    // Empty args produce an empty AttrBlock; both fields stay None
+    // and the renderer falls back to language defaults.
+    let parsed = match super::attrs::parse_attrs(args) {
+        Ok(b) => b,
+        Err(_) => return SubscribeShortcode::default(),
+    };
+    let placeholder = parsed
+        .get("placeholder")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let button = parsed
+        .get("button")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     SubscribeShortcode {
-        description,
+        placeholder,
         button,
     }
 }
@@ -604,13 +607,15 @@ mod tests {
     }
 
     #[test]
-    fn extracts_subscribe_block_with_description_and_button() {
-        let md = ":::subscribe\ndescription: Get updates\nbutton: Sign me up\n:::\n";
+    fn extracts_subscribe_block_with_placeholder_and_button_attrs() {
+        let md = r#":::subscribe {placeholder="you@domain.com" button="Sign me up"}
+:::
+"#;
         let result = extract_shortcodes(md);
         assert_eq!(result.extracted.len(), 1);
         match &result.extracted[0].shortcode {
             Shortcode::Subscribe(args) => {
-                assert_eq!(args.description.as_deref(), Some("Get updates"));
+                assert_eq!(args.placeholder.as_deref(), Some("you@domain.com"));
                 assert_eq!(args.button.as_deref(), Some("Sign me up"));
             }
             other => panic!("expected Subscribe, got {other:?}"),
@@ -622,12 +627,14 @@ mod tests {
     }
 
     #[test]
-    fn extracts_subscribe_block_with_only_description() {
-        let md = ":::subscribe\ndescription: Get updates\n:::\n";
+    fn extracts_subscribe_block_with_only_placeholder_attr() {
+        let md = r#":::subscribe {placeholder="hi@example.com"}
+:::
+"#;
         let result = extract_shortcodes(md);
         match &result.extracted[0].shortcode {
             Shortcode::Subscribe(args) => {
-                assert_eq!(args.description.as_deref(), Some("Get updates"));
+                assert_eq!(args.placeholder.as_deref(), Some("hi@example.com"));
                 assert!(args.button.is_none());
             }
             other => panic!("expected Subscribe, got {other:?}"),
@@ -640,7 +647,7 @@ mod tests {
         let result = extract_shortcodes(md);
         match &result.extracted[0].shortcode {
             Shortcode::Subscribe(args) => {
-                assert!(args.description.is_none());
+                assert!(args.placeholder.is_none());
                 assert!(args.button.is_none());
             }
             other => panic!("expected Subscribe, got {other:?}"),
@@ -648,13 +655,34 @@ mod tests {
     }
 
     #[test]
-    fn ignores_unknown_keys_in_subscribe_body() {
-        let md = ":::subscribe\nweird: thing\nbutton: Go\n:::\n";
+    fn extracts_subscribe_block_with_multi_line_attrs() {
+        let md = r#":::subscribe {
+  placeholder="you@domain.com"
+  button="Request access"
+}
+:::
+"#;
         let result = extract_shortcodes(md);
         match &result.extracted[0].shortcode {
             Shortcode::Subscribe(args) => {
-                assert_eq!(args.button.as_deref(), Some("Go"));
-                assert!(args.description.is_none());
+                assert_eq!(args.placeholder.as_deref(), Some("you@domain.com"));
+                assert_eq!(args.button.as_deref(), Some("Request access"));
+            }
+            other => panic!("expected Subscribe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subscribe_legacy_body_keys_no_longer_parsed() {
+        // The pre-grammar form `description: ...` / `button: ...` body
+        // lines are no longer recognized. moss-releases content is
+        // rewritten in Step 3; this test pins the post-cut behavior.
+        let md = ":::subscribe\ndescription: Get updates\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Subscribe(args) => {
+                assert!(args.placeholder.is_none(), "old description body must not populate placeholder");
+                assert!(args.button.is_none());
             }
             other => panic!("expected Subscribe, got {other:?}"),
         }
@@ -1034,14 +1062,20 @@ mod tests {
         // P1 #2 fix: `::: more text` does NOT close the block. Without
         // this match against legacy semantics, an author who pasted text
         // after the closer would see different behavior between the
-        // typed-AST path and the legacy grid parser.
-        let md = ":::subscribe\nbutton: x\n::: more text\n:::\n";
+        // typed-AST path and the legacy grid parser. Using buttons here
+        // because subscribe under the unified grammar reads attrs only.
+        let md = ":::buttons\n[a](u)\n::: more text\n[b](v)\n:::\n";
         let result = extract_shortcodes(md);
         assert_eq!(result.extracted.len(), 1);
-        // The first `:::` is body content; the second `:::` is the closer.
+        // Both links should be in the buttons body — the first `:::` is
+        // body content; the second `:::` is the closer.
         match &result.extracted[0].shortcode {
-            Shortcode::Subscribe(args) => assert_eq!(args.button.as_deref(), Some("x")),
-            _ => panic!("expected Subscribe"),
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.items.len(), 2);
+                assert_eq!(args.items[0].text, "a");
+                assert_eq!(args.items[1].text, "b");
+            }
+            _ => panic!("expected Buttons"),
         }
     }
 
