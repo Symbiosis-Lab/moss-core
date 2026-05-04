@@ -1,0 +1,584 @@
+//! Attribute-block parser for the unified shortcode grammar.
+//!
+//! Parses the `{ ... }` portion of an opening fence into structured
+//! classes, an optional id, and key/value pairs. Pure, no I/O.
+//!
+//! Grammar (from `docs/plans/2026-05-02-shortcode-grammar-design.md`):
+//!
+//! ```text
+//! Attrs    := "{" AttrItem (whitespace AttrItem)* "}"
+//! AttrItem := "." classname
+//!           | "#" id
+//!           | key "=" value
+//! key      := [A-Za-z][A-Za-z0-9_-]*
+//! value    := bareword | quoted
+//! bareword := [A-Za-z0-9:_/.\-]+
+//! quoted   := "\"" any-char-except-unescaped-quote* "\""
+//! ```
+//!
+//! Whitespace inside `{}` (spaces, tabs, newlines) all separate items
+//! identically — multi-line attribute blocks are first-class.
+//!
+//! The parser is forgiving on malformed bareword values (returns the
+//! malformed token verbatim rather than erroring); it errors only on
+//! structural problems (unterminated quote, bad key, no closing brace).
+//! Renderers are responsible for validating typed values like `cols=int`.
+
+use std::collections::HashMap;
+
+/// Parsed attribute block.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttrBlock {
+    /// `.classname` shortcuts, in source order. Duplicates preserved so
+    /// the renderer can detect explicit doubles if it wants.
+    pub classes: Vec<String>,
+    /// Last `#id` shortcut wins (multiple ids is malformed but not fatal).
+    pub id: Option<String>,
+    /// `key=value` pairs. Last write wins when a key repeats.
+    pub kvs: HashMap<String, String>,
+}
+
+impl AttrBlock {
+    pub fn is_empty(&self) -> bool {
+        self.classes.is_empty() && self.id.is_none() && self.kvs.is_empty()
+    }
+
+    /// Convenience for renderers: get the value for a key.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.kvs.get(key).map(String::as_str)
+    }
+
+    /// Space-joined class list, ready for `class="..."`.
+    pub fn class_string(&self) -> String {
+        self.classes.join(" ")
+    }
+}
+
+/// Errors parsing an attribute block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttrError {
+    /// Input did not start with `{`.
+    MissingOpenBrace,
+    /// Block opened with `{` but no matching `}` was found.
+    UnclosedBrace,
+    /// A `"` opened but had no closing `"` before the block ended.
+    UnterminatedQuote,
+    /// A `key=` was followed by no value (end of input or whitespace).
+    EmptyValue { key: String },
+    /// A token started with `=` (no key before it) or had a malformed key.
+    InvalidKey { token: String },
+}
+
+/// Parse an attribute block.
+///
+/// `input` must include the surrounding braces: `{.foo key=bar}`.
+/// Whitespace between items (including newlines) is permitted.
+///
+/// Errors only on structural problems. Unrecognized characters at the start
+/// of an item — anything not `.`, `#`, or a valid key character — produce
+/// `InvalidKey { token }` so the caller can surface a useful diagnostic.
+pub fn parse_attrs(input: &str) -> Result<AttrBlock, AttrError> {
+    let mut chars = input.char_indices().peekable();
+
+    // Expect leading `{`.
+    skip_ws(&mut chars);
+    match chars.next() {
+        Some((_, '{')) => {}
+        _ => return Err(AttrError::MissingOpenBrace),
+    }
+
+    let mut block = AttrBlock::default();
+
+    loop {
+        skip_ws(&mut chars);
+        match chars.peek().copied() {
+            None => return Err(AttrError::UnclosedBrace),
+            Some((_, '}')) => {
+                chars.next();
+                return Ok(block);
+            }
+            Some((_, '.')) => {
+                chars.next();
+                let class = read_bareword(&mut chars);
+                if !class.is_empty() {
+                    block.classes.push(class);
+                }
+            }
+            Some((_, '#')) => {
+                chars.next();
+                let id = read_bareword(&mut chars);
+                if !id.is_empty() {
+                    block.id = Some(id);
+                }
+            }
+            Some((_, c)) if is_key_start(c) => {
+                let key = read_key(&mut chars);
+                skip_ws_inline(&mut chars);
+                match chars.peek().copied() {
+                    Some((_, '=')) => {
+                        chars.next();
+                        skip_ws_inline(&mut chars);
+                        let value = read_value(&mut chars, &key)?;
+                        block.kvs.insert(key, value);
+                    }
+                    _ => {
+                        // Bare key (no `=value`): treat as a class for
+                        // ergonomics? Spec says only `.foo`/`#foo`/`key=val`
+                        // are recognized — return InvalidKey so the author
+                        // gets a clean diagnostic rather than silent dropping.
+                        return Err(AttrError::InvalidKey { token: key });
+                    }
+                }
+            }
+            Some((_, c)) => {
+                // Anything else at item-start is invalid. Capture the run
+                // up to the next whitespace/`}` for the diagnostic.
+                let mut token = String::new();
+                token.push(c);
+                chars.next();
+                while let Some(&(_, ch)) = chars.peek() {
+                    if ch.is_whitespace() || ch == '}' {
+                        break;
+                    }
+                    token.push(ch);
+                    chars.next();
+                }
+                return Err(AttrError::InvalidKey { token });
+            }
+        }
+    }
+}
+
+fn is_key_start(c: char) -> bool {
+    c.is_ascii_alphabetic()
+}
+
+fn is_key_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+fn is_bareword(c: char) -> bool {
+    matches!(c,
+        'A'..='Z' | 'a'..='z' | '0'..='9' |
+        ':' | '/' | '.' | '-' | '_'
+    )
+}
+
+fn skip_ws<I>(iter: &mut std::iter::Peekable<I>)
+where
+    I: Iterator<Item = (usize, char)>,
+{
+    while let Some(&(_, c)) = iter.peek() {
+        if c.is_whitespace() {
+            iter.next();
+        } else {
+            break;
+        }
+    }
+}
+
+/// Like `skip_ws` but stops at the first newline — used after a `key`
+/// before checking for `=`. Newline-after-key without `=` is a malformed
+/// item, but the user might have written `key\n=value` which we should
+/// accept (whitespace is whitespace inside `{}`). Today we treat all
+/// whitespace identically — so this is currently equivalent to skip_ws.
+/// Kept as a separate helper in case future grammars distinguish.
+fn skip_ws_inline<I>(iter: &mut std::iter::Peekable<I>)
+where
+    I: Iterator<Item = (usize, char)>,
+{
+    skip_ws(iter);
+}
+
+fn read_bareword<I>(iter: &mut std::iter::Peekable<I>) -> String
+where
+    I: Iterator<Item = (usize, char)>,
+{
+    let mut s = String::new();
+    while let Some(&(_, c)) = iter.peek() {
+        if is_bareword(c) {
+            s.push(c);
+            iter.next();
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+fn read_key<I>(iter: &mut std::iter::Peekable<I>) -> String
+where
+    I: Iterator<Item = (usize, char)>,
+{
+    let mut s = String::new();
+    if let Some(&(_, c)) = iter.peek() {
+        if is_key_start(c) {
+            s.push(c);
+            iter.next();
+        } else {
+            return s;
+        }
+    }
+    while let Some(&(_, c)) = iter.peek() {
+        if is_key_continue(c) {
+            s.push(c);
+            iter.next();
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+fn read_value<I>(iter: &mut std::iter::Peekable<I>, key: &str) -> Result<String, AttrError>
+where
+    I: Iterator<Item = (usize, char)>,
+{
+    match iter.peek().copied() {
+        Some((_, '"')) => {
+            iter.next();
+            read_quoted(iter)
+        }
+        Some((_, c)) if is_bareword(c) => Ok(read_bareword(iter)),
+        _ => Err(AttrError::EmptyValue { key: key.to_string() }),
+    }
+}
+
+/// Read until the closing `"`, supporting `\"` and `\\` escapes.
+fn read_quoted<I>(iter: &mut std::iter::Peekable<I>) -> Result<String, AttrError>
+where
+    I: Iterator<Item = (usize, char)>,
+{
+    let mut s = String::new();
+    loop {
+        match iter.next() {
+            None => return Err(AttrError::UnterminatedQuote),
+            Some((_, '"')) => return Ok(s),
+            Some((_, '\\')) => match iter.next() {
+                None => return Err(AttrError::UnterminatedQuote),
+                Some((_, ch)) => s.push(ch),
+            },
+            Some((_, ch)) => s.push(ch),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok(s: &str) -> AttrBlock {
+        parse_attrs(s).expect("parse_attrs should succeed")
+    }
+
+    fn err(s: &str) -> AttrError {
+        parse_attrs(s).expect_err("parse_attrs should fail")
+    }
+
+    // ── empty / no-content cases ─────────────────────────────────────
+
+    #[test]
+    fn empty_block() {
+        let b = ok("{}");
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_block() {
+        let b = ok("{   }");
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn missing_open_brace_errors() {
+        assert_eq!(err("foo=bar"), AttrError::MissingOpenBrace);
+    }
+
+    #[test]
+    fn unclosed_brace_errors() {
+        assert_eq!(err("{.foo"), AttrError::UnclosedBrace);
+    }
+
+    // ── classes ──────────────────────────────────────────────────────
+
+    #[test]
+    fn single_class() {
+        let b = ok("{.primary}");
+        assert_eq!(b.classes, vec!["primary"]);
+        assert_eq!(b.class_string(), "primary");
+    }
+
+    #[test]
+    fn multiple_classes_space_separated() {
+        let b = ok("{.primary .large}");
+        assert_eq!(b.classes, vec!["primary", "large"]);
+        assert_eq!(b.class_string(), "primary large");
+    }
+
+    #[test]
+    fn classes_preserve_source_order() {
+        let b = ok("{.first .second .third}");
+        assert_eq!(b.classes, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn class_with_dash_and_digit() {
+        let b = ok("{.btn-primary .v2}");
+        assert_eq!(b.classes, vec!["btn-primary", "v2"]);
+    }
+
+    #[test]
+    fn dot_with_no_name_skipped() {
+        // Lonely `.` followed by whitespace produces an empty class — drop it
+        // rather than insert "" into the list.
+        let b = ok("{. .real}");
+        assert_eq!(b.classes, vec!["real"]);
+    }
+
+    // ── id ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn single_id() {
+        let b = ok("{#hero}");
+        assert_eq!(b.id.as_deref(), Some("hero"));
+    }
+
+    #[test]
+    fn multiple_ids_last_wins() {
+        let b = ok("{#first #second}");
+        assert_eq!(b.id.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn id_and_class_in_same_block() {
+        let b = ok("{#main .container}");
+        assert_eq!(b.id.as_deref(), Some("main"));
+        assert_eq!(b.classes, vec!["container"]);
+    }
+
+    // ── key/value: bareword values ──────────────────────────────────
+
+    #[test]
+    fn key_with_bareword_integer() {
+        let b = ok("{cols=3}");
+        assert_eq!(b.get("cols"), Some("3"));
+    }
+
+    #[test]
+    fn key_with_ratio_value() {
+        let b = ok("{cols=1:1:2}");
+        assert_eq!(b.get("cols"), Some("1:1:2"));
+    }
+
+    #[test]
+    fn key_with_path_value() {
+        let b = ok("{image=hero.jpg}");
+        assert_eq!(b.get("image"), Some("hero.jpg"));
+    }
+
+    #[test]
+    fn key_with_dotted_path_value() {
+        let b = ok("{image=path/to/file.jpg}");
+        assert_eq!(b.get("image"), Some("path/to/file.jpg"));
+    }
+
+    #[test]
+    fn key_with_negative_int_value() {
+        let b = ok("{offset=-5}");
+        assert_eq!(b.get("offset"), Some("-5"));
+    }
+
+    #[test]
+    fn multiple_kvs() {
+        let b = ok("{cols=3 image=hero.jpg gap=2}");
+        assert_eq!(b.get("cols"), Some("3"));
+        assert_eq!(b.get("image"), Some("hero.jpg"));
+        assert_eq!(b.get("gap"), Some("2"));
+    }
+
+    #[test]
+    fn duplicate_key_last_wins() {
+        let b = ok("{cols=2 cols=4}");
+        assert_eq!(b.get("cols"), Some("4"));
+    }
+
+    #[test]
+    fn key_with_dash_and_underscore() {
+        let b = ok("{button-text=foo my_field=bar}");
+        assert_eq!(b.get("button-text"), Some("foo"));
+        assert_eq!(b.get("my_field"), Some("bar"));
+    }
+
+    // ── key/value: quoted values ────────────────────────────────────
+
+    #[test]
+    fn key_with_quoted_simple() {
+        let b = ok(r#"{button="Request access"}"#);
+        assert_eq!(b.get("button"), Some("Request access"));
+    }
+
+    #[test]
+    fn key_with_quoted_punctuation() {
+        let b = ok(r#"{description="One email. No newsletter."}"#);
+        assert_eq!(b.get("description"), Some("One email. No newsletter."));
+    }
+
+    #[test]
+    fn quoted_value_with_escaped_quote() {
+        let b = ok(r#"{label="say \"hi\""}"#);
+        assert_eq!(b.get("label"), Some(r#"say "hi""#));
+    }
+
+    #[test]
+    fn quoted_value_with_escaped_backslash() {
+        let b = ok(r#"{path="C:\\Users\\me"}"#);
+        assert_eq!(b.get("path"), Some(r"C:\Users\me"));
+    }
+
+    #[test]
+    fn quoted_value_with_brace_inside() {
+        // The closing `}` of the block must NOT be confused with a `}`
+        // inside a quoted value.
+        let b = ok(r#"{template="{name}"}"#);
+        assert_eq!(b.get("template"), Some("{name}"));
+    }
+
+    #[test]
+    fn quoted_value_can_be_empty() {
+        let b = ok(r#"{label=""}"#);
+        assert_eq!(b.get("label"), Some(""));
+    }
+
+    #[test]
+    fn unterminated_quote_errors() {
+        assert_eq!(
+            err(r#"{button="oops}"#),
+            AttrError::UnterminatedQuote
+        );
+    }
+
+    // ── multi-line ───────────────────────────────────────────────────
+
+    #[test]
+    fn multi_line_attrs() {
+        let b = ok("{\n  placeholder=\"you@domain.com\"\n  button=\"Request access\"\n}");
+        assert_eq!(b.get("placeholder"), Some("you@domain.com"));
+        assert_eq!(b.get("button"), Some("Request access"));
+    }
+
+    #[test]
+    fn multi_line_with_classes_and_kvs() {
+        let b = ok("{\n  .primary\n  .large\n  cols=3\n  image=hero.jpg\n}");
+        assert_eq!(b.classes, vec!["primary", "large"]);
+        assert_eq!(b.get("cols"), Some("3"));
+        assert_eq!(b.get("image"), Some("hero.jpg"));
+    }
+
+    #[test]
+    fn tab_separator_works() {
+        let b = ok("{.foo\tcols=3}");
+        assert_eq!(b.classes, vec!["foo"]);
+        assert_eq!(b.get("cols"), Some("3"));
+    }
+
+    // ── error paths ──────────────────────────────────────────────────
+
+    #[test]
+    fn key_with_no_value_errors() {
+        let e = err("{cols=}");
+        assert!(matches!(e, AttrError::EmptyValue { ref key } if key == "cols"));
+    }
+
+    #[test]
+    fn key_without_equals_errors() {
+        // A bare keyword without `=` is invalid (spec says only `.foo`,
+        // `#foo`, `key=value` are recognized).
+        assert!(matches!(err("{cols}"), AttrError::InvalidKey { .. }));
+    }
+
+    #[test]
+    fn key_starting_with_digit_is_invalid_token() {
+        let e = err("{3cols=2}");
+        assert!(matches!(e, AttrError::InvalidKey { .. }));
+    }
+
+    #[test]
+    fn lonely_equals_is_invalid_token() {
+        let e = err("{=foo}");
+        assert!(matches!(e, AttrError::InvalidKey { .. }));
+    }
+
+    // ── round-trip via class_string / get ────────────────────────────
+
+    #[test]
+    fn class_string_joins_with_spaces() {
+        let b = ok("{.alpha .beta .gamma}");
+        assert_eq!(b.class_string(), "alpha beta gamma");
+    }
+
+    #[test]
+    fn class_string_empty_when_no_classes() {
+        let b = ok("{cols=3}");
+        assert_eq!(b.class_string(), "");
+    }
+
+    #[test]
+    fn get_returns_none_for_missing_key() {
+        let b = ok("{cols=3}");
+        assert!(b.get("rows").is_none());
+    }
+
+    // ── realistic spec examples ──────────────────────────────────────
+
+    #[test]
+    fn spec_subscribe_form_multi_line() {
+        let b = ok("{\n  placeholder=\"you@domain.com\"\n  button=\"Request access\"\n}");
+        assert_eq!(b.get("placeholder"), Some("you@domain.com"));
+        assert_eq!(b.get("button"), Some("Request access"));
+        assert!(b.classes.is_empty());
+        assert!(b.id.is_none());
+    }
+
+    #[test]
+    fn spec_buttons_classes_only() {
+        let b = ok("{.primary .large}");
+        assert_eq!(b.classes, vec!["primary", "large"]);
+        assert!(b.kvs.is_empty());
+    }
+
+    #[test]
+    fn spec_gallery_cols_and_class() {
+        let b = ok("{cols=3 .showcase}");
+        assert_eq!(b.get("cols"), Some("3"));
+        assert_eq!(b.classes, vec!["showcase"]);
+    }
+
+    #[test]
+    fn spec_grid_ratio_cols() {
+        let b = ok("{cols=1:1:2}");
+        assert_eq!(b.get("cols"), Some("1:1:2"));
+    }
+
+    #[test]
+    fn spec_hero_image_path() {
+        let b = ok("{image=hero.jpg}");
+        assert_eq!(b.get("image"), Some("hero.jpg"));
+    }
+
+    #[test]
+    fn spec_pure_css_region_class_and_id() {
+        let b = ok("{.tagline #intro}");
+        assert_eq!(b.classes, vec!["tagline"]);
+        assert_eq!(b.id.as_deref(), Some("intro"));
+    }
+
+    // ── leading whitespace before brace ──────────────────────────────
+
+    #[test]
+    fn leading_whitespace_before_brace_ok() {
+        // The opener-scanner upstream may pass " {.foo}" if it strips name
+        // first. Tolerate leading whitespace.
+        let b = ok("  {.foo}");
+        assert_eq!(b.classes, vec!["foo"]);
+    }
+}
