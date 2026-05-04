@@ -31,6 +31,7 @@
 //! - moss-core stays pure Rust: zero I/O, zero async.
 
 pub mod attrs;
+pub mod cells;
 pub mod document;
 pub mod hooks;
 pub mod node;
