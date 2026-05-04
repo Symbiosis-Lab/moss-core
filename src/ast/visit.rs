@@ -110,6 +110,11 @@ where
                 callback(image);
             }
         }
+        Shortcode::Grid(_) => {
+            // Cells are raw markdown source; URLs inside them flow through
+            // the resolver during per-cell rendering (the renderer calls
+            // back into apply_typed_shortcodes + markdown_to_html_with).
+        }
     }
 }
 

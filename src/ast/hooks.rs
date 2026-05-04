@@ -236,6 +236,43 @@ pub trait RenderHooks {
                 }
                 out.push_str("</section>");
             }
+            Shortcode::Grid(args) => {
+                // Test-harness skeleton; the production renderer in
+                // src-tauri's PipelineHooks runs each cell through the
+                // markdown pipeline (including nested typed shortcodes).
+                // This default emits a minimal `<div class="moss-grid">`
+                // wrapper with each cell's raw text inside a
+                // `.moss-grid-card` div so unit tests can pattern-match.
+                let mut class_attr = String::from("moss-grid");
+                if !args.classes.is_empty() {
+                    class_attr.push(' ');
+                    class_attr.push_str(&args.classes);
+                }
+                let style_attr = match &args.ratio {
+                    Some(r) => {
+                        let cols = r
+                            .split(':')
+                            .map(|n| format!("{}fr", n.trim()))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!(r#" style="grid-template-columns:{}""#, cols)
+                    }
+                    None => String::new(),
+                };
+                out.push_str(r#"<div class=""#);
+                out.push_str(&escape_attr(&class_attr));
+                out.push_str(r#"" data-columns=""#);
+                out.push_str(&args.columns.to_string());
+                out.push_str("\"");
+                out.push_str(&style_attr);
+                out.push('>');
+                for cell in &args.cells {
+                    out.push_str(r#"<div class="moss-grid-card">"#);
+                    out.push_str(&escape_text(cell));
+                    out.push_str("</div>");
+                }
+                out.push_str("</div>");
+            }
         }
     }
 

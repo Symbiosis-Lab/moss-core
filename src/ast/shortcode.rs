@@ -56,6 +56,13 @@ pub enum Shortcode {
     /// The pipeline hoists the rendered hero HTML into the article
     /// template's hero slot — it does NOT render inline.
     Hero(HeroShortcode),
+    /// `:::grid {cols=N}` or `:::grid N` — flexible multi-cell layout.
+    ///
+    /// Cells are split on `+++` (new grammar) or `---` (legacy moss-releases
+    /// backward-compat — Step 3 of #613 rewrites these to `+++`). Each cell
+    /// stores its raw markdown source; the renderer is responsible for any
+    /// nested-shortcode extraction and markdown processing per cell.
+    Grid(GridShortcode),
 }
 
 /// Arguments for [`Shortcode::Subscribe`].
@@ -111,6 +118,25 @@ pub struct GalleryItem {
     pub attrs: String,
 }
 
+/// Arguments for [`Shortcode::Grid`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GridShortcode {
+    /// Column count. Defaults to 1 when neither positional nor `cols=`
+    /// attribute is provided.
+    pub columns: u32,
+    /// Optional ratio string like `"1:2"` or `"1:1:2"`. When present,
+    /// the renderer emits `style="grid-template-columns:1fr 2fr"` etc.
+    /// `cols=1:2:3` is equivalent to setting both `columns` (count = 3)
+    /// and `ratio` to `"1:2:3"`.
+    pub ratio: Option<String>,
+    /// Extra CSS classes for the wrapping `<div>` (from `{.foo .bar}`).
+    pub classes: String,
+    /// Each cell's raw markdown source. The renderer processes each cell
+    /// through the markdown pipeline (including any nested typed
+    /// shortcodes such as `::::buttons` inside a `:::grid` cell).
+    pub cells: Vec<String>,
+}
+
 /// Arguments for [`Shortcode::Hero`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeroShortcode {
@@ -149,6 +175,7 @@ impl Shortcode {
             Shortcode::Buttons(_) => ShortcodeKind::Buttons,
             Shortcode::Gallery(_) => ShortcodeKind::Gallery,
             Shortcode::Hero(_) => ShortcodeKind::Hero,
+            Shortcode::Grid(_) => ShortcodeKind::Grid,
         }
     }
 }

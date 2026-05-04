@@ -21,8 +21,8 @@
 use super::attrs::{brace_depth, gather_multi_line_attrs};
 use super::cells::split_cells;
 use super::shortcode::{
-    ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, HeroShortcode, Shortcode,
-    SubscribeShortcode,
+    ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
+    Shortcode, SubscribeShortcode,
 };
 use super::url::Url;
 
@@ -60,14 +60,14 @@ pub struct ExtractionResult {
 /// Names recognized by the typed AST. Other names that look like
 /// shortcodes pass through to the legacy regex (`is_legacy_passthrough`)
 /// or fall back to the unknown-name renderer.
-const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero"];
+const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero", "grid"];
 
 /// Names still owned by the legacy regex pass in
 /// `src-tauri/src/build/shortcode.rs`. The extractor leaves these
 /// verbatim so the legacy rewriter can process them. The set shrinks
 /// to empty as Step 2 of the unified-grammar migration ports each
 /// to a typed variant.
-const LEGACY_PASSTHROUGH: &[&str] = &["grid", "toc"];
+const LEGACY_PASSTHROUGH: &[&str] = &["toc"];
 
 fn is_typed_known(name: &str) -> bool {
     TYPED_KNOWN.contains(&name)
@@ -87,9 +87,114 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> Option<Shortcode
         "buttons" => Some(Shortcode::Buttons(parse_buttons_body(args, body))),
         "gallery" => Some(Shortcode::Gallery(parse_gallery_body(args, body))),
         "hero" => Some(Shortcode::Hero(parse_hero(args, body))),
-        // Step 2 still has: grid.
+        "grid" => Some(Shortcode::Grid(parse_grid(args, body))),
         _ => None,
     }
+}
+
+/// Parse a `:::grid` block.
+///
+/// Args parsing supports both:
+/// - **Positional** (legacy moss-releases): `:::grid 2 1:2 {.classes}` —
+///   first token is column count, second optional token is the ratio.
+/// - **Attribute** (new grammar): `:::grid {cols=2}` or `:::grid {cols=1:1:2}` —
+///   `cols=integer` sets the column count; `cols=ratio` sets both the
+///   ratio and the count (= ratio length).
+///
+/// Cells are split on lines containing only `+++` (new grammar) or
+/// `---` (legacy moss-releases). Step 3 of #613 rewrites `---` to `+++`
+/// in moss-releases content; the parser accepts both during the
+/// migration window.
+fn parse_grid(args: &str, body: &str) -> GridShortcode {
+    let trimmed = args.trim();
+    let (positional, attr_block) = match trimmed.find('{') {
+        Some(pos) => (trimmed[..pos].trim(), &trimmed[pos..]),
+        None => (trimmed, ""),
+    };
+
+    let parsed = if attr_block.is_empty() {
+        Default::default()
+    } else {
+        super::attrs::parse_attrs(attr_block).unwrap_or_default()
+    };
+    let classes = parsed.class_string();
+
+    let mut columns: u32 = 1;
+    let mut ratio: Option<String> = None;
+
+    if let Some(cols_value) = parsed.get("cols") {
+        if cols_value.contains(':') {
+            ratio = Some(cols_value.to_string());
+            columns = cols_value.split(':').count() as u32;
+        } else if let Ok(n) = cols_value.parse::<u32>() {
+            columns = n.max(1);
+        }
+    } else {
+        // Positional fallback: e.g. `2 1:2`.
+        let parts: Vec<&str> = positional.split_whitespace().collect();
+        if let Some(first) = parts.first() {
+            if first.contains(':') {
+                ratio = Some(first.to_string());
+                columns = first.split(':').count() as u32;
+            } else if let Ok(n) = first.parse::<u32>() {
+                columns = n.max(1);
+                if let Some(second) = parts.get(1) {
+                    if second.contains(':') {
+                        ratio = Some(second.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let cells = split_grid_cells(body);
+
+    GridShortcode {
+        columns,
+        ratio,
+        classes,
+        cells,
+    }
+}
+
+/// Split a grid body into cells on lines containing only `+++` (new
+/// grammar) or `---` (legacy moss-releases backward-compat).
+///
+/// Mirrors [`super::cells::split_cells`] but accepts either divider.
+/// Step 3 of #613 rewrites `---` to `+++` in moss-releases content;
+/// after that, this helper retires in favor of `split_cells`.
+fn split_grid_cells(body: &str) -> Vec<String> {
+    if body.is_empty() {
+        return vec![String::new()];
+    }
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut first_line_in_cell = true;
+
+    for line in body.split_inclusive('\n') {
+        let content_no_eol = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = content_no_eol.trim();
+        if trimmed == "+++" || trimmed == "---" {
+            if let Some(stripped) = current.strip_suffix('\n') {
+                current.truncate(stripped.len());
+            }
+            cells.push(std::mem::take(&mut current));
+            first_line_in_cell = true;
+            continue;
+        }
+        if first_line_in_cell {
+            first_line_in_cell = false;
+            if trimmed.is_empty() {
+                continue;
+            }
+        }
+        current.push_str(line);
+    }
+    if let Some(stripped) = current.strip_suffix('\n') {
+        current.truncate(stripped.len());
+    }
+    cells.push(current);
+    cells
 }
 
 /// Parse a `:::hero` block in any of three syntactic forms.
@@ -994,22 +1099,33 @@ mod tests {
     }
 
     #[test]
-    fn extracts_quadruple_buttons_inside_unrecognized_grid() {
-        // The realistic SoCiviC pattern: `::::buttons` (4-colon) nested
-        // inside a `:::grid` (3-colon, not yet migrated). The extractor
-        // must recognize the 4-colon buttons block while leaving the
-        // 3-colon grid markers verbatim for the legacy grid rewriter.
+    fn extracts_grid_with_nested_buttons_via_arity() {
+        // SoCiviC pattern: `::::buttons` (4-colon) nested inside `:::grid`
+        // (3-colon). After Step 2b both are typed; the OUTER grid wins
+        // first (matched at the first arity-3 closer), and the inner
+        // ::::buttons travels in the grid's body markdown as cell content.
+        // The renderer recursively extracts the buttons from each cell at
+        // render time (see render_grid_html_typed).
         let md = ":::grid 2\n::::buttons\n[Tickets](go/)\n::::\n---\nfooter cell\n:::\n";
         let result = extract_shortcodes(md);
+        // One typed entry: the outer Grid. The inner ::::buttons is in
+        // the grid's body, not in result.extracted.
         assert_eq!(result.extracted.len(), 1);
-        assert!(matches!(
-            result.extracted[0].shortcode,
-            Shortcode::Buttons(_)
-        ));
-        // The grid markers must survive verbatim for the legacy rewriter.
-        assert!(result.markdown_with_placeholders.contains(":::grid 2"));
-        assert!(result.markdown_with_placeholders.contains("---\nfooter"));
-        assert!(!result.markdown_with_placeholders.contains("::::buttons"));
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.columns, 2);
+                assert_eq!(grid.cells.len(), 2);
+                // First cell contains the inner buttons block source.
+                assert!(grid.cells[0].contains("::::buttons"));
+                assert!(grid.cells[0].contains("[Tickets](go/)"));
+                // Second cell is the footer.
+                assert_eq!(grid.cells[1], "footer cell");
+            }
+            other => panic!("expected Grid, got {other:?}"),
+        }
+        // The literal ::: markers don't survive verbatim — they're in the
+        // typed Grid's body now.
+        assert!(!result.markdown_with_placeholders.contains(":::grid 2"));
     }
 
     #[test]
@@ -1448,15 +1564,100 @@ mod tests {
         assert!(out.contains(r#"data-name="weird-name""#));
     }
 
+    // Grid left LEGACY_PASSTHROUGH in Step 2b — it's now a typed variant.
+    // Coverage moved to the Grid section below (extracts_grid_*).
+
     #[test]
-    fn legacy_passthrough_grid_emits_verbatim() {
-        // `:::grid` is still owned by the legacy regex. Step 1 must not
-        // consume it — it passes through unchanged.
+    fn extracts_grid_with_positional_columns() {
+        // Legacy moss-releases form: `:::grid 2` (positional column count)
+        // with `---` cell divider. Both the positional cols and the legacy
+        // `---` divider are accepted during the migration window.
         let md = ":::grid 2\ncell A\n---\ncell B\n:::\n";
         let result = extract_shortcodes(md);
-        assert!(result.extracted.is_empty());
-        assert!(result.warnings.is_empty(), "legacy passthrough must not warn");
-        assert!(result.markdown_with_placeholders.contains(":::grid 2"));
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.columns, 2);
+                assert!(grid.ratio.is_none());
+                assert_eq!(grid.cells, vec!["cell A".to_string(), "cell B".to_string()]);
+            }
+            other => panic!("expected Grid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_grid_with_positional_ratio() {
+        let md = ":::grid 2 1:2\nleft\n---\nright\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.columns, 2);
+                assert_eq!(grid.ratio.as_deref(), Some("1:2"));
+            }
+            _ => panic!("expected Grid"),
+        }
+    }
+
+    #[test]
+    fn extracts_grid_with_cols_attr_integer() {
+        let md = ":::grid {cols=3}\nA\n+++\nB\n+++\nC\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.columns, 3);
+                assert_eq!(grid.cells, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+            }
+            _ => panic!("expected Grid"),
+        }
+    }
+
+    #[test]
+    fn extracts_grid_with_cols_attr_ratio_implies_count() {
+        let md = ":::grid {cols=1:1:2}\nA\n+++\nB\n+++\nC\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.columns, 3, "ratio length implies column count");
+                assert_eq!(grid.ratio.as_deref(), Some("1:1:2"));
+            }
+            _ => panic!("expected Grid"),
+        }
+    }
+
+    #[test]
+    fn extracts_grid_accepts_plus_plus_plus_divider() {
+        let md = ":::grid 2\nA\n+++\nB\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => assert_eq!(grid.cells, vec!["A".to_string(), "B".to_string()]),
+            _ => panic!("expected Grid"),
+        }
+    }
+
+    #[test]
+    fn extracts_grid_with_classes() {
+        let md = ":::grid 3 {.work-cards .featured}\nA\n---\nB\n---\nC\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.columns, 3);
+                assert_eq!(grid.classes, "work-cards featured");
+            }
+            _ => panic!("expected Grid"),
+        }
+    }
+
+    #[test]
+    fn extracts_grid_single_cell_no_separator() {
+        let md = ":::grid 1\nonly cell\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.columns, 1);
+                assert_eq!(grid.cells, vec!["only cell".to_string()]);
+            }
+            _ => panic!("expected Grid"),
+        }
     }
 
     // Hero left LEGACY_PASSTHROUGH in Step 2 — it's now a typed variant.
