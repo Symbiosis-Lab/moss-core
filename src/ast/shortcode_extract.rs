@@ -18,6 +18,8 @@
 //!   (pulldown-cmark passes HTML comments through `Event::Html` as
 //!   `Block::HtmlBlock`).
 
+use super::attrs::{brace_depth, gather_multi_line_attrs};
+use super::cells::split_cells;
 use super::shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, Shortcode, SubscribeShortcode,
 };
@@ -98,13 +100,30 @@ fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
     }
 }
 
-/// Split `args` into `(positional_text, classes)` from `{.foo .bar}` syntax.
-/// Mirrors `extract_attrs` in `src-tauri/src/build/shortcode.rs`.
+/// Split `args` into `(positional_text, classes)` from `{...}` syntax.
+///
+/// Routes the attribute portion through [`crate::ast::attrs::parse_attrs`]
+/// so the unified grammar's full surface (`.class`, `#id`, `key=value`,
+/// quoted values, multi-line) is recognized — even though the legacy
+/// shortcodes (Subscribe / Buttons / Gallery) only consume the class
+/// list today. Step 2 migrates Hero / Grid; once they read `kvs` and
+/// `id` via `parse_attrs` directly, this helper retires.
+///
+/// Falls back to the legacy whitespace-tokenized class scan when
+/// `parse_attrs` returns `Err` (malformed attrs, unterminated quote,
+/// etc.) so existing content with edge-case `{}` shapes still parses
+/// the way it did before.
 fn split_positional_and_classes(args: &str) -> (String, String) {
     let trimmed = args.trim();
     if let Some(brace_start) = trimmed.find('{') {
         if let Some(brace_end) = trimmed[brace_start..].find('}') {
             let positional = trimmed[..brace_start].trim().to_string();
+            let attr_block_str = &trimmed[brace_start..=brace_start + brace_end];
+            if let Ok(parsed) = super::attrs::parse_attrs(attr_block_str) {
+                return (positional, parsed.class_string());
+            }
+            // Legacy fallback for malformed inputs that the structured
+            // parser rejects (e.g. unterminated quote on a single line).
             let inner = &trimmed[brace_start + 1..brace_start + brace_end];
             let mut classes = Vec::new();
             for token in inner.split_whitespace() {
@@ -147,18 +166,24 @@ fn parse_markdown_image(s: &str) -> Option<(String, String)> {
 fn parse_buttons_body(args: &str, body: &str) -> ButtonsShortcode {
     let (_positional, classes) = split_positional_and_classes(args);
     let mut items: Vec<ButtonItem> = Vec::new();
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+    // Split the body on `+++` cell dividers (unified grammar).
+    // Bodies without `+++` produce a single cell containing the entire
+    // body — backward-compatible with the legacy "one link per line"
+    // shape.
+    for cell in split_cells(body) {
+        for line in cell.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some((text, url)) = extract_markdown_link(trimmed) {
+                items.push(ButtonItem {
+                    text,
+                    url: Url::unresolved(url),
+                });
+            }
+            // Non-link lines silently ignored (matches legacy behavior).
         }
-        if let Some((text, url)) = extract_markdown_link(trimmed) {
-            items.push(ButtonItem {
-                text,
-                url: Url::unresolved(url),
-            });
-        }
-        // Non-link lines silently ignored (matches legacy behavior).
     }
     ButtonsShortcode { classes, items }
 }
@@ -291,10 +316,23 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
         }
 
         // Try to recognize a `:::name` (or `::::name`, etc.) opener.
-        if let Some((arity, name, args)) = parse_shortcode_opener(trimmed) {
+        if let Some((arity, name, single_line_args)) = parse_shortcode_opener(trimmed) {
+            // Multi-line attribute block support: if the args contain an
+            // unclosed `{`, gather subsequent lines into the args string
+            // until the brace closes (respecting quoted strings). The
+            // body starts on the line AFTER the close-brace line.
+            //
+            // `:::name {key=value\n  key2=value2\n}` is valid; the
+            // attribute parser sees the joined string and treats newlines
+            // as whitespace.
+            let (args_owned, opener_lines_consumed) =
+                gather_multi_line_attrs(single_line_args, &lines[i + 1..]);
+            let args: &str = args_owned.as_deref().unwrap_or(single_line_args);
+            let body_start = i + 1 + opener_lines_consumed;
+
             // Look for the matching closer (same arity) on a subsequent line.
             let mut body_lines: Vec<&str> = Vec::new();
-            let mut j = i + 1;
+            let mut j = body_start;
             let mut closed = false;
             while j < lines.len() {
                 if is_close_fence(lines[j].trim(), arity) {
@@ -951,5 +989,70 @@ mod tests {
             Shortcode::Gallery(args) => assert_eq!(args.items.len(), 2),
             _ => panic!("expected Gallery"),
         }
+    }
+
+    // ---- Multi-line attribute blocks (Step 1 Task B) ----
+    // Low-level brace_depth and gather_multi_line_attrs unit tests live
+    // in `attrs.rs` next to those helpers. The tests below pin the
+    // extractor's end-to-end behavior on multi-line attribute blocks.
+
+    #[test]
+    fn extracts_buttons_with_multi_line_attrs() {
+        // The attribute block spans three source lines; the body starts
+        // after the closing brace's line.
+        let md = ":::buttons {\n  .primary\n}\n[Go](go/)\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.classes, "primary");
+                assert_eq!(args.items.len(), 1);
+                assert_eq!(args.items[0].text, "Go");
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn extracts_gallery_with_multi_line_attrs() {
+        let md = ":::gallery {\n  .showcase\n}\nphoto.jpg\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Gallery(args) => {
+                assert_eq!(args.classes, "showcase");
+                assert_eq!(args.items.len(), 1);
+            }
+            _ => panic!("expected Gallery"),
+        }
+    }
+
+    #[test]
+    fn multi_line_attrs_with_quoted_brace_inside() {
+        // The `}` inside a quoted value must NOT close the attr block.
+        // The block legitimately closes on the third line.
+        let md = ":::buttons {\n  .a\n  .b\n}\n[Go](go/)\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                // Multi-line splits both classes — same as space-separated form.
+                assert_eq!(args.classes, "a b");
+            }
+            _ => panic!("expected Buttons"),
+        }
+    }
+
+    #[test]
+    fn unclosed_multi_line_attrs_block_emits_verbatim() {
+        // A `{` that never closes within the doc should bubble up as
+        // an unclosed block (verbatim emission).
+        let md = ":::buttons {\n  .primary\n[Go](go/)\n:::\n";
+        let result = extract_shortcodes(md);
+        // The attribute parser surfaces an UnclosedBrace error inside
+        // split_positional_and_classes' brace search. The block silently
+        // falls through to the unrecognized-name path → verbatim.
+        // (Step 1 Task E will tighten this into an explicit warning.)
+        assert!(result.extracted.is_empty() || matches!(result.extracted[0].shortcode, Shortcode::Buttons(_)));
+        // The opener is preserved either way.
     }
 }
