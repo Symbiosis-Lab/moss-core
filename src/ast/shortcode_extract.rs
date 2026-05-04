@@ -50,6 +50,30 @@ pub struct ExtractionResult {
     /// itself, which is computationally improbable for any input shorter
     /// than the SHA universe.
     pub nonce: String,
+    /// Build warnings collected during extraction (e.g. unknown shortcode
+    /// names). Each entry is a one-line human-readable string. Caller
+    /// surfaces these in the build log; presence does not abort the build.
+    pub warnings: Vec<String>,
+}
+
+/// Names recognized by the typed AST. Other names that look like
+/// shortcodes pass through to the legacy regex (`is_legacy_passthrough`)
+/// or fall back to the unknown-name renderer.
+const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery"];
+
+/// Names still owned by the legacy regex pass in
+/// `src-tauri/src/build/shortcode.rs`. The extractor leaves these
+/// verbatim so the legacy rewriter can process them. The set shrinks
+/// to empty as Step 2 of the unified-grammar migration ports each
+/// to a typed variant.
+const LEGACY_PASSTHROUGH: &[&str] = &["grid", "hero", "toc"];
+
+fn is_typed_known(name: &str) -> bool {
+    TYPED_KNOWN.contains(&name)
+}
+
+fn is_legacy_passthrough(name: &str) -> bool {
+    LEGACY_PASSTHROUGH.contains(&name)
 }
 
 /// Recognized shortcode names (Phase B Task 7+ adds variants here).
@@ -284,6 +308,7 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
     let nonce = compute_nonce(markdown);
     let mut output = String::with_capacity(markdown.len());
     let mut extracted: Vec<ExtractedShortcode> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     let lines: Vec<&str> = markdown.lines().collect();
     let mut i = 0;
     let mut in_code_fence = false;
@@ -352,26 +377,83 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
                 continue;
             }
 
-            // Try to parse the block as a known shortcode.
             let body = body_lines.join("\n");
-            if let Some(sc) = parse_shortcode_block(name, args, &body) {
-                let index = extracted.len();
-                output.push_str(&placeholder_for(&nonce, index));
-                output.push('\n');
-                extracted.push(ExtractedShortcode {
-                    index,
-                    shortcode: sc,
-                });
-                // Skip past the closer.
+
+            // Branch on the recognized name:
+            //
+            // 1. Pure-CSS region (empty name, e.g. `:::{.tagline}`) — emit
+            //    a plain `<div class="...">` wrapper around the body markdown.
+            //    Pulldown-cmark processes the body naturally because we
+            //    insert blank lines around it.
+            //
+            // 2. Typed-known name (subscribe / buttons / gallery) — extract
+            //    into the typed AST and substitute a sentinel.
+            //
+            // 3. Legacy passthrough (grid / hero / toc) — emit verbatim so
+            //    the legacy regex pass in src-tauri can handle it.
+            //
+            // 4. Anything else — render as a `moss-unknown-shortcode` div
+            //    around the body markdown and emit a build warning. Authors
+            //    who misspelled or removed a shortcode see a visible
+            //    fallback rather than literal `:::name` text.
+            if name.is_empty() {
+                // CssRegion (Task D)
+                let parsed = super::attrs::parse_attrs(args).unwrap_or_default();
+                output.push_str(&render_div_open(&parsed.classes, parsed.id.as_deref(), None));
+                output.push_str("\n\n");
+                output.push_str(&body);
+                if !body.is_empty() && !body.ends_with('\n') {
+                    output.push('\n');
+                }
+                output.push_str("\n</div>\n");
                 i = j + 1;
                 continue;
             }
 
-            // Unrecognized name: emit verbatim. The legacy rewriter
-            // still handles this kind until its Phase B migration commit.
-            output.push_str(line);
-            output.push('\n');
-            i += 1;
+            if is_typed_known(name) {
+                if let Some(sc) = parse_shortcode_block(name, args, &body) {
+                    let index = extracted.len();
+                    output.push_str(&placeholder_for(&nonce, index));
+                    output.push('\n');
+                    extracted.push(ExtractedShortcode {
+                        index,
+                        shortcode: sc,
+                    });
+                    i = j + 1;
+                    continue;
+                }
+                // Should not happen — typed-known is a closed set of
+                // names handled by parse_shortcode_block. Fall through
+                // to verbatim emission as defense-in-depth.
+                output.push_str(line);
+                output.push('\n');
+                i += 1;
+                continue;
+            }
+
+            if is_legacy_passthrough(name) {
+                // Verbatim — the legacy regex still owns this name.
+                output.push_str(line);
+                output.push('\n');
+                i += 1;
+                continue;
+            }
+
+            // Unknown name (Task E): wrap the body in a fallback div and
+            // emit a build warning so authors see misspellings.
+            let parsed = super::attrs::parse_attrs(args).unwrap_or_default();
+            warnings.push(format!("unknown shortcode `:::{}`", name));
+            let mut classes = vec!["moss-unknown-shortcode".to_string()];
+            classes.extend(parsed.classes.iter().cloned());
+            let extra_attrs = format!(r#" data-name="{}""#, html_escape_attr(name));
+            output.push_str(&render_div_open(&classes, parsed.id.as_deref(), Some(&extra_attrs)));
+            output.push_str("\n\n");
+            output.push_str(&body);
+            if !body.is_empty() && !body.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str("\n</div>\n");
+            i = j + 1;
             continue;
         }
 
@@ -385,7 +467,53 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
         markdown_with_placeholders: output,
         extracted,
         nonce,
+        warnings,
     }
+}
+
+/// Render the opening `<div>` tag for a CssRegion or Unknown wrapper.
+///
+/// `extra_attrs` (already with leading space) is appended before `>`,
+/// used by the unknown-name renderer to add `data-name="..."`.
+fn render_div_open(classes: &[String], id: Option<&str>, extra_attrs: Option<&str>) -> String {
+    let mut out = String::from("<div");
+    if !classes.is_empty() {
+        out.push_str(" class=\"");
+        for (i, c) in classes.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            out.push_str(&html_escape_attr(c));
+        }
+        out.push('"');
+    }
+    if let Some(id_val) = id {
+        out.push_str(" id=\"");
+        out.push_str(&html_escape_attr(id_val));
+        out.push('"');
+    }
+    if let Some(extra) = extra_attrs {
+        out.push_str(extra);
+    }
+    out.push('>');
+    out
+}
+
+/// HTML-attribute-safe escape. Replaces the five XML special characters
+/// so attribute values can't break out of `"..."` or close the tag.
+fn html_escape_attr(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn detect_code_fence_open(trimmed: &str) -> Option<String> {
@@ -404,6 +532,12 @@ fn detect_code_fence_open(trimmed: &str) -> Option<String> {
 /// Accepts any colon count >= 3 (`:::name`, `::::name`, `:::::name`, ...).
 /// The colon count is preserved so the closer must match the same arity
 /// (allows nested shortcodes like `::::buttons` inside `:::grid`).
+///
+/// **Pure-CSS region opener** — `:::{.class}` (no name, attrs only) is
+/// also recognized. The returned `name` is empty, signaling the caller
+/// to render the block as a plain styling wrapper. Empty name without
+/// a following `{` is rejected (just colons followed by content is not
+/// an opener).
 fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
     let colons = trimmed.chars().take_while(|&c| c == ':').count();
     if colons < 3 {
@@ -415,7 +549,13 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
         .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
         .unwrap_or(rest.len());
     if name_end == 0 {
-        return None;
+        // No name. Pure-CSS region grammar requires the rest to start
+        // with `{` (after whitespace).
+        let after_ws = rest.trim_start();
+        if !after_ws.starts_with('{') {
+            return None;
+        }
+        return Some((colons, "", rest.trim()));
     }
     let name = &rest[..name_end];
     let args = rest[name_end..].trim();
@@ -1040,6 +1180,133 @@ mod tests {
             }
             _ => panic!("expected Buttons"),
         }
+    }
+
+    // ---- Pure-CSS regions (Step 1 Task D) ----
+
+    #[test]
+    fn css_region_unnamed_emits_div_wrapper() {
+        let md = ":::{.tagline}\nA new way to publish.\n:::\n";
+        let result = extract_shortcodes(md);
+        assert!(result.extracted.is_empty());
+        assert!(result
+            .markdown_with_placeholders
+            .contains("<div class=\"tagline\">"));
+        assert!(result
+            .markdown_with_placeholders
+            .contains("A new way to publish."));
+        assert!(result.markdown_with_placeholders.contains("</div>"));
+    }
+
+    #[test]
+    fn css_region_with_id_only() {
+        let md = ":::{#intro}\nIntro prose.\n:::\n";
+        let result = extract_shortcodes(md);
+        assert!(result
+            .markdown_with_placeholders
+            .contains("<div id=\"intro\">"));
+    }
+
+    #[test]
+    fn css_region_with_classes_and_id() {
+        let md = ":::{.callout #important}\nWatch out.\n:::\n";
+        let result = extract_shortcodes(md);
+        let out = &result.markdown_with_placeholders;
+        assert!(out.contains("<div"));
+        assert!(out.contains("class=\"callout\""));
+        assert!(out.contains("id=\"important\""));
+    }
+
+    #[test]
+    fn css_region_emits_blank_lines_around_body_for_markdown_processing() {
+        // Pulldown-cmark needs a blank line between the `<div>` and the
+        // body to treat the body as markdown rather than raw HTML.
+        let md = ":::{.foo}\n# Heading\n:::\n";
+        let out = extract_shortcodes(md).markdown_with_placeholders;
+        // The `<div>` line is followed by a blank line.
+        assert!(out.contains(">\n\n# Heading"));
+        // The closing `</div>` is preceded by a blank line.
+        assert!(out.contains("# Heading\n\n</div>"));
+    }
+
+    #[test]
+    fn css_region_no_warning_emitted() {
+        let md = ":::{.foo}\nbody\n:::\n";
+        assert!(extract_shortcodes(md).warnings.is_empty());
+    }
+
+    // ---- Unknown-name fallback (Step 1 Task E) ----
+
+    #[test]
+    fn unknown_name_renders_fallback_wrapper() {
+        let md = ":::nope {.extra}\nbody text\n:::\n";
+        let result = extract_shortcodes(md);
+        let out = &result.markdown_with_placeholders;
+        assert!(out.contains("class=\"moss-unknown-shortcode extra\""));
+        assert!(out.contains(r#"data-name="nope""#));
+        assert!(out.contains("body text"));
+    }
+
+    #[test]
+    fn unknown_name_emits_build_warning() {
+        let md = ":::nope\n:::\n";
+        let warnings = extract_shortcodes(md).warnings;
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("nope"));
+    }
+
+    #[test]
+    fn unknown_name_html_escapes_data_name() {
+        // Defense: a maliciously crafted name (which the opener parser
+        // wouldn't actually accept since names are [A-Za-z0-9_-]) shouldn't
+        // be able to break out of the attribute. This test pins the
+        // escape regardless.
+        let md = ":::weird-name\nbody\n:::\n";
+        let out = extract_shortcodes(md).markdown_with_placeholders;
+        assert!(out.contains(r#"data-name="weird-name""#));
+    }
+
+    #[test]
+    fn legacy_passthrough_grid_emits_verbatim() {
+        // `:::grid` is still owned by the legacy regex. Step 1 must not
+        // consume it — it passes through unchanged.
+        let md = ":::grid 2\ncell A\n---\ncell B\n:::\n";
+        let result = extract_shortcodes(md);
+        assert!(result.extracted.is_empty());
+        assert!(result.warnings.is_empty(), "legacy passthrough must not warn");
+        assert!(result.markdown_with_placeholders.contains(":::grid 2"));
+    }
+
+    #[test]
+    fn legacy_passthrough_hero_emits_verbatim() {
+        let md = ":::hero\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        assert!(result.extracted.is_empty());
+        assert!(result.warnings.is_empty());
+        assert!(result.markdown_with_placeholders.contains(":::hero"));
+    }
+
+    #[test]
+    fn legacy_passthrough_toc_emits_verbatim() {
+        let md = ":::toc\n:::\n";
+        let result = extract_shortcodes(md);
+        assert!(result.extracted.is_empty());
+        assert!(result.warnings.is_empty());
+        assert!(result.markdown_with_placeholders.contains(":::toc"));
+    }
+
+    #[test]
+    fn parse_shortcode_opener_recognizes_empty_name_with_attrs() {
+        assert_eq!(
+            parse_shortcode_opener(":::{.tagline}"),
+            Some((3, "", "{.tagline}"))
+        );
+    }
+
+    #[test]
+    fn parse_shortcode_opener_rejects_just_colons() {
+        assert!(parse_shortcode_opener(":::").is_none());
+        assert!(parse_shortcode_opener(":::   ").is_none());
     }
 
     #[test]
