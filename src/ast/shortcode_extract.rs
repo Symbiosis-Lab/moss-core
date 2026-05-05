@@ -599,9 +599,30 @@ fn compute_nonce(input: &str) -> String {
 /// processes them during the staged migration).
 pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
     let nonce = compute_nonce(markdown);
-    let mut output = String::with_capacity(markdown.len());
     let mut extracted: Vec<ExtractedShortcode> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let output = extract_with_state(markdown, &nonce, &mut extracted, &mut warnings);
+    ExtractionResult {
+        markdown_with_placeholders: output,
+        extracted,
+        nonce,
+        warnings,
+    }
+}
+
+/// Recursive worker for [`extract_shortcodes`]. Walks `markdown`
+/// line-by-line and returns the body string with sentinels substituted
+/// for typed shortcode blocks. Inner CssRegion / Unknown blocks recurse
+/// here so their bodies also get scanned for typed shortcodes — the
+/// shared `extracted` and `warnings` accumulators ensure all sentinels
+/// across nesting levels share the same nonce and a flat index space.
+fn extract_with_state(
+    markdown: &str,
+    nonce: &str,
+    extracted: &mut Vec<ExtractedShortcode>,
+    warnings: &mut Vec<String>,
+) -> String {
+    let mut output = String::with_capacity(markdown.len());
     let lines: Vec<&str> = markdown.lines().collect();
     let mut i = 0;
     let mut in_code_fence = false;
@@ -688,12 +709,19 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
             // 3. Anything else — render as a `moss-unknown-shortcode` div
             //    around the body markdown and emit a build warning.
             if name.is_empty() {
-                // CssRegion (Task D)
+                // CssRegion (Task D). Recurse into the body so typed
+                // shortcodes nested inside the styling wrapper (the
+                // common SoCiviC pattern of `:::{.support-band}` around
+                // `::::buttons`) also get extracted into sentinels.
+                // Higher-arity inner blocks survive because the outer
+                // closer-search only matches the outer's exact arity;
+                // the recursive call then handles the inner.
                 let parsed = super::attrs::parse_attrs(args).unwrap_or_default();
+                let body_processed = extract_with_state(&body, nonce, extracted, warnings);
                 output.push_str(&render_div_open(&parsed.classes, parsed.id.as_deref(), None));
                 output.push_str("\n\n");
-                output.push_str(&body);
-                if !body.is_empty() && !body.ends_with('\n') {
+                output.push_str(&body_processed);
+                if !body_processed.is_empty() && !body_processed.ends_with('\n') {
                     output.push('\n');
                 }
                 output.push_str("\n</div>\n");
@@ -724,16 +752,19 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
             }
 
             // Unknown name (Task E): wrap the body in a fallback div and
-            // emit a build warning so authors see misspellings.
+            // emit a build warning so authors see misspellings. Recurse
+            // into the body so a misspelled outer doesn't strand any
+            // valid typed shortcodes nested inside it.
             let parsed = super::attrs::parse_attrs(args).unwrap_or_default();
             warnings.push(format!("unknown shortcode `:::{}`", name));
             let mut classes = vec!["moss-unknown-shortcode".to_string()];
             classes.extend(parsed.classes.iter().cloned());
             let extra_attrs = format!(r#" data-name="{}""#, html_escape_attr(name));
+            let body_processed = extract_with_state(&body, nonce, extracted, warnings);
             output.push_str(&render_div_open(&classes, parsed.id.as_deref(), Some(&extra_attrs)));
             output.push_str("\n\n");
-            output.push_str(&body);
-            if !body.is_empty() && !body.ends_with('\n') {
+            output.push_str(&body_processed);
+            if !body_processed.is_empty() && !body_processed.ends_with('\n') {
                 output.push('\n');
             }
             output.push_str("\n</div>\n");
@@ -747,12 +778,7 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
         i += 1;
     }
 
-    ExtractionResult {
-        markdown_with_placeholders: output,
-        extracted,
-        nonce,
-        warnings,
-    }
+    output
 }
 
 /// Render the opening `<div>` tag for a CssRegion or Unknown wrapper.
@@ -1947,23 +1973,18 @@ mod tests {
     }
 
     #[test]
-    fn nested_css_region_higher_arity_outer_wraps_inner_as_text() {
-        // `::::{.outer}` (arity 4) survives past the inner `:::` close.
-        // Step 1 is non-recursive: the inner `:::{.inner}` is not
-        // re-extracted — it's emitted as literal markdown text inside
-        // the outer's body div. Pulldown-cmark renders the literal text
-        // as plain content.
-        //
-        // Step 2 may add recursive extraction; this test pins the
-        // current behavior so a future change is visible.
+    fn nested_css_region_higher_arity_outer_recurses_into_inner() {
+        // `::::{.outer}` (arity 4) survives past the inner `:::{.inner}`
+        // close. The extractor recurses into the outer's body, so the
+        // inner CssRegion gets its own `<div class="inner">` wrapper.
+        // Both wrappers are present in the rendered output.
         let md = "::::{.outer}\n:::{.inner}\nbody\n:::\n::::\n";
         let result = extract_shortcodes(md);
         let out = &result.markdown_with_placeholders;
-        // Outer wrapper opens.
-        assert!(out.contains("<div class=\"outer\">"));
-        // Inner is NOT extracted — its source text is preserved verbatim
-        // inside the outer body.
-        assert!(out.contains(":::{.inner}"));
+        assert!(out.contains("<div class=\"outer\""));
+        assert!(out.contains("<div class=\"inner\""));
+        // No literal `:::{.inner}` should leak into the body.
+        assert!(!out.contains(":::{.inner}"));
     }
 
     #[test]
@@ -1981,23 +2002,91 @@ mod tests {
     }
 
     #[test]
-    fn higher_arity_wrapper_keeps_typed_subscribe_as_text() {
-        // `::::{.wrapper}` (arity 4) keeps the subscribe block intact in
-        // its body — but Step 1 doesn't recurse, so the subscribe is
-        // still NOT extracted (it lives in the body markdown verbatim).
-        // Pulldown-cmark renders the literal `:::subscribe` text.
-        //
-        // For Step 2 to support typed-shortcodes-inside-CssRegion, the
-        // extractor needs a recursive pass; that's tracked as a Step 2
-        // follow-up.
+    fn higher_arity_wrapper_recursively_extracts_typed_subscribe() {
+        // `::::{.wrapper}` (arity 4) keeps the inner `:::subscribe`
+        // intact in its body, and the extractor recurses into the body
+        // so subscribe is parsed into a typed Shortcode and replaced
+        // with a sentinel. Body markdown contains the sentinel, not the
+        // literal source.
         let md = "::::{.wrapper}\n:::subscribe\n:::\n::::\n";
         let result = extract_shortcodes(md);
-        // Outer wrapper opens.
         assert!(result.markdown_with_placeholders.contains("<div class=\"wrapper\""));
-        // Subscribe is NOT extracted (no recursion in Step 1).
-        assert!(result.extracted.is_empty());
-        // The literal subscribe text passes through into the body.
-        assert!(result.markdown_with_placeholders.contains(":::subscribe"));
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Subscribe(_) => {}
+            _ => panic!("expected Subscribe"),
+        }
+        // Source `:::subscribe` is replaced by a sentinel — must not
+        // leak into the rendered body.
+        assert!(!result.markdown_with_placeholders.contains(":::subscribe"));
+    }
+
+    #[test]
+    fn lower_arity_outer_wraps_higher_arity_typed_inner() {
+        // SoCiviC pattern: `:::{.support-band}` (arity 3) wraps
+        // `::::buttons` (arity 4). The outer arity-3 closer at the end
+        // closes the outer, so the inner arity-4 buttons block lives
+        // intact inside the outer's body. Recursive extraction picks
+        // it up and emits a sentinel.
+        let md = ":::{.support-band}\n## Title\n\n::::buttons {.inverted}\n[Support Us](/support)\n::::\n*footnote*\n:::\n";
+        let result = extract_shortcodes(md);
+        let out = &result.markdown_with_placeholders;
+        // Outer CssRegion wrapper.
+        assert!(out.contains("<div class=\"support-band\""));
+        // Inner buttons extracted as typed Shortcode.
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(args) => {
+                assert_eq!(args.items.len(), 1);
+            }
+            _ => panic!("expected Buttons"),
+        }
+        // No literal `::::buttons` text should leak through.
+        assert!(!out.contains("::::buttons"));
+        assert!(!out.contains("::::"));
+    }
+
+    #[test]
+    fn lower_arity_outer_wraps_grid_with_buttons_in_cell() {
+        // SoCiviC index pattern: 3-colon `:::{.hero-split}` outer,
+        // 4-colon `::::grid 2 {.no-cards}` middle, 5-colon
+        // `:::::buttons {.inverted}` innermost. The middle grid block
+        // is the recursive-extraction target — its body in turn
+        // contains the buttons block, but buttons-inside-grid-cells is
+        // resolved by the grid renderer, not the extractor.
+        let md = "::: {.hero-split}\n::::grid 2 {.no-cards}\nleft\n+++\nright\n::::\n:::\n";
+        let result = extract_shortcodes(md);
+        let out = &result.markdown_with_placeholders;
+        // Outer hero-split CssRegion wrapper.
+        assert!(out.contains("<div class=\"hero-split\""));
+        // Inner grid extracted as typed Grid.
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Grid(_) => {}
+            _ => panic!("expected Grid"),
+        }
+        // No literal `::::grid` text should leak through.
+        assert!(!out.contains("::::grid"));
+    }
+
+    #[test]
+    fn unknown_name_body_recursively_extracts_typed_inner() {
+        // Unknown-name fallback (e.g. typo'd `:::buttosn`) wraps in a
+        // moss-unknown-shortcode div. If the body contains a higher-
+        // arity typed block (e.g. nested `::::buttons`), recursion
+        // picks it up so authors can debug their typo without losing
+        // valid inner content.
+        let md = ":::buttosn\n::::buttons\n[a](u)\n::::\n:::\n";
+        let result = extract_shortcodes(md);
+        let out = &result.markdown_with_placeholders;
+        // Unknown wrapper.
+        assert!(out.contains("data-name=\"buttosn\""));
+        // Inner buttons extracted.
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Buttons(_) => {}
+            _ => panic!("expected Buttons"),
+        }
     }
 
     #[test]
