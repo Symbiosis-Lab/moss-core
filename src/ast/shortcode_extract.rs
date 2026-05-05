@@ -70,14 +70,41 @@ fn is_typed_known(name: &str) -> bool {
 ///
 /// `args` is the trailing text after `:::name ` on the opening line
 /// (e.g. for `:::buttons {.primary}`, args is `{.primary}`).
-fn parse_shortcode_block(name: &str, args: &str, body: &str) -> Option<Shortcode> {
+///
+/// Returns `(Some(Shortcode), Vec<String>)` where the second element is
+/// parse-time deprecation warnings. An empty warning vec means the block
+/// used only current-grammar syntax.
+fn parse_shortcode_block(name: &str, args: &str, body: &str) -> (Option<Shortcode>, Vec<String>) {
     match name {
-        "subscribe" => Some(Shortcode::Subscribe(parse_subscribe_args(args))),
-        "buttons" => Some(Shortcode::Buttons(parse_buttons_body(args, body))),
-        "gallery" => Some(Shortcode::Gallery(parse_gallery_body(args, body))),
-        "hero" => Some(Shortcode::Hero(parse_hero(args, body))),
-        "grid" => Some(Shortcode::Grid(parse_grid(args, body))),
-        _ => None,
+        "subscribe" => (Some(Shortcode::Subscribe(parse_subscribe_args(args))), vec![]),
+        "buttons" => (Some(Shortcode::Buttons(parse_buttons_body(args, body))), vec![]),
+        "gallery" => (Some(Shortcode::Gallery(parse_gallery_body(args, body))), vec![]),
+        "hero" => {
+            let (sc, used_p3) = parse_hero(args, body);
+            let mut warns = vec![];
+            if used_p3 {
+                warns.push(
+                    "shortcode `:::hero` uses a body-image fallback (deprecated Priority 3). \
+                     Move the image path to the `image=` attribute: \
+                     `:::hero {image=path.jpg}`."
+                        .to_string(),
+                );
+            }
+            (Some(Shortcode::Hero(sc)), warns)
+        }
+        "grid" => {
+            let (sc, legacy) = parse_grid(args, body);
+            let mut warns = vec![];
+            if legacy {
+                warns.push(
+                    "shortcode `:::grid` uses `---` cell dividers (deprecated). Migrate to `+++`.\n\
+                     `---` support will be removed in a future release."
+                        .to_string(),
+                );
+            }
+            (Some(Shortcode::Grid(sc)), warns)
+        }
+        _ => (None, vec![]),
     }
 }
 
@@ -94,7 +121,10 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> Option<Shortcode
 /// `---` (legacy moss-releases). Step 3 of #613 rewrites `---` to `+++`
 /// in moss-releases content; the parser accepts both during the
 /// migration window.
-fn parse_grid(args: &str, body: &str) -> GridShortcode {
+///
+/// Returns `(GridShortcode, bool)` where the bool is `true` when any
+/// `---` legacy divider was encountered (triggers a deprecation warning).
+fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
     let trimmed = args.trim();
     let (positional, attr_block) = match trimmed.find('{') {
         Some(pos) => (trimmed[..pos].trim(), &trimmed[pos..]),
@@ -136,14 +166,17 @@ fn parse_grid(args: &str, body: &str) -> GridShortcode {
         }
     }
 
-    let cells = split_grid_cells(body);
+    let (cells, found_legacy_dash) = split_grid_cells(body);
 
-    GridShortcode {
-        columns,
-        ratio,
-        classes,
-        cells,
-    }
+    (
+        GridShortcode {
+            columns,
+            ratio,
+            classes,
+            cells,
+        },
+        found_legacy_dash,
+    )
 }
 
 /// Split a grid body into cells on lines containing only `+++` (new
@@ -152,18 +185,26 @@ fn parse_grid(args: &str, body: &str) -> GridShortcode {
 /// Mirrors [`super::cells::split_cells`] but accepts either divider.
 /// Step 3 of #613 rewrites `---` to `+++` in moss-releases content;
 /// after that, this helper retires in favor of `split_cells`.
-fn split_grid_cells(body: &str) -> Vec<String> {
+///
+/// Returns `(cells, found_legacy_dash)` where `found_legacy_dash` is
+/// `true` when at least one `---` divider was encountered, signaling
+/// the caller to emit a deprecation warning.
+fn split_grid_cells(body: &str) -> (Vec<String>, bool) {
     if body.is_empty() {
-        return vec![String::new()];
+        return (vec![String::new()], false);
     }
     let mut cells = Vec::new();
     let mut current = String::new();
     let mut first_line_in_cell = true;
+    let mut found_legacy_dash = false;
 
     for line in body.split_inclusive('\n') {
         let content_no_eol = line.strip_suffix('\n').unwrap_or(line);
         let trimmed = content_no_eol.trim();
         if trimmed == "+++" || trimmed == "---" {
+            if trimmed == "---" {
+                found_legacy_dash = true;
+            }
             if let Some(stripped) = current.strip_suffix('\n') {
                 current.truncate(stripped.len());
             }
@@ -183,7 +224,7 @@ fn split_grid_cells(body: &str) -> Vec<String> {
         current.truncate(stripped.len());
     }
     cells.push(current);
-    cells
+    (cells, found_legacy_dash)
 }
 
 /// Parse a `:::hero` block in any of three syntactic forms.
@@ -199,7 +240,11 @@ fn split_grid_cells(body: &str) -> Vec<String> {
 ///    bare media filename). Step 3 of the grammar migration rewrites
 ///    these to use the `image=` attribute.
 /// 4. None — renderer emits a `<section>` with no `<img>`.
-fn parse_hero(args: &str, body: &str) -> HeroShortcode {
+///
+/// Returns `(HeroShortcode, bool)` where the bool is `true` when the
+/// body-image fallback (Priority 3) fired, signaling the caller to
+/// emit a deprecation warning.
+fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
     let trimmed_args = args.trim();
 
     // Split args on the first `{` to separate the directive-line path
@@ -220,16 +265,19 @@ fn parse_hero(args: &str, body: &str) -> HeroShortcode {
     // Priority 1: `image=` attribute.
     if let Some(image_value) = parsed.get("image") {
         let (path, attrs_str) = crate::media::split_pipe(image_value);
-        return HeroShortcode {
-            image: if path.trim().is_empty() {
-                None
-            } else {
-                Some(Url::unresolved(path.trim().to_string()))
+        return (
+            HeroShortcode {
+                image: if path.trim().is_empty() {
+                    None
+                } else {
+                    Some(Url::unresolved(path.trim().to_string()))
+                },
+                attrs: attrs_str.to_string(),
+                classes,
+                overlay_markdown: body.trim().to_string(),
             },
-            attrs: attrs_str.to_string(),
-            classes,
-            overlay_markdown: body.trim().to_string(),
-        };
+            false,
+        );
     }
 
     // Priority 2: directive-line path (legacy syntax). When the
@@ -237,16 +285,19 @@ fn parse_hero(args: &str, body: &str) -> HeroShortcode {
     // optional `|attrs` pipe suffix. Body becomes pure overlay markdown.
     if !positional.is_empty() {
         let (path, attrs_str) = crate::media::split_pipe(positional);
-        return HeroShortcode {
-            image: if path.trim().is_empty() {
-                None
-            } else {
-                Some(Url::unresolved(path.trim().to_string()))
+        return (
+            HeroShortcode {
+                image: if path.trim().is_empty() {
+                    None
+                } else {
+                    Some(Url::unresolved(path.trim().to_string()))
+                },
+                attrs: attrs_str.to_string(),
+                classes,
+                overlay_markdown: body.trim().to_string(),
             },
-            attrs: attrs_str.to_string(),
-            classes,
-            overlay_markdown: body.trim().to_string(),
-        };
+            false,
+        );
     }
 
     // Priority 3: body-image fallback. Scan first non-empty line.
@@ -254,12 +305,14 @@ fn parse_hero(args: &str, body: &str) -> HeroShortcode {
     let mut image_path: Option<String> = None;
     let mut image_attrs = String::new();
     let mut found_image = false;
+    let mut used_priority_3 = false;
     for line in body.lines() {
         if !found_image && !line.trim().is_empty() {
             if let Some((path, attrs_str)) = parse_hero_media_line(line) {
                 image_path = Some(path);
                 image_attrs = attrs_str;
                 found_image = true;
+                used_priority_3 = true;
                 continue;
             }
             // First non-empty line wasn't a media reference — keep it as overlay.
@@ -267,12 +320,15 @@ fn parse_hero(args: &str, body: &str) -> HeroShortcode {
         }
         overlay_lines.push(line);
     }
-    HeroShortcode {
-        image: image_path.map(Url::unresolved),
-        attrs: image_attrs,
-        classes,
-        overlay_markdown: overlay_lines.join("\n").trim().to_string(),
-    }
+    (
+        HeroShortcode {
+            image: image_path.map(Url::unresolved),
+            attrs: image_attrs,
+            classes,
+            overlay_markdown: overlay_lines.join("\n").trim().to_string(),
+        },
+        used_priority_3,
+    )
 }
 
 /// File extensions recognized as media for hero body-image fallback.
@@ -623,16 +679,14 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
             //    Pulldown-cmark processes the body naturally because we
             //    insert blank lines around it.
             //
-            // 2. Typed-known name (subscribe / buttons / gallery) — extract
-            //    into the typed AST and substitute a sentinel.
+            // 2. Typed-known name (subscribe / buttons / gallery / hero / grid)
+            //    — extract into the typed AST and substitute a sentinel.
+            //    Parse-time deprecation warnings (e.g. legacy `---` dividers
+            //    in grid, body-image fallback in hero) are threaded back via
+            //    the warnings vector.
             //
-            // 3. Legacy passthrough (grid / hero / toc) — emit verbatim so
-            //    the legacy regex pass in src-tauri can handle it.
-            //
-            // 4. Anything else — render as a `moss-unknown-shortcode` div
-            //    around the body markdown and emit a build warning. Authors
-            //    who misspelled or removed a shortcode see a visible
-            //    fallback rather than literal `:::name` text.
+            // 3. Anything else — render as a `moss-unknown-shortcode` div
+            //    around the body markdown and emit a build warning.
             if name.is_empty() {
                 // CssRegion (Task D)
                 let parsed = super::attrs::parse_attrs(args).unwrap_or_default();
@@ -648,7 +702,8 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
             }
 
             if is_typed_known(name) {
-                if let Some(sc) = parse_shortcode_block(name, args, &body) {
+                if let (Some(sc), parse_warnings) = parse_shortcode_block(name, args, &body) {
+                    warnings.extend(parse_warnings);
                     let index = extracted.len();
                     output.push_str(&placeholder_for(&nonce, index));
                     output.push('\n');
@@ -1987,5 +2042,39 @@ mod tests {
         // (Step 1 Task E will tighten this into an explicit warning.)
         assert!(result.extracted.is_empty() || matches!(result.extracted[0].shortcode, Shortcode::Buttons(_)));
         // The opener is preserved either way.
+    }
+
+    // ---- Deprecation warnings (Step 3 E2) ----
+
+    #[test]
+    fn grid_legacy_dash_emits_deprecation_warning() {
+        let md = ":::grid 2\ncell A\n---\ncell B\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("deprecated"));
+        assert!(result.warnings[0].contains("+++"));
+    }
+
+    #[test]
+    fn grid_plus_plus_plus_no_deprecation_warning() {
+        let md = ":::grid 2\ncell A\n+++\ncell B\n:::\n";
+        let result = extract_shortcodes(md);
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn hero_priority3_body_image_emits_deprecation_warning() {
+        let md = ":::hero\nphoto.jpg\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("deprecated"));
+        assert!(result.warnings[0].contains("image="));
+    }
+
+    #[test]
+    fn hero_explicit_image_attr_no_deprecation_warning() {
+        let md = ":::hero {image=photo.jpg}\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        assert!(result.warnings.is_empty());
     }
 }
