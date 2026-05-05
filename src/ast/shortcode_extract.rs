@@ -62,20 +62,8 @@ pub struct ExtractionResult {
 /// with a build warning.
 const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero", "grid"];
 
-/// Step 2c of issue #613 emptied the legacy passthrough list — every
-/// shortcode name is now either typed (`TYPED_KNOWN`) or unknown
-/// (renders as `<div class="moss-unknown-shortcode">`). The constant
-/// is retained as a documented marker for any future migration that
-/// needs the same staged-passthrough mechanism.
-const LEGACY_PASSTHROUGH: &[&str] = &[];
-
 fn is_typed_known(name: &str) -> bool {
     TYPED_KNOWN.contains(&name)
-}
-
-#[allow(dead_code)]
-fn is_legacy_passthrough(name: &str) -> bool {
-    LEGACY_PASSTHROUGH.contains(&name)
 }
 
 /// Recognized shortcode names (Phase B Task 7+ adds variants here).
@@ -674,14 +662,6 @@ pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
                 // Should not happen — typed-known is a closed set of
                 // names handled by parse_shortcode_block. Fall through
                 // to verbatim emission as defense-in-depth.
-                output.push_str(line);
-                output.push('\n');
-                i += 1;
-                continue;
-            }
-
-            if is_legacy_passthrough(name) {
-                // Verbatim — the legacy regex still owns this name.
                 output.push_str(line);
                 output.push('\n');
                 i += 1;
