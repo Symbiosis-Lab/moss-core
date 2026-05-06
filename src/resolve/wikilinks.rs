@@ -601,9 +601,14 @@ mod tests {
     // 10. Image embed
     #[test]
     fn test_image_embed() {
+        // No author-provided alias → empty alt. See `ImageRenderer::render`
+        // for the rationale: synthesizing alt from the filename stem isn't
+        // a real description, and a non-empty alt would trip the
+        // bare-image-paragraph figure rule into auto-captioning with the
+        // filename. Empty alt is the right boundary.
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg]]", &graph, "posts/hello.md");
-        assert_eq!(result.content, "![photo](../assets/photo.jpg)");
+        assert_eq!(result.content, "![](../assets/photo.jpg)");
     }
 
     // 10a. Image embed with position keyword → raw HTML <img> with style
@@ -668,6 +673,7 @@ mod tests {
 
     // 10g. Image embed with spaces in filename → URL must percent-encode them
     // so the downstream markdown parser still recognizes the `![alt](url)`.
+    // No alias → empty alt (see `test_image_embed`).
     #[test]
     fn test_image_embed_filename_with_spaces() {
         let graph = test_graph();
@@ -678,7 +684,7 @@ mod tests {
         );
         assert_eq!(
             result.content,
-            "![Pasted image 20260505](../assets/Pasted%20image%2020260505.png)"
+            "![](../assets/Pasted%20image%2020260505.png)"
         );
     }
 
@@ -686,11 +692,12 @@ mod tests {
     // convention) — the file must reach this point at all, which it will once
     // the scan-time `_*` exclusion is gone. This test just locks in the
     // wikilink-side behavior: render normally, no special treatment of `_`.
+    // No alias → empty alt (see `test_image_embed`).
     #[test]
     fn test_image_embed_underscore_prefixed_filename() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[_43A2045.jpg]]", &graph, "posts/hello.md");
-        assert_eq!(result.content, "![_43A2045](../assets/_43A2045.jpg)");
+        assert_eq!(result.content, "![](../assets/_43A2045.jpg)");
     }
 
     // 11. Markdown embed

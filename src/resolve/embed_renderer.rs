@@ -293,14 +293,23 @@ impl EmbedRenderer for ImageRenderer {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let out = match embed.alias {
             Some(alias_text) if is_all_display_keywords(alias_text) => {
+                // Display-keyword aliases (`cover`, `left top`, …) describe
+                // layout, not content — keep the filename stem as alt so the
+                // image still has *some* description for screen readers.
                 let alt = file_stem(embed.resolved_path);
                 let attrs = parse_media_attrs(alias_text);
                 format_img_tag(&url, &alt, &attrs)
             }
             Some(alias_text) => format!("![{}]({})", alias_text, url),
             None => {
-                let alt = file_stem(embed.resolved_path);
-                format!("![{}]({})", alt, url)
+                // No author-provided alias → empty alt rather than synthesizing
+                // one from the filename stem. Synthesized alts like
+                // `Pasted image 20260505161028` are not meaningful descriptions
+                // for assistive tech, AND a non-empty alt would trip the
+                // bare-image-paragraph figure rule into producing a `<figure>`
+                // captioned with the filename — visible junk.
+                // See docs/plans/2026-05-05-figure-captions-design.md.
+                format!("![]({})", url)
             }
         };
         RenderedEmbed::Inline(out)
@@ -773,7 +782,13 @@ mod tests {
     // --- ImageRenderer ---
 
     #[test]
-    fn test_image_renderer_no_alias() {
+    fn test_image_renderer_no_alias_emits_empty_alt() {
+        // No author-provided alias → empty alt. Synthesizing one from the
+        // filename stem (`photo`, or worse: `Pasted image 20260505161028`)
+        // is not a real description for assistive tech, AND a non-empty alt
+        // would trip the bare-image-paragraph figure rule into producing a
+        // `<figure>` captioned with the filename. Empty alt is the right
+        // boundary: image still renders, no spurious caption.
         let r = ImageRenderer;
         let embed = ParsedEmbed {
             resolved_path: "assets/photo.jpg",
@@ -784,7 +799,7 @@ mod tests {
         };
         assert_eq!(
             r.render(&embed),
-            RenderedEmbed::Inline("![photo](../assets/photo.jpg)".to_string())
+            RenderedEmbed::Inline("![](../assets/photo.jpg)".to_string())
         );
     }
 
