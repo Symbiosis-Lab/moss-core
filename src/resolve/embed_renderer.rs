@@ -804,6 +804,27 @@ mod tests {
     }
 
     #[test]
+    fn test_image_renderer_empty_alias_treated_as_no_alias() {
+        // `![[file|]]` (literal empty pipe) goes through `Some("")`. The
+        // first match arm checks `is_all_display_keywords("")` which returns
+        // false (no tokens), so it falls into the plain-alias branch with
+        // empty string — same outcome as `None`: empty alt, no figure
+        // wrapping by the bare-image-paragraph rule.
+        let r = ImageRenderer;
+        let embed = ParsedEmbed {
+            resolved_path: "photo.jpg",
+            from_path: "hello.md",
+            query: None,
+            section: None,
+            alias: Some(""),
+        };
+        assert_eq!(
+            r.render(&embed),
+            RenderedEmbed::Inline("![](photo.jpg)".to_string())
+        );
+    }
+
+    #[test]
     fn test_image_renderer_alias_plain_text() {
         let r = ImageRenderer;
         let embed = ParsedEmbed {

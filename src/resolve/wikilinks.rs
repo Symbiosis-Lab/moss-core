@@ -12,7 +12,8 @@
 //! | `[[target\|alias]]` | `[alias](moss-resolved:target.md)` |
 //! | `[[target#heading]]` | `[target > heading](moss-resolved:target.md#anchor)` |
 //! | `[[target#^block-id]]` | `[target > ^block-id](moss-resolved:target.md#block-id)` |
-//! | `![[image.png]]` | `![image](resolved/url/image.png)` |
+//! | `![[image.png]]` | `![](resolved/url/image.png)` (empty alt — see ImageRenderer) |
+//! | `![[image.png\|caption]]` | `![caption](resolved/url/image.png)` |
 //! | `![[file.md]]` | `<!-- moss-embed:resolved/path.md -->` |
 //!
 //! Wikilinks inside fenced code blocks and inline code spans are preserved
