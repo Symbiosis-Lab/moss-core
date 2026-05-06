@@ -125,8 +125,10 @@ pub fn relative_url(from_path: &str, to_path: &str) -> String {
     result
 }
 
-/// Compute a relative path from `from_path`'s parent directory to `to_path`,
-/// preserving the target filename and extension.
+/// Compute a relative URL from `from_path`'s parent directory to `to_path`,
+/// preserving the target filename and extension. Each path segment is
+/// percent-encoded so spaces and non-ASCII characters round-trip safely
+/// through the markdown parser and HTML attribute boundaries.
 ///
 /// Unlike [`relative_url`], which uses pretty-URL directories, this function
 /// uses the *filesystem* parent directory (e.g. `posts/hello.md` -> `posts`).
@@ -167,14 +169,58 @@ pub fn relative_asset_path(from_path: &str, to_path: &str) -> String {
         if i > 0 {
             result.push('/');
         }
-        result.push_str(part);
+        push_encoded_segment(&mut result, part);
     }
 
     if result.is_empty() {
         // Same directory, just the filename
-        to_path.rsplit('/').next().unwrap_or(to_path).to_string()
+        let filename = to_path.rsplit('/').next().unwrap_or(to_path);
+        let mut out = String::new();
+        push_encoded_segment(&mut out, filename);
+        out
     } else {
         result
+    }
+}
+
+/// Percent-encode a relative URL path, preserving `/` as the segment separator.
+///
+/// Each segment keeps the RFC 3986 unreserved set (`A-Z a-z 0-9 - . _ ~`) plus
+/// the sub-delim/extra characters that don't break a markdown `[alt](url)`
+/// parse or an HTML attribute boundary: `!`, `$`, `&`, `'`, `+`, `,`, `;`,
+/// `=`, `@`. Everything else — SPACE, parens, `#`, `?`, all non-ASCII bytes —
+/// becomes `%XX`. The `..` and `.` segments survive untouched.
+///
+/// This is the canonical path encoder for paths flowing through `[alt](url)`
+/// markdown and `src=`/`srcset=` HTML attributes. Callers in src-tauri's
+/// HTML post-processing call this so encode/decode boundaries round-trip
+/// cleanly across the full pipeline.
+pub fn percent_encode_url_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for (i, segment) in path.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        push_encoded_segment(&mut out, segment);
+    }
+    out
+}
+
+fn push_encoded_segment(out: &mut String, segment: &str) {
+    for &b in segment.as_bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-' | b'.' | b'_' | b'~'
+            | b'!' | b'$' | b'&' | b'\'' | b'+' | b',' | b';' | b'=' | b'@' => {
+                out.push(b as char);
+            }
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{:02X}", b);
+            }
+        }
     }
 }
 
@@ -340,5 +386,67 @@ mod tests {
     fn test_relative_url_index_from_dir() {
         // "posts/index.md" (at posts/) to "posts/a.md" (at posts/a/) → "a/"
         assert_eq!(relative_url("posts/index.md", "posts/a.md"), "a/");
+    }
+
+    // -- relative_asset_path tests --
+    //
+    // Asset paths use the *filesystem* parent of `from_path` (no pretty-URL
+    // nesting). Each segment is percent-encoded for safe markdown/HTML emission.
+
+    #[test]
+    fn test_relative_asset_path_same_dir() {
+        assert_eq!(
+            relative_asset_path("posts/hello.md", "posts/photo.jpg"),
+            "photo.jpg"
+        );
+    }
+
+    #[test]
+    fn test_relative_asset_path_sibling_dir() {
+        assert_eq!(
+            relative_asset_path("posts/hello.md", "assets/photo.jpg"),
+            "../assets/photo.jpg"
+        );
+    }
+
+    #[test]
+    fn test_relative_asset_path_encodes_spaces() {
+        // The original symptom: a filename with spaces produced an unparsable
+        // markdown image link. Spaces must encode to %20.
+        assert_eq!(
+            relative_asset_path(
+                "posts/hello.md",
+                "assets/Pasted image 20260505.png"
+            ),
+            "../assets/Pasted%20image%2020260505.png"
+        );
+    }
+
+    #[test]
+    fn test_relative_asset_path_encodes_non_ascii() {
+        // CJK directory + filename: every non-ASCII byte percent-encodes.
+        // 图片 = E5 9B BE E7 89 87, 摄影 = E6 91 84 E5 BD B1
+        assert_eq!(
+            relative_asset_path("文字/article.md", "图片/摄影/_43A2045.jpg"),
+            "../%E5%9B%BE%E7%89%87/%E6%91%84%E5%BD%B1/_43A2045.jpg"
+        );
+    }
+
+    #[test]
+    fn test_relative_asset_path_preserves_unreserved() {
+        // Unreserved RFC 3986 chars stay literal.
+        assert_eq!(
+            relative_asset_path("a.md", "img-1_v2.0~final.jpg"),
+            "img-1_v2.0~final.jpg"
+        );
+    }
+
+    #[test]
+    fn test_relative_asset_path_root_to_nested() {
+        // from is at root (no parent dir), to is nested with spaces.
+        assert_eq!(
+            relative_asset_path("index.md", "img/cover photo.png"),
+            "img/cover%20photo.png"
+        );
     }
 }

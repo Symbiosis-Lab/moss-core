@@ -482,6 +482,8 @@ mod tests {
         b.add_file("posts/hello.md", "hello");
         b.add_file("notes/deep/secret.md", "secret");
         b.add_file("assets/photo.jpg", "photo");
+        b.add_file("assets/Pasted image 20260505.png", "Pasted image 20260505");
+        b.add_file("assets/_43A2045.jpg", "_43A2045");
         b.add_file("disclaimer.md", "disclaimer");
         b.add_headings(
             "guide.md",
@@ -662,6 +664,33 @@ mod tests {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg|left side]]", &graph, "posts/hello.md");
         assert_eq!(result.content, "![left side](../assets/photo.jpg)");
+    }
+
+    // 10g. Image embed with spaces in filename → URL must percent-encode them
+    // so the downstream markdown parser still recognizes the `![alt](url)`.
+    #[test]
+    fn test_image_embed_filename_with_spaces() {
+        let graph = test_graph();
+        let result = resolve_wikilinks(
+            "![[Pasted image 20260505.png]]",
+            &graph,
+            "posts/hello.md",
+        );
+        assert_eq!(
+            result.content,
+            "![Pasted image 20260505](../assets/Pasted%20image%2020260505.png)"
+        );
+    }
+
+    // 10h. Image embed with underscore-prefixed filename (Lightroom export
+    // convention) — the file must reach this point at all, which it will once
+    // the scan-time `_*` exclusion is gone. This test just locks in the
+    // wikilink-side behavior: render normally, no special treatment of `_`.
+    #[test]
+    fn test_image_embed_underscore_prefixed_filename() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[_43A2045.jpg]]", &graph, "posts/hello.md");
+        assert_eq!(result.content, "![_43A2045](../assets/_43A2045.jpg)");
     }
 
     // 11. Markdown embed
