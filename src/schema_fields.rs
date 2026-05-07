@@ -270,6 +270,35 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         group: "Children",
         ..FIELD_DEFAULTS
     },
+    BuiltinField {
+        name: "children_in",
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["body", "sidebar"]),
+        priority: 100,
+        description: "Where to render the children feed: body (after page content, default) or sidebar (right rail).",
+        label: Some("Slot"),
+        group: "Children",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "children_limit",
+        field_type: FieldType::Integer,
+        widget: Widget::NumberInput,
+        priority: 100,
+        description: "Cap the feed at N items. If truncated, a 'More \u{2192}' link is added. Absent = no cap.",
+        label: Some("Limit"),
+        group: "Children",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "_from_sidebar_alias",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        skip_schema: true,
+        description: "Internal: marks frontmatter that came from the deprecated sidebar: alias",
+        ..FIELD_DEFAULTS
+    },
 
     // --- Navigation & Visibility ---
     BuiltinField {
@@ -356,7 +385,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::TextInput,
         priority: 90,
-        description: "Wikilink to folder whose children appear in sidebar (e.g. [[News]])",
+        description: "Deprecated. Use children + children_in: sidebar. Wikilink to folder whose children appear in sidebar (e.g. [[News]]).",
         group: "Layout & Presentation",
         ..FIELD_DEFAULTS
     },
