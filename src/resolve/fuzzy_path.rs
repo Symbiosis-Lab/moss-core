@@ -183,7 +183,7 @@ pub fn relative_asset_path(from_path: &str, to_path: &str) -> String {
     }
 }
 
-/// Percent-encode a relative URL path, preserving `/` as the segment separator.
+/// Percent-encode a path, segment by segment, preserving `/` as the separator.
 ///
 /// Each segment keeps the RFC 3986 unreserved set (`A-Z a-z 0-9 - . _ ~`) plus
 /// the sub-delim/extra characters that don't break a markdown `[alt](url)`
@@ -191,11 +191,12 @@ pub fn relative_asset_path(from_path: &str, to_path: &str) -> String {
 /// `=`, `@`. Everything else — SPACE, parens, `#`, `?`, all non-ASCII bytes —
 /// becomes `%XX`. The `..` and `.` segments survive untouched.
 ///
-/// This is the canonical path encoder for paths flowing through `[alt](url)`
-/// markdown and `src=`/`srcset=` HTML attributes. Callers in src-tauri's
-/// HTML post-processing call this so encode/decode boundaries round-trip
-/// cleanly across the full pipeline.
-pub fn percent_encode_url_path(path: &str) -> String {
+/// This is a *path* encoder: it treats `?` and `#` as ordinary bytes (e.g.
+/// for filenames that contain them). For an HTML attribute that may carry a
+/// `?query` or `#fragment`, use [`percent_encode_url`] instead — calling this
+/// function on a URL silently turns `foo.html?a=1` into `foo.html%3Fa=1`,
+/// which the browser then reads as a literal-filename 404.
+pub fn percent_encode_path_segments(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for (i, segment) in path.split('/').enumerate() {
         if i > 0 {
@@ -204,6 +205,45 @@ pub fn percent_encode_url_path(path: &str) -> String {
         push_encoded_segment(&mut out, segment);
     }
     out
+}
+
+/// Split a URL into its path portion and any `?query` / `#fragment` suffix.
+/// The split happens at the first occurrence of `?` or `#` (whichever appears
+/// first); if neither is present the suffix is empty. The suffix is returned
+/// verbatim, including the leading `?` / `#`.
+///
+/// Used by [`percent_encode_url`] and by callers that need to apply
+/// path-only transformations (e.g. directory-name overrides) before reattaching
+/// an opaque query/fragment.
+pub fn split_url_path(url: &str) -> (&str, &str) {
+    let q = url.find('?');
+    let h = url.find('#');
+    let cut = match (q, h) {
+        (Some(qi), Some(hi)) => Some(qi.min(hi)),
+        (Some(qi), None) => Some(qi),
+        (None, Some(hi)) => Some(hi),
+        (None, None) => None,
+    };
+    match cut {
+        Some(i) => (&url[..i], &url[i..]),
+        None => (url, ""),
+    }
+}
+
+/// URL-aware sibling of [`percent_encode_path_segments`]. Splits at the first
+/// `?` or `#`, runs the segment encoder on the path portion, and re-attaches
+/// the query/fragment verbatim. Use this for any string that flows into an
+/// HTML `src=`/`href=` attribute or a markdown `[alt](url)` link, where the
+/// caller cannot guarantee the value is a pure path.
+pub fn percent_encode_url(url: &str) -> String {
+    let (path, suffix) = split_url_path(url);
+    if suffix.is_empty() {
+        percent_encode_path_segments(path)
+    } else {
+        let mut out = percent_encode_path_segments(path);
+        out.push_str(suffix);
+        out
+    }
 }
 
 fn push_encoded_segment(out: &mut String, segment: &str) {
@@ -448,5 +488,94 @@ mod tests {
             relative_asset_path("index.md", "img/cover photo.png"),
             "img/cover%20photo.png"
         );
+    }
+
+    // -- percent_encode_url + split_url_path tests --
+    //
+    // `percent_encode_url` is the URL-aware sibling of `percent_encode_path_segments`.
+    // It splits at the first `?` or `#`, encodes only the path portion, and passes
+    // the query/fragment through verbatim. This is the right encoder for URLs
+    // produced by the embed renderers and for any caller that handles `src=`/`href=`
+    // attribute values.
+
+    #[test]
+    fn percent_encode_url_preserves_query_string() {
+        // The bug class: the path-only encoder turns `?` into `%3F`, breaking
+        // any iframe embed of the form `![[file.html?a=1&r=2]]`. The URL-aware
+        // encoder must keep the `?` literal.
+        assert_eq!(
+            percent_encode_url("../scale-compare.html?a=major_pent,major_blues&r=major_pent:D"),
+            "../scale-compare.html?a=major_pent,major_blues&r=major_pent:D"
+        );
+    }
+
+    #[test]
+    fn percent_encode_url_preserves_fragment() {
+        // Fragments must also pass through. `#` is the path/fragment separator.
+        assert_eq!(
+            percent_encode_url("../doc.html#section-2"),
+            "../doc.html#section-2"
+        );
+    }
+
+    #[test]
+    fn percent_encode_url_preserves_query_and_fragment_together() {
+        // Both `?` and `#` present — split at whichever appears first (RFC
+        // says it's always `?`, but we don't trust input shape).
+        assert_eq!(
+            percent_encode_url("../app.html?a=1#part"),
+            "../app.html?a=1#part"
+        );
+    }
+
+    #[test]
+    fn percent_encode_url_still_encodes_path_segments() {
+        // The path *part* still gets the segment encoder treatment — spaces
+        // and non-ASCII bytes become %20/%XX.
+        assert_eq!(
+            percent_encode_url("../assets/Pasted image.png?v=2"),
+            "../assets/Pasted%20image.png?v=2"
+        );
+        assert_eq!(
+            percent_encode_url("../图片/cover.jpg?v=2"),
+            "../%E5%9B%BE%E7%89%87/cover.jpg?v=2"
+        );
+    }
+
+    #[test]
+    fn percent_encode_url_no_suffix_matches_path_encoder() {
+        // For URLs without `?` or `#`, output is identical to
+        // `percent_encode_path_segments` — preserving the existing contract.
+        let input = "../assets/Pasted image 20260505.png";
+        assert_eq!(percent_encode_url(input), percent_encode_path_segments(input));
+    }
+
+    #[test]
+    fn split_url_path_at_question_mark() {
+        assert_eq!(
+            split_url_path("foo.html?a=1&b=2"),
+            ("foo.html", "?a=1&b=2")
+        );
+    }
+
+    #[test]
+    fn split_url_path_at_fragment() {
+        assert_eq!(split_url_path("doc.html#section"), ("doc.html", "#section"));
+    }
+
+    #[test]
+    fn split_url_path_picks_first_separator() {
+        // `?` before `#` (RFC-compliant order).
+        assert_eq!(split_url_path("a.html?q=1#f"), ("a.html", "?q=1#f"));
+        // `#` before `?` (atypical but defined behavior — split at whichever
+        // appears first; everything after that point is opaque to the path
+        // encoder either way).
+        assert_eq!(split_url_path("a.html#f?q=1"), ("a.html", "#f?q=1"));
+    }
+
+    #[test]
+    fn split_url_path_no_separator_returns_empty_suffix() {
+        assert_eq!(split_url_path("plain/path.png"), ("plain/path.png", ""));
+        assert_eq!(split_url_path(""), ("", ""));
     }
 }
