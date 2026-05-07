@@ -8,6 +8,7 @@
 pub mod ast;
 pub mod content_graph;
 pub mod csv_table;
+pub mod date;
 pub mod home;
 pub mod frontmatter;
 pub mod heading;
