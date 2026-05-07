@@ -55,9 +55,11 @@ pub fn transform_block_refs(content: &str) -> (String, Vec<String>) {
 
         // Detect opening fence.
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let candidate_char = trimmed.chars().next().unwrap();
-            let rest = &trimmed[3..];
+        let fence_rest = trimmed
+            .strip_prefix("```")
+            .map(|r| ('`', r))
+            .or_else(|| trimmed.strip_prefix("~~~").map(|r| ('~', r)));
+        if let Some((candidate_char, rest)) = fence_rest {
             // Opening fence must not have additional fence chars after the triple.
             if !rest.contains(candidate_char) {
                 fence_char = candidate_char;
@@ -75,6 +77,9 @@ pub fn transform_block_refs(content: &str) -> (String, Vec<String>) {
             // The suffix we strip is ` ^<id>` (space + caret + id).
             let suffix_len = 1 + 1 + id.len(); // space + caret + id
             // prefix is everything before the space-caret-id.
+            // Char-aligned: the suffix is " ^" (ASCII) + `id` (ASCII alphanumeric/'-',
+            // verified in extract_block_id), so `len() - suffix_len` lands on a char boundary.
+            #[allow(clippy::string_slice)]
             let prefix = &line_stripped[..line_stripped.len() - suffix_len];
             block_ids.push(id.to_string());
             // Emit prefix + the space that was between content and `^` + span.
@@ -107,6 +112,8 @@ fn extract_block_id(line: &str) -> Option<&str> {
     let caret_pos = line.rfind(" ^")?;
 
     // Everything after ` ^` is the candidate id.
+    // Char-aligned: " ^" is two ASCII bytes, so `caret_pos + 2` is a char boundary.
+    #[allow(clippy::string_slice)]
     let id = &line[caret_pos + 2..];
 
     // ID must be non-empty and consist solely of ASCII alphanumeric chars or hyphens.

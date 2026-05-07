@@ -126,9 +126,12 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> (Option<Shortcod
 /// `---` legacy divider was encountered (triggers a deprecation warning).
 fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
     let trimmed = args.trim();
-    let (positional, attr_block) = match trimmed.find('{') {
-        Some(pos) => (trimmed[..pos].trim(), &trimmed[pos..]),
-        None => (trimmed, ""),
+    let (positional, attr_block): (&str, &str) = if let Some(pos) = trimmed.find('{') {
+        // char-aligned: pos points to ASCII '{' from str::find — safe to slice.
+        #[allow(clippy::string_slice)]
+        (trimmed[..pos].trim(), &trimmed[pos..])
+    } else {
+        (trimmed, "")
     };
 
     let parsed = if attr_block.is_empty() {
@@ -249,9 +252,12 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
 
     // Split args on the first `{` to separate the directive-line path
     // (if any) from the attribute block (if any).
-    let (positional, attr_block) = match trimmed_args.find('{') {
-        Some(pos) => (trimmed_args[..pos].trim(), &trimmed_args[pos..]),
-        None => (trimmed_args, ""),
+    let (positional, attr_block): (&str, &str) = if let Some(pos) = trimmed_args.find('{') {
+        // char-aligned: pos points to ASCII '{' from str::find — safe to slice.
+        #[allow(clippy::string_slice)]
+        (trimmed_args[..pos].trim(), &trimmed_args[pos..])
+    } else {
+        (trimmed_args, "")
     };
 
     // Parse the attribute block, if present.
@@ -341,6 +347,9 @@ fn is_bare_hero_media(s: &str) -> bool {
     let path = path_part.trim();
     path.rfind('.')
         .map(|dot| {
+            // char-aligned: dot points to ASCII '.' from str::rfind — `dot + 1`
+            // lands on the byte after '.', which is also a char boundary.
+            #[allow(clippy::string_slice)]
             let ext = &path[dot + 1..];
             HERO_MEDIA_EXTENSIONS
                 .iter()
@@ -354,8 +363,10 @@ fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim();
 
     // Wikilink embed: ![[path|attrs]]
-    if trimmed.starts_with("![[") && trimmed.ends_with("]]") {
-        let inner = &trimmed[3..trimmed.len() - 2];
+    if let Some(inner) = trimmed
+        .strip_prefix("![[")
+        .and_then(|s| s.strip_suffix("]]"))
+    {
         let (path, attrs_str) = crate::media::split_pipe(inner);
         return Some((path.trim().to_string(), attrs_str.to_string()));
     }
@@ -364,6 +375,10 @@ fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
     if trimmed.starts_with("![") {
         if let Some(paren_open) = trimmed.find("](") {
             if trimmed.ends_with(')') {
+                // char-aligned: paren_open points to ASCII "](" from str::find
+                // (paren_open + 2 lands on first byte after `](`, char boundary);
+                // `trimmed.len() - 1` is the byte before the trailing ASCII ')'.
+                #[allow(clippy::string_slice)]
                 let inner = &trimmed[paren_open + 2..trimmed.len() - 1];
                 let (path, attrs_str) = crate::media::split_pipe(inner);
                 return Some((path.trim().to_string(), attrs_str.to_string()));
@@ -430,14 +445,25 @@ fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
 fn split_positional_and_classes(args: &str) -> (String, String) {
     let trimmed = args.trim();
     if let Some(brace_start) = trimmed.find('{') {
-        if let Some(brace_end) = trimmed[brace_start..].find('}') {
+        // char-aligned: brace_start points to ASCII '{' from str::find — the
+        // byte index is a char boundary, so slicing `trimmed[brace_start..]`
+        // is safe to feed into the next find.
+        #[allow(clippy::string_slice)]
+        let after_open = &trimmed[brace_start..];
+        if let Some(brace_end) = after_open.find('}') {
+            // char-aligned: brace_start (ASCII '{') and brace_start+brace_end
+            // (ASCII '}') are both char boundaries; `brace_start + 1` lands on
+            // the byte after '{', also a boundary.
+            #[allow(clippy::string_slice)]
             let positional = trimmed[..brace_start].trim().to_string();
+            #[allow(clippy::string_slice)]
             let attr_block_str = &trimmed[brace_start..=brace_start + brace_end];
             if let Ok(parsed) = super::attrs::parse_attrs(attr_block_str) {
                 return (positional, parsed.class_string());
             }
             // Legacy fallback for malformed inputs that the structured
             // parser rejects (e.g. unterminated quote on a single line).
+            #[allow(clippy::string_slice)]
             let inner = &trimmed[brace_start + 1..brace_start + brace_end];
             let mut classes = Vec::new();
             for token in inner.split_whitespace() {
@@ -455,8 +481,8 @@ fn split_positional_and_classes(args: &str) -> (String, String) {
 
 /// Split `s` on `|` into `(before, after)`. If no pipe, returns `(s, "")`.
 fn split_pipe(s: &str) -> (&str, &str) {
-    match s.find('|') {
-        Some(pos) => (&s[..pos], s[pos + 1..].trim()),
+    match s.split_once('|') {
+        Some((before, after)) => (before, after.trim()),
         None => (s, ""),
     }
 }
@@ -466,10 +492,10 @@ fn split_pipe(s: &str) -> (&str, &str) {
 fn parse_markdown_image(s: &str) -> Option<(String, String)> {
     let s = s.trim();
     let rest = s.strip_prefix("![")?;
-    let close_bracket = rest.find("](")?;
-    let alt = &rest[..close_bracket];
-    let after = &rest[close_bracket + 2..];
+    let (alt, after) = rest.split_once("](")?;
     let close_paren = after.rfind(')')?;
+    // char-aligned: close_paren points to ASCII ')' from str::rfind.
+    #[allow(clippy::string_slice)]
     let path = &after[..close_paren];
     if path.contains('(') {
         return None;
@@ -506,16 +532,9 @@ fn parse_buttons_body(args: &str, body: &str) -> ButtonsShortcode {
 /// Returns `(text, url)` if the line is a single link, else `None`.
 fn extract_markdown_link(s: &str) -> Option<(String, String)> {
     let s = s.trim();
-    if !s.starts_with('[') {
-        return None;
-    }
-    let close_bracket = s.find(']')?;
-    let text = &s[1..close_bracket];
-    let after = &s[close_bracket + 1..];
-    if !after.starts_with('(') || !after.ends_with(')') {
-        return None;
-    }
-    let url = &after[1..after.len() - 1];
+    let inside = s.strip_prefix('[')?;
+    let (text, after) = inside.split_once(']')?;
+    let url = after.strip_prefix('(').and_then(|r| r.strip_suffix(')'))?;
     if url.is_empty() {
         return None;
     }
@@ -853,6 +872,10 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
     if colons < 3 {
         return None;
     }
+    // char-aligned: `colons` is a count of ASCII ':' chars (each 1 byte in
+    // UTF-8), so the byte offset equals the char count and lands on a
+    // char boundary.
+    #[allow(clippy::string_slice)]
     let rest = &trimmed[colons..];
     // Name = letters/digits/underscores/hyphens; rest of line is args.
     let name_end = rest
@@ -867,7 +890,11 @@ fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
         }
         return Some((colons, "", rest.trim()));
     }
+    // char-aligned: name_end is a byte index returned by str::find with a
+    // char predicate, which is guaranteed to be a char boundary (or rest.len()).
+    #[allow(clippy::string_slice)]
     let name = &rest[..name_end];
+    #[allow(clippy::string_slice)]
     let args = rest[name_end..].trim();
     Some((colons, name, args))
 }

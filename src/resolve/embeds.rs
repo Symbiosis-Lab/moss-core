@@ -227,10 +227,8 @@ fn parse_embed_marker(line: &str) -> Option<&str> {
 /// `"guide.md#getting-started"` => `("guide.md", Some("getting-started"))`
 /// `"guide.md"` => `("guide.md", None)`
 fn split_target(target: &str) -> (&str, Option<&str>) {
-    match target.find('#') {
-        Some(pos) => {
-            let file_path = &target[..pos];
-            let anchor = &target[pos + 1..];
+    match target.split_once('#') {
+        Some((file_path, anchor)) => {
             if anchor.is_empty() {
                 (file_path, None)
             } else {
@@ -253,21 +251,25 @@ fn strip_frontmatter(content: &str) -> &str {
     }
 
     // Find the end of the first line (the opening `---`).
-    let after_opening = match content.find('\n') {
-        Some(pos) => pos + 1,
+    // `split_once('\n')` keeps both halves on char boundaries — `\n` is ASCII.
+    let (_opening_line, after_opening) = match content.split_once('\n') {
+        Some(pair) => pair,
         None => return content, // Only "---" with no closing delimiter.
     };
 
     // Find the closing `---` line.
-    if let Some(close_pos) = find_closing_frontmatter(&content[after_opening..]) {
-        let absolute_close = after_opening + close_pos;
+    if let Some(close_pos) = find_closing_frontmatter(after_opening) {
+        // `close_pos` is a sum of `line.len() + 1` over `.lines()`, so it lands
+        // on a `\n` boundary in `after_opening` — char-aligned by construction.
+        #[allow(clippy::string_slice)]
+        // Char-aligned: close_pos is built from line lengths in find_closing_frontmatter,
+        // each terminated by an ASCII '\n'; always on a UTF-8 char boundary.
+        let after_close = &after_opening[close_pos..];
         // Skip past the closing `---\n`.
-        let after_close = &content[absolute_close..];
-        let after_delimiter = match after_close.find('\n') {
-            Some(pos) => &after_close[pos + 1..],
+        match after_close.split_once('\n') {
+            Some((_closing_line, rest)) => rest,
             None => "", // File ends right at the closing `---`.
-        };
-        after_delimiter
+        }
     } else {
         // No closing delimiter found — treat entire content as body.
         content
@@ -335,8 +337,8 @@ fn extract_block_section(body: &str, block_id: &str) -> Option<String> {
     let marker = format!(" ^{}", block_id);
     for line in body.lines() {
         let trimmed = line.trim();
-        if trimmed.ends_with(&marker) {
-            let content = trimmed[..trimmed.len() - marker.len()].trim_end();
+        if let Some(content) = trimmed.strip_suffix(marker.as_str()) {
+            let content = content.trim_end();
             if !content.is_empty() {
                 return Some(content.to_string());
             }
@@ -360,15 +362,18 @@ fn parse_heading(line: &str) -> Option<(usize, &str)> {
     }
 
     // Must be followed by a space (or be just hashes at end of line).
+    // `level` counts ASCII '#' characters, each 1 byte, so byte-offset == count.
+    #[allow(clippy::string_slice)]
+    // Char-aligned: leading chars are all ASCII '#' (1-byte each), so `level` is a valid byte index.
     let rest = &trimmed[level..];
     if rest.is_empty() {
         return Some((level, ""));
     }
-    if !rest.starts_with(' ') {
+    let Some(after_space) = rest.strip_prefix(' ') else {
         return None;
-    }
+    };
 
-    Some((level, rest[1..].trim()))
+    Some((level, after_space.trim()))
 }
 
 // ---------------------------------------------------------------------------
@@ -466,21 +471,20 @@ pub fn resolve_deferred_markers(
 
     loop {
         // Find the next "<!-- " marker start.
-        let Some(start) = remaining.find("<!-- ") else {
+        let Some((before, after_start)) = remaining.split_once("<!-- ") else {
             out.push_str(remaining);
             break;
         };
         // Copy everything up to the marker verbatim.
-        out.push_str(&remaining[..start]);
-        let after_start = &remaining[start + 5..];
+        out.push_str(before);
 
         // Find the closing " -->".
-        let Some(end) = after_start.find(" -->") else {
-            // Unclosed; copy the rest verbatim.
-            out.push_str(&remaining[start..]);
+        let Some((marker_body, rest)) = after_start.split_once(" -->") else {
+            // Unclosed; copy from "<!-- " onwards verbatim.
+            out.push_str("<!-- ");
+            out.push_str(after_start);
             break;
         };
-        let marker_body = &after_start[..end];
 
         match handlers.find(marker_body) {
             Some((_prefix, handler, target)) => {
@@ -489,10 +493,12 @@ pub fn resolve_deferred_markers(
             }
             None => {
                 // Unrecognized marker — leave it as-is.
-                out.push_str(&remaining[start..start + 5 + end + 4]);
+                out.push_str("<!-- ");
+                out.push_str(marker_body);
+                out.push_str(" -->");
             }
         }
-        remaining = &after_start[end + 4..];
+        remaining = rest;
     }
 
     DeferredResult {

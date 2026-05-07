@@ -224,10 +224,13 @@ pub fn split_url_path(url: &str) -> (&str, &str) {
         (None, Some(hi)) => Some(hi),
         (None, None) => None,
     };
-    match cut {
-        Some(i) => (&url[..i], &url[i..]),
-        None => (url, ""),
-    }
+    let Some(i) = cut else {
+        return (url, "");
+    };
+    // `i` came from `find('?')` / `find('#')` — both ASCII bytes, so the
+    // returned position is on a UTF-8 char boundary by construction.
+    #[allow(clippy::string_slice)]
+    (&url[..i], &url[i..])
 }
 
 /// URL-aware sibling of [`percent_encode_path_segments`]. Splits at the first
@@ -271,8 +274,8 @@ fn push_encoded_segment(out: &mut String, segment: &str) {
 /// - `"index.md"`       -> `""`             (the URL becomes `/`)
 pub(crate) fn to_pretty_url_dir(path: &str) -> String {
     // Strip the file extension
-    let without_ext = match path.rfind('.') {
-        Some(pos) => &path[..pos],
+    let without_ext = match path.rsplit_once('.') {
+        Some((head, _)) => head,
         None => path,
     };
 

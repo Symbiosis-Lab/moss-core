@@ -50,9 +50,11 @@ pub fn transform_callouts(content: &str) -> String {
             continue;
         }
 
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let candidate_char = trimmed.chars().next().unwrap();
-            let rest = &trimmed[3..];
+        let fence_rest = trimmed
+            .strip_prefix("```")
+            .map(|r| ('`', r))
+            .or_else(|| trimmed.strip_prefix("~~~").map(|r| ('~', r)));
+        if let Some((candidate_char, rest)) = fence_rest {
             if !rest.contains(candidate_char) {
                 fence_char = candidate_char;
                 in_code_block = true;
@@ -71,17 +73,17 @@ pub fn transform_callouts(content: &str) -> String {
             i += 1;
             while i < lines.len() {
                 let next = lines[i];
-                if next.starts_with('>') {
-                    // Strip the leading `> ` or `>` prefix.
-                    let stripped = if next.starts_with("> ") {
-                        &next[2..]
-                    } else if next == ">" {
-                        ""
-                    } else {
-                        // `>text` with no space — strip just the `>`
-                        &next[1..]
-                    };
-                    body_lines.push(stripped);
+                // Strip the leading `> ` or `>` prefix (both ASCII).
+                let stripped = if let Some(rest) = next.strip_prefix("> ") {
+                    Some(rest)
+                } else if next == ">" {
+                    Some("")
+                } else {
+                    // `>text` with no space — strip just the `>`
+                    next.strip_prefix('>')
+                };
+                if let Some(s) = stripped {
+                    body_lines.push(s);
                     i += 1;
                 } else {
                     break;
@@ -141,10 +143,8 @@ fn parse_callout_header(line: &str, supported_types: &[&str]) -> Option<(String,
     // Must be followed by `[!`
     let rest = rest.strip_prefix("[!")?;
 
-    // Find the closing `]`
-    let close_bracket = rest.find(']')?;
-    let raw_type = &rest[..close_bracket];
-    let after_bracket = &rest[close_bracket + 1..];
+    // Find the closing `]` and split around it.
+    let (raw_type, after_bracket) = rest.split_once(']')?;
 
     let type_lower = raw_type.to_lowercase();
     if !supported_types.contains(&type_lower.as_str()) {

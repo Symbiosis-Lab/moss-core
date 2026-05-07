@@ -62,6 +62,9 @@ pub fn parse(content: &str) -> ParsedDocument {
     };
 
     // Search for closing `---` line in the remainder.
+    // Char-aligned: `after_opening = pos + 1` where `pos = content.find('\n')`,
+    // and '\n' is a single ASCII byte, so the index lands on a char boundary.
+    #[allow(clippy::string_slice)]
     let rest = &content[after_opening..];
     let mut offset = 0;
     for line in rest.lines() {
@@ -80,6 +83,11 @@ pub fn parse(content: &str) -> ParsedDocument {
             };
 
             // The YAML text is between the opening and closing delimiters.
+            // Char-aligned: `after_opening` follows '\n' (ASCII), and
+            // `close_line_start = after_opening + offset` where `offset`
+            // accumulates `line.len() + 1` per line returned by `lines()`
+            // (each line is a complete-char slice and '\n' is one byte).
+            #[allow(clippy::string_slice)]
             let yaml_text = &content[after_opening..close_line_start];
 
             // Parse the YAML.
@@ -96,6 +104,9 @@ pub fn parse(content: &str) -> ParsedDocument {
                     }
                 };
 
+            // Char-aligned: `fm_end` is `close_line_end` (= line-aligned via `lines()`
+            // + ASCII '---') optionally + 1 for an ASCII '\n'.
+            #[allow(clippy::string_slice)]
             let body = &content[fm_end..];
 
             return ParsedDocument {
@@ -301,9 +312,14 @@ mod tests {
 
         let (start, end) = doc.frontmatter_range.expect("range");
         assert_eq!(start, 0);
-        // "---\ntitle: Hi\n---\n" = 18 bytes
-        assert_eq!(&input[start..end], "---\ntitle: Hi\n---\n");
-        assert_eq!(&input[end..], "Body.");
+        // "---\ntitle: Hi\n---\n" = 18 bytes. The slices below assert the
+        // byte-offset contract of `frontmatter_range`: each offset lands on a
+        // line boundary (after `\n`), which is ASCII and therefore char-aligned.
+        #[allow(clippy::string_slice)] // char-aligned: range returns line-boundary byte offsets
+        {
+            assert_eq!(&input[start..end], "---\ntitle: Hi\n---\n");
+            assert_eq!(&input[end..], "Body.");
+        }
     }
 
     #[test]

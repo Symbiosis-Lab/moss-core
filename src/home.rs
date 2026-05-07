@@ -81,13 +81,12 @@ pub fn lang_tree_prefix(path: &str) -> Option<&str> {
 /// assert_eq!(moss_core::home::strip_lang_suffix("index"), None);
 /// ```
 pub fn strip_lang_suffix(stem: &str) -> Option<&str> {
-    if let Some(dot_pos) = stem.rfind('.') {
-        let suffix = &stem[dot_pos + 1..];
-        if KNOWN_LANG_SUFFIXES.contains(&suffix.to_lowercase().as_str()) {
-            return Some(&stem[..dot_pos]);
-        }
+    let (head, suffix) = stem.rsplit_once('.')?;
+    if KNOWN_LANG_SUFFIXES.contains(&suffix.to_lowercase().as_str()) {
+        Some(head)
+    } else {
+        None
     }
-    None
 }
 
 /// Check if a filename stem (without extension) is a recognized home file.

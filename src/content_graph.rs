@@ -33,8 +33,10 @@ fn normalize_path(path: &str) -> String {
 /// Extract the filename stem (no extension) from a normalized path.
 fn filename_stem(normalized: &str) -> &str {
     let filename = normalized.rsplit('/').next().unwrap_or(normalized);
-    match filename.rfind('.') {
-        Some(pos) if pos > 0 => &filename[..pos],
+    match filename.rsplit_once('.') {
+        // Guard against `pos == 0` (e.g. ".gitignore"): treat the whole name
+        // as the stem rather than returning an empty stem.
+        Some((stem, _)) if !stem.is_empty() => stem,
         _ => filename,
     }
 }
@@ -52,11 +54,12 @@ fn filename_with_ext(path: &str) -> &str {
 /// sibling registered later.
 fn path_extension_lower(path: &str) -> Option<String> {
     let filename = path.rsplit('/').next().unwrap_or(path);
-    let pos = filename.rfind('.')?;
-    if pos == 0 {
+    let (stem, ext) = filename.rsplit_once('.')?;
+    // Skip dotfiles like `.gitignore` (empty stem before the dot).
+    if stem.is_empty() {
         return None;
     }
-    Some(filename[pos + 1..].to_ascii_lowercase())
+    Some(ext.to_ascii_lowercase())
 }
 
 /// Return the directory prefix components of a path as a Vec.
@@ -131,17 +134,24 @@ pub fn generate_slug(relative_path: &str) -> String {
     // Normalize separators
     let normalized = relative_path.replace('\\', "/");
 
-    // Strip extension only if the last `.` is in the filename part (after last /).
-    let without_ext = match normalized.rfind('.') {
-        Some(dot_pos) => {
-            let last_slash = normalized.rfind('/').unwrap_or(0);
-            if dot_pos > last_slash {
-                &normalized[..dot_pos]
-            } else {
-                &normalized
-            }
-        }
-        None => &normalized,
+    // Strip extension only when the last `.` lives inside the trailing
+    // segment AND has at least one character before it. This preserves the
+    // original `dot_pos > last_slash` semantics, including the dotfile case
+    // (`.gitignore`, `.bashrc`) where the leading dot must be kept as part
+    // of the stem rather than yielding an empty string.
+    let last_segment = normalized.rsplit('/').next().unwrap_or(&normalized);
+    let stem_in_segment = match last_segment.rsplit_once('.') {
+        Some((stem, _ext)) if !stem.is_empty() => Some(stem),
+        _ => None,
+    };
+    let prefix = match normalized.rsplit_once('/') {
+        Some((p, _)) => Some(p),
+        None => None,
+    };
+    let without_ext: String = match (prefix, stem_in_segment) {
+        (Some(p), Some(stem)) => format!("{p}/{stem}"),
+        (None, Some(stem)) => stem.to_string(),
+        _ => normalized.clone(),
     };
 
     // Sanitize each path segment independently so hyphen-collapse + edge-trim
@@ -797,6 +807,19 @@ mod tests {
     #[test]
     fn test_generate_slug_no_extension() {
         assert_eq!(generate_slug("readme"), "readme");
+    }
+
+    #[test]
+    fn test_generate_slug_dotfile_keeps_leading_dot() {
+        // Regression: a refactor of the extension-stripping branch (commit
+        // 0d128270e) accidentally yielded an empty stem for `.gitignore` and
+        // `.bashrc` because `rsplit_once('.')` returns `("", "gitignore")` and
+        // an `is_empty()` guard wasn't in place. Pin the original semantics:
+        // when the dot is at position 0 of the last segment, treat the whole
+        // segment as the stem.
+        assert_eq!(generate_slug(".gitignore"), "gitignore");
+        assert_eq!(generate_slug(".bashrc"), "bashrc");
+        assert_eq!(generate_slug("posts/.hidden"), "posts/hidden");
     }
 
     #[test]

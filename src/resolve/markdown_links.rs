@@ -74,6 +74,9 @@ fn split_path_suffix(url: &str) -> (&str, Option<&str>) {
         (None, None) => None,
     };
     match cut {
+        // char-aligned: `pos` is the byte index of an ASCII `?` or `#`,
+        // which is always a UTF-8 char boundary.
+        #[allow(clippy::string_slice)]
         Some(pos) => (&url[..pos], Some(&url[pos..])),
         None => (url, None),
     }
@@ -110,9 +113,11 @@ pub fn resolve_markdown_links(
         }
 
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let candidate_char = trimmed.chars().next().unwrap();
-            let rest = &trimmed[3..];
+        let fence_rest = trimmed
+            .strip_prefix("```")
+            .map(|r| ('`', r))
+            .or_else(|| trimmed.strip_prefix("~~~").map(|r| ('~', r)));
+        if let Some((candidate_char, rest)) = fence_rest {
             if !rest.contains(candidate_char) {
                 fence_char = Some(candidate_char);
                 output_lines.push(line.to_string());
@@ -137,6 +142,13 @@ pub fn resolve_markdown_links(
     }
 }
 
+// Char-boundary invariant: `i` is advanced by `utf8_char_len(bytes[i])` for
+// non-ASCII content, by `1` after matching ASCII delimiters (`!`, `[`, `]`),
+// and by counts of consecutive ASCII bytes (`run`, `closing`) or by
+// `consumed` from `parse_link_at` (which itself only walks bytes via ASCII
+// matches). All byte slices `&line[a..b]` use `a, b` derived from this
+// cursor, so every slice boundary is a UTF-8 char boundary.
+#[allow(clippy::string_slice)]
 fn rewrite_line(
     line: &str,
     graph: &ContentGraph,
@@ -257,6 +269,11 @@ fn utf8_char_len(b: u8) -> usize {
 
 /// Parse `[text](url)` starting at index 0 of `s`. Returns (text, url, total_bytes_consumed).
 /// Returns None if the shape isn't a standard markdown link.
+//
+// char-aligned: `close_bracket` and `close_paren` are byte indices of ASCII
+// `]` and `)`, found via `bytes.iter()` matching single-byte ASCII values.
+// ASCII bytes are always UTF-8 char boundaries.
+#[allow(clippy::string_slice)]
 fn parse_link_at(s: &str) -> Option<(&str, &str, usize)> {
     if !s.starts_with('[') {
         return None;

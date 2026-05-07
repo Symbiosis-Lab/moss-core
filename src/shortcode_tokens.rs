@@ -196,12 +196,20 @@ pub fn tokens_to_html(line: &str, tokens: &[ShortcodeToken]) -> String {
     for tok in tokens {
         // Emit gap before this token
         if tok.from > cursor {
+            // Token offsets are produced by the byte-cursor tokenizer above,
+            // which only advances on ASCII bytes (`:`, digits, `{`, `}`, `.`,
+            // and ASCII name/word chars). Every recorded `from`/`to` therefore
+            // lies on a UTF-8 char boundary.
+            #[allow(clippy::string_slice)]
             html_escape_into(&line[cursor..tok.from], &mut out);
         }
         let class = css_class(tok.token_type);
         out.push_str("<span class=\"");
         out.push_str(class);
         out.push_str("\">");
+        // Same invariant as the gap slice above: tokenizer only records ASCII
+        // byte offsets, so `from`/`to` are char-boundary safe.
+        #[allow(clippy::string_slice)]
         html_escape_into(&line[tok.from..tok.to], &mut out);
         out.push_str("</span>");
         cursor = tok.to;
@@ -209,6 +217,9 @@ pub fn tokens_to_html(line: &str, tokens: &[ShortcodeToken]) -> String {
 
     // Trailing text after last token
     if cursor < line.len() {
+        // `cursor` was last set to a token's `to` field — an ASCII byte offset
+        // produced by the tokenizer, so it sits on a char boundary.
+        #[allow(clippy::string_slice)]
         html_escape_into(&line[cursor..], &mut out);
     }
 

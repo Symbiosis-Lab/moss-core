@@ -102,9 +102,11 @@ fn resolve_wikilinks_inner(
         }
 
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let candidate_char = trimmed.chars().next().unwrap();
-            let rest = &trimmed[3..];
+        let fence_rest = trimmed
+            .strip_prefix("```")
+            .map(|r| ('`', r))
+            .or_else(|| trimmed.strip_prefix("~~~").map(|r| ('~', r)));
+        if let Some((candidate_char, rest)) = fence_rest {
             if !rest.contains(candidate_char) {
                 fence_char = candidate_char;
                 in_fence = true;
@@ -258,8 +260,8 @@ pub(crate) fn parse_wikilink_inner(
     inner: &str,
 ) -> (&str, Option<&str>, Option<&str>, Option<&str>) {
     // 1. Split on `|` (alias)
-    let (before_pipe, alias) = match inner.find('|') {
-        Some(pos) => (&inner[..pos], Some(&inner[pos + 1..])),
+    let (before_pipe, alias) = match inner.split_once('|') {
+        Some((before, after)) => (before, Some(after)),
         None => (inner, None),
     };
 
@@ -268,6 +270,10 @@ pub(crate) fn parse_wikilink_inner(
     let hash_pos = before_pipe.find('#');
     let query_pos = before_pipe.find('?');
 
+    // char-aligned: `h` and `q` are byte indices of ASCII `#` and `?`,
+    // each a single-byte UTF-8 char. `h+1` and `q+1` step over those
+    // single bytes, landing on the next char boundary.
+    #[allow(clippy::string_slice)]
     match (hash_pos, query_pos) {
         (None, None) => (before_pipe, None, None, alias),
         (Some(h), None) => (
@@ -445,6 +451,9 @@ fn resolve_embed(
 fn path_extension(path: &str) -> Option<String> {
     let filename = path.rsplit('/').next().unwrap_or(path);
     let pos = filename.rfind('.')?;
+    // char-aligned: `pos` is the byte index of an ASCII `.`. `pos + 1`
+    // steps over that single byte, landing on the next char boundary.
+    #[allow(clippy::string_slice)]
     Some(filename[pos + 1..].to_string())
 }
 

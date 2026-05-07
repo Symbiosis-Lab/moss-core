@@ -55,8 +55,8 @@ pub(super) fn html_escape_attr(s: &str) -> String {
 /// want a human-readable label from a path.
 pub(super) fn file_stem(path: &str) -> String {
     let filename = path.rsplit('/').next().unwrap_or(path);
-    match filename.rfind('.') {
-        Some(pos) if pos > 0 => filename[..pos].to_string(),
+    match filename.rsplit_once('.') {
+        Some((stem, _ext)) if !stem.is_empty() => stem.to_string(),
         _ => filename.to_string(),
     }
 }
@@ -65,8 +65,8 @@ pub(super) fn file_stem(path: &str) -> String {
 /// if the path has no extension.
 pub(super) fn path_extension_lower(path: &str) -> String {
     let filename = path.rsplit('/').next().unwrap_or(path);
-    match filename.rfind('.') {
-        Some(pos) => filename[pos + 1..].to_ascii_lowercase(),
+    match filename.rsplit_once('.') {
+        Some((_stem, ext)) => ext.to_ascii_lowercase(),
         None => String::new(),
     }
 }

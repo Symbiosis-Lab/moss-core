@@ -219,6 +219,12 @@ pub fn resolve_frontmatter_wikilinks(
             let bracket_start = if is_embed { i + 3 } else { i + 2 };
             // Find closing `]]`
             if let Some(close_pos) = find_closing_brackets(bytes, bracket_start) {
+                // Char-aligned: `bracket_start = i + 2` or `i + 3` where `i` is the
+                // byte-cursor invariant of the outer loop (see else-branch comment),
+                // and the offsets cross only ASCII bytes (`[`, `!`). `close_pos` is
+                // returned by `find_closing_brackets` which scans for the ASCII pair
+                // `]]`, so it lands on a char boundary.
+                #[allow(clippy::string_slice)]
                 let inner = &frontmatter[bracket_start..close_pos];
 
                 // Split on | to separate path from pipe content
@@ -268,6 +274,16 @@ pub fn resolve_frontmatter_wikilinks(
                 }
             }
         } else {
+            // Byte-cursor invariant: `i` is always at a UTF-8 char boundary.
+            //   * Initial value `i = 0` is a boundary.
+            //   * In the wikilink branch above, `i` is reassigned to either
+            //     `close_pos + 2` (close_pos is the byte index of the first `]`
+            //     in the ASCII pair `]]`, so +2 also lands on an ASCII byte) or
+            //     advanced by `+= 3` / `+= 1` past ASCII chars (`!`, `[`).
+            //   * In this else branch, we read one full char from the boundary
+            //     and advance by exactly its UTF-8 length, preserving the boundary.
+            // Therefore slicing `frontmatter[i..]` here is safe.
+            #[allow(clippy::string_slice)]
             let ch = frontmatter[i..].chars().next().unwrap();
             result.push(ch);
             i += ch.len_utf8();
@@ -299,6 +315,9 @@ fn find_closing_brackets(bytes: &[u8], start: usize) -> Option<usize> {
 /// standalone `---` line.  Returns the byte position just past the
 /// delimiter (including its trailing newline, if present).
 fn find_delimiter(content: &str, scan_start: usize) -> Option<usize> {
+    // Char-aligned: callers pass either 0 or `pos + 1` where `pos = content.find('\n')`
+    // (an ASCII byte). Both values land on a UTF-8 char boundary.
+    #[allow(clippy::string_slice)]
     let rest = &content[scan_start..];
     let mut offset = 0;
     for line in rest.lines() {
@@ -351,6 +370,11 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
         };
 
         // Search for a closing `---` line in the remainder.
+        // Char-aligned: `split_pos` is computed by `find_delimiter` from
+        // `scan_start + line.len() + (line.len() + 1)*N + (0 or 1)`. All
+        // components are either char-aligned (`scan_start`, slices from `lines()`)
+        // or single ASCII bytes (`'\n'`), so `split_pos` is on a char boundary.
+        #[allow(clippy::string_slice)]
         match find_delimiter(content, after_opening) {
             Some(split_pos) => (Some(&content[..split_pos]), &content[split_pos..]),
             None => (None, content), // No closing delimiter — treat entire content as body.
@@ -360,6 +384,8 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
         // Look for the first standalone `---` line.  Everything up to and
         // including that line (plus its trailing newline) is frontmatter;
         // everything after is body.
+        // Same char-alignment rationale as above.
+        #[allow(clippy::string_slice)]
         match find_delimiter(content, 0) {
             Some(split_pos) => (Some(&content[..split_pos]), &content[split_pos..]),
             None => (None, content), // No `---` found at all — no frontmatter.
@@ -372,6 +398,8 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 /// `"posts/hello.md"` -> `"posts"`, `"hello.md"` -> `""`.
 pub(crate) fn parent_dir(path: &str) -> &str {
     match path.rfind('/') {
+        // Char-aligned: '/' is an ASCII byte, so `pos` is a char boundary.
+        #[allow(clippy::string_slice)]
         Some(pos) => &path[..pos],
         None => "",
     }

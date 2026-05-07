@@ -164,21 +164,17 @@ pub(crate) struct ResolvedMedia {
 /// unchanged.
 pub fn strip_wikilink(raw: &str) -> &str {
     let trimmed = raw.trim();
-    if trimmed.starts_with("[[") && trimmed.ends_with("]]") {
-        &trimmed[2..trimmed.len() - 2]
-    } else {
-        trimmed
-    }
+    trimmed
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .unwrap_or(trimmed)
 }
 
 /// Split a media reference on the first `|`, returning `(path, attrs_str)`.
 ///
 /// If there is no `|`, `attrs_str` is an empty string.
 pub fn split_pipe(raw: &str) -> (&str, &str) {
-    match raw.find('|') {
-        Some(pos) => (&raw[..pos], &raw[pos + 1..]),
-        None => (raw, ""),
-    }
+    raw.split_once('|').unwrap_or((raw, ""))
 }
 
 /// Parse space-separated display-attribute keywords from the portion after `|`.

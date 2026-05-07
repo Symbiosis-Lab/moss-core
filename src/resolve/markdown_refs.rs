@@ -116,9 +116,11 @@ pub fn resolve_markdown_refs(
         }
 
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let candidate_char = trimmed.chars().next().unwrap();
-            let rest = &trimmed[3..];
+        let fence_rest = trimmed
+            .strip_prefix("```")
+            .map(|r| ('`', r))
+            .or_else(|| trimmed.strip_prefix("~~~").map(|r| ('~', r)));
+        if let Some((candidate_char, rest)) = fence_rest {
             if !rest.contains(candidate_char) {
                 fence_char = Some(candidate_char);
                 output_lines.push(line.to_string());
