@@ -1,13 +1,64 @@
-//! Pure date primitives shared by the build pipeline and the editor file tree.
+//! Publish-date resolution for moss content.
 //!
-//! Returns canonicalized `YYYY-MM-DD` strings. Lexicographic comparison of
-//! these strings is correct chronological comparison.
+//! Single public entry point: [`resolve_publish_date`]. Returns the file's
+//! canonical `YYYY-MM-DD` date plus the [`DateSource`] that produced it.
 //!
-//! No `chrono` dep — moss-core's existing convention is `Option<String>`
-//! for dates (see `frontmatter::FrontMatter::date`).
+//! Returns canonicalized `YYYY-MM-DD` strings so lexicographic comparison
+//! is correct chronological comparison. No `chrono` dep — moss-core's
+//! existing convention is `Option<String>` for dates (see
+//! `frontmatter::FrontMatter::date`).
 
+use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::collections::HashMap;
+
+/// Provenance of a resolved publish date. Distinguishes explicit dates
+/// (`Frontmatter`, `FilenamePrefix`) from implicit fallbacks (`Ctime`),
+/// so consumers that care (e.g. file-tree zoning, RSS feed pubDate)
+/// can treat them differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum DateSource {
+    Frontmatter,
+    FilenamePrefix,
+    Ctime,
+    None,
+}
+
+/// Resolve the publish date for a markdown file.
+///
+/// Precedence (first match wins):
+///   1. Frontmatter `date` field.
+///   2. `YYYY-MM-DD-…` prefix on any of the supplied `filenames`, in order.
+///      The slice lets callers pass multiple candidate names — e.g. a build
+///      pipeline that has both a slugified `url_path` and a source filename
+///      can pass them both without composing its own precedence here.
+///   3. `fallback_ctime`, used as-is (caller is responsible for canonical form).
+///
+/// Returns `(None, DateSource::None)` only when nothing matches.
+///
+/// Pure function — no I/O.
+pub fn resolve_publish_date(
+    frontmatter: &HashMap<String, Value>,
+    filenames: &[&str],
+    fallback_ctime: Option<&str>,
+) -> (Option<String>, DateSource) {
+    if let Some(d) = date_from_frontmatter(frontmatter) {
+        return (Some(d), DateSource::Frontmatter);
+    }
+    for fname in filenames {
+        if let Some(d) = date_from_filename_prefix(fname) {
+            return (Some(d), DateSource::FilenamePrefix);
+        }
+    }
+    if let Some(d) = fallback_ctime {
+        return (Some(d.to_string()), DateSource::Ctime);
+    }
+    (None, DateSource::None)
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────
 
 /// Read the frontmatter `date` field and normalize to `YYYY-MM-DD`.
 ///
@@ -15,10 +66,7 @@ use std::collections::HashMap;
 /// - ISO date: `2025-11-15`
 /// - ISO timestamp: `2025-11-15T10:30:00Z`, `2025-11-15T10:30:00`
 /// - Slash form: `2025/11/15`
-/// - YAML date type (when serde_yaml parses bare dates as `Value::String`)
-///
-/// Returns `None` when the field is absent or unparseable.
-pub fn date_from_frontmatter(frontmatter: &HashMap<String, Value>) -> Option<String> {
+fn date_from_frontmatter(frontmatter: &HashMap<String, Value>) -> Option<String> {
     let raw = match frontmatter.get("date")? {
         Value::String(s) => s.trim().to_string(),
         Value::Number(n) => n.to_string(),
@@ -32,15 +80,9 @@ pub fn date_from_frontmatter(frontmatter: &HashMap<String, Value>) -> Option<Str
 
 /// Parse a `YYYY-MM-DD-…` prefix from a filename.
 ///
-/// Returns the canonical `YYYY-MM-DD` string when the filename starts with
-/// a valid date in this exact form, optionally followed by `-rest` and an
-/// extension. Otherwise returns `None`.
-///
-/// Examples:
-///   `2025-11-15-research-proposals.md` → `Some("2025-11-15")`
-///   `2025-11-15.md`                    → `Some("2025-11-15")`
-///   `news-2025-11-15.md`               → `None`
-pub fn date_from_filename_prefix(filename: &str) -> Option<String> {
+/// The filename must START with the date in the exact form, optionally
+/// followed by `-rest` and an extension. `news-2025-11-15.md` does NOT match.
+fn date_from_filename_prefix(filename: &str) -> Option<String> {
     if filename.len() < 10 {
         return None;
     }
@@ -65,10 +107,7 @@ pub fn date_from_filename_prefix(filename: &str) -> Option<String> {
     Some(format!("{:04}-{:02}-{:02}", y, m, d))
 }
 
-/// Normalize a date-ish string to `YYYY-MM-DD`. Accepts:
-///   - `YYYY-MM-DD`
-///   - `YYYY-MM-DDTHH:MM:SS[Z]`
-///   - `YYYY/MM/DD`
+/// Normalize a date-ish string to `YYYY-MM-DD`.
 fn normalize_date(s: &str) -> Option<String> {
     let s = s.trim();
     let date_part = s.split('T').next().unwrap_or(s);
@@ -99,86 +138,130 @@ mod tests {
             .collect()
     }
 
+    // ── resolve_publish_date — the public API ────────────────────────────
+
     #[test]
-    fn iso_date_passes_through() {
+    fn resolve_uses_frontmatter_first() {
+        let r = resolve_publish_date(
+            &fm(&[("date", "2025-03-01")]),
+            &["2024-01-01-old.md"],
+            Some("2023-01-01"),
+        );
+        assert_eq!(r, (Some("2025-03-01".to_string()), DateSource::Frontmatter));
+    }
+
+    #[test]
+    fn resolve_falls_through_to_filename() {
+        let r = resolve_publish_date(
+            &fm(&[("title", "x")]),
+            &["2024-01-01-old.md"],
+            Some("2023-01-01"),
+        );
         assert_eq!(
-            date_from_frontmatter(&fm(&[("date", "2025-11-15")])),
-            Some("2025-11-15".to_string())
+            r,
+            (Some("2024-01-01".to_string()), DateSource::FilenamePrefix)
         );
     }
 
     #[test]
-    fn iso_timestamp_truncated_to_date() {
+    fn resolve_tries_each_filename_in_order() {
+        // First filename has no prefix; second one matches.
+        let r = resolve_publish_date(
+            &fm(&[]),
+            &["no-date.md", "2024-05-15-from-second.md"],
+            None,
+        );
         assert_eq!(
-            date_from_frontmatter(&fm(&[("date", "2025-11-15T10:30:00Z")])),
-            Some("2025-11-15".to_string())
+            r,
+            (Some("2024-05-15".to_string()), DateSource::FilenamePrefix)
         );
     }
 
     #[test]
-    fn slash_form_normalized() {
-        assert_eq!(
-            date_from_frontmatter(&fm(&[("date", "2025/11/15")])),
-            Some("2025-11-15".to_string())
-        );
+    fn resolve_falls_through_to_ctime() {
+        let r = resolve_publish_date(&fm(&[]), &["no-date.md"], Some("2023-01-01"));
+        assert_eq!(r, (Some("2023-01-01".to_string()), DateSource::Ctime));
     }
 
     #[test]
-    fn missing_field_returns_none() {
-        assert_eq!(date_from_frontmatter(&fm(&[("title", "x")])), None);
+    fn resolve_returns_none_when_nothing_available() {
+        let r = resolve_publish_date(&fm(&[]), &["no-date.md"], None);
+        assert_eq!(r, (None, DateSource::None));
     }
 
     #[test]
-    fn malformed_returns_none() {
-        assert_eq!(
-            date_from_frontmatter(&fm(&[("date", "not a date")])),
-            None
-        );
+    fn resolve_handles_empty_filenames_slice() {
+        let r = resolve_publish_date(&fm(&[]), &[], Some("2023-01-01"));
+        assert_eq!(r, (Some("2023-01-01".to_string()), DateSource::Ctime));
+    }
+
+    // ── frontmatter forms (covered through the public API) ──────────────
+
+    #[test]
+    fn frontmatter_iso_date_passes_through() {
+        let r = resolve_publish_date(&fm(&[("date", "2025-11-15")]), &[], None);
+        assert_eq!(r.0, Some("2025-11-15".to_string()));
     }
 
     #[test]
-    fn empty_string_returns_none() {
-        assert_eq!(date_from_frontmatter(&fm(&[("date", "")])), None);
+    fn frontmatter_iso_timestamp_truncated_to_date() {
+        let r = resolve_publish_date(&fm(&[("date", "2025-11-15T10:30:00Z")]), &[], None);
+        assert_eq!(r.0, Some("2025-11-15".to_string()));
     }
 
-    // --- date_from_filename_prefix ---
+    #[test]
+    fn frontmatter_slash_form_normalized() {
+        let r = resolve_publish_date(&fm(&[("date", "2025/11/15")]), &[], None);
+        assert_eq!(r.0, Some("2025-11-15".to_string()));
+    }
+
+    #[test]
+    fn frontmatter_malformed_returns_none() {
+        let r = resolve_publish_date(&fm(&[("date", "not a date")]), &[], None);
+        assert_eq!(r, (None, DateSource::None));
+    }
+
+    #[test]
+    fn frontmatter_empty_string_returns_none() {
+        let r = resolve_publish_date(&fm(&[("date", "")]), &[], None);
+        assert_eq!(r, (None, DateSource::None));
+    }
+
+    // ── filename forms (covered through the public API) ─────────────────
 
     #[test]
     fn filename_with_dated_slug() {
-        assert_eq!(
-            date_from_filename_prefix("2025-11-15-research-proposals.md"),
-            Some("2025-11-15".to_string())
-        );
+        let r = resolve_publish_date(&fm(&[]), &["2025-11-15-research-proposals.md"], None);
+        assert_eq!(r.0, Some("2025-11-15".to_string()));
     }
 
     #[test]
     fn filename_bare_date_md() {
-        assert_eq!(
-            date_from_filename_prefix("2025-11-15.md"),
-            Some("2025-11-15".to_string())
-        );
+        let r = resolve_publish_date(&fm(&[]), &["2025-11-15.md"], None);
+        assert_eq!(r.0, Some("2025-11-15".to_string()));
     }
 
     #[test]
     fn filename_no_prefix() {
-        assert_eq!(date_from_filename_prefix("research-proposals.md"), None);
+        let r = resolve_publish_date(&fm(&[]), &["research-proposals.md"], None);
+        assert_eq!(r, (None, DateSource::None));
     }
 
     #[test]
     fn filename_date_in_middle_does_not_match() {
-        assert_eq!(date_from_filename_prefix("news-2025-11-15.md"), None);
+        let r = resolve_publish_date(&fm(&[]), &["news-2025-11-15.md"], None);
+        assert_eq!(r, (None, DateSource::None));
     }
 
     #[test]
     fn filename_invalid_date_returns_none() {
-        assert_eq!(date_from_filename_prefix("2025-13-99-foo.md"), None);
+        let r = resolve_publish_date(&fm(&[]), &["2025-13-99-foo.md"], None);
+        assert_eq!(r, (None, DateSource::None));
     }
 
     #[test]
     fn filename_extensionless() {
-        assert_eq!(
-            date_from_filename_prefix("2025-11-15-foo"),
-            Some("2025-11-15".to_string())
-        );
+        let r = resolve_publish_date(&fm(&[]), &["2025-11-15-foo"], None);
+        assert_eq!(r.0, Some("2025-11-15".to_string()));
     }
 }
