@@ -63,6 +63,16 @@ pub struct HeadingInputs<'a> {
     /// `:::hero` block — when present, the hero owns the heading slot and
     /// the auto-injected H1 is suppressed regardless of title.
     pub body_markdown: &'a str,
+    /// The project's root folder name (the user's vault directory basename).
+    /// Used as a fallback for self-named-folder-note detection when the
+    /// file is at the project root: `<root>/<root>.md` and `<root>/index.md`
+    /// both render the project's homepage, but `Path::parent()` returns
+    /// the empty path for root-level files, so the path-based check can't
+    /// see the folder name. Editor and pipeline both pass the basename of
+    /// the open project folder. Pass `None` if unknown (filename
+    /// detection still catches index.md / README.md / language-suffixed
+    /// indexes).
+    pub root_folder_name: Option<&'a str>,
     /// `true` iff the file is promoted to its folder's home via
     /// `translationKey: home` (issue #587). Pipeline-only input; editor
     /// passes `false`.
@@ -127,11 +137,21 @@ pub fn compute(input: HeadingInputs<'_>) -> HeadingState {
     );
 
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let parent_name = path
+    // Resolve parent folder name. For nested files (`recipes/recipes.md`)
+    // we pull from the path. For ROOT-level files (`刘果.md` in a vault
+    // named `刘果`) Path::parent() returns the empty path with no
+    // file_name, so we fall back to `root_folder_name` — letting
+    // self-named-home detection work at the project root.
+    let parent_from_path = path
         .parent()
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
         .unwrap_or("");
+    let parent_name = if parent_from_path.is_empty() {
+        input.root_folder_name.unwrap_or("")
+    } else {
+        parent_from_path
+    };
     let filename_lower = stem.to_lowercase();
     let is_index_file =
         home::is_home_file(&filename_lower, parent_name) || input.is_translation_home;
@@ -153,6 +173,7 @@ mod tests {
             file_path,
             frontmatter_title,
             body_markdown: "",
+            root_folder_name: None,
             is_translation_home: false,
         }
     }
@@ -228,6 +249,37 @@ mod tests {
         let s = compute(inputs("recipes/recipes.md", None));
         assert!(!s.visible);
         assert_eq!(s.text, "recipes");
+    }
+
+    #[test]
+    fn hidden_for_root_self_named_home_with_root_folder_name() {
+        // Regression: a vault opened at `刘果/`, with `刘果.md` at the project
+        // root, must be detected as the home file. Path::parent() returns
+        // the empty path (no file_name), so without `root_folder_name` the
+        // path-based check misses the self-named case.
+        let s = compute(HeadingInputs {
+            file_path: "刘果.md",
+            frontmatter_title: None,
+            body_markdown: "",
+            root_folder_name: Some("刘果"),
+            is_translation_home: false,
+        });
+        assert!(!s.visible, "root-level self-named home file must hide H1");
+    }
+
+    #[test]
+    fn root_index_md_still_hidden_without_root_folder_name() {
+        // Compatibility: even when the caller passes None for
+        // root_folder_name, recognized index stems (index.md / README.md)
+        // at the root are still detected via is_index_stem.
+        let s = compute(HeadingInputs {
+            file_path: "index.md",
+            frontmatter_title: None,
+            body_markdown: "",
+            root_folder_name: None,
+            is_translation_home: false,
+        });
+        assert!(!s.visible);
     }
 
     #[test]
@@ -321,6 +373,7 @@ mod tests {
             file_path: "posts/article.md",
             frontmatter_title: None,
             body_markdown: ":::hero\nimage: x.jpg\n:::\n\nBody.",
+            root_folder_name: None,
             is_translation_home: false,
         });
         assert!(!s.visible);
@@ -333,6 +386,7 @@ mod tests {
             file_path: "posts/article.md",
             frontmatter_title: Some("Custom"),
             body_markdown: ":::hero\n:::\n\nBody.",
+            root_folder_name: None,
             is_translation_home: false,
         });
         assert!(!s.visible, "hero ownership trumps title presence");
@@ -345,6 +399,7 @@ mod tests {
             file_path: "posts/article.md",
             frontmatter_title: None,
             body_markdown: "Some intro paragraph.\n\n:::hero\n:::",
+            root_folder_name: None,
             is_translation_home: false,
         });
         assert!(s.visible, "hero anywhere but at top does not own heading");
@@ -356,6 +411,7 @@ mod tests {
             file_path: "posts/article.md",
             frontmatter_title: None,
             body_markdown: "\n\n\n:::hero\n:::",
+            root_folder_name: None,
             is_translation_home: false,
         });
         assert!(!s.visible, "leading blanks before :::hero still count as 'at top'");
@@ -369,6 +425,7 @@ mod tests {
             file_path: "posts/article.md",
             frontmatter_title: None,
             body_markdown: "",
+            root_folder_name: None,
             is_translation_home: true,
         });
         assert!(!s.visible);
