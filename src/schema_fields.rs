@@ -99,7 +99,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         required: true,
         priority: 10,
-        description: "Chrome label: drives <title>, og:title, RSS, nav, breadcrumb, link cards. The visible page heading is the filename — this field does not affect it.",
+        description: "Title of the page. Drives the visible heading, <title>, og:title, RSS, nav, breadcrumb, and link cards. Filename is used when this field is missing. Set to an empty string to suppress the auto-injected page heading.",
         group: "Common",
         ..FIELD_DEFAULTS
     },
@@ -343,15 +343,6 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Checkbox,
         priority: 80,
         description: "Per-page comment opt-in/opt-out",
-        group: "Navigation & Visibility",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "heading",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
-        priority: 80,
-        description: "Show the article heading (filename) at the top of the page",
         group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },

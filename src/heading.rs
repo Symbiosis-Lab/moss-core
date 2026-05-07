@@ -1,21 +1,23 @@
 //! Article heading rule — single source of truth for the auto-injected
-//! `<h1 class="moss-article-title">` and the editor's pinned filename heading.
+//! `<h1 class="moss-article-title">` and the editor's pinned heading element.
 //!
 //! Both consumers — the build pipeline (`src-tauri/src/build/markdown/pipeline.rs`)
 //! and the editor command `compute_heading_state`
 //! (`src-tauri/src/editor/commands.rs`) — feed the same inputs into [`compute`]
 //! and act on the same answer. Without this module the two paths silently
-//! desync the next time the rule changes (new opt-out, new index pattern,
-//! hero-H1 detection, ...).
+//! desync the next time the rule changes.
 //!
 //! The rule:
 //!   - Markdown files only.
 //!   - Index/folder pages never get the auto-injected H1.
-//!   - Frontmatter `heading: false` opts out (`Some(true)`/`None`/missing show).
-//!   - A hero block that already contains an `<h1>` owns the title slot.
+//!   - Frontmatter `title:` drives the heading text and source:
+//!     - missing → filename-mode (text from filename, source = Filename)
+//!     - non-empty → title-mode (text from title:, source = Title, visible)
+//!     - empty `""` or whitespace-only → title-mode + invisible (explicit no-heading)
+//!   - A `:::hero` block at the top of the body owns the title slot —
+//!     no auto-injection regardless of title.
 //!
-//! The visible text is the title-cased filename (folder notes use the parent
-//! folder name). See `docs/architecture/title-rendering.md`.
+//! See `docs/architecture/title-rendering.md`.
 
 use crate::home;
 
@@ -23,46 +25,52 @@ use crate::home;
 ///
 /// `visible` is the gate the build pipeline checks before injecting an
 /// `<h1 class="moss-article-title">` and the editor checks before rendering
-/// its pinned filename heading element.
+/// its pinned heading element. `source` tells the editor where `text` came
+/// from so it can route heading-element commits between rename (Filename)
+/// and title-update (Title).
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HeadingState {
     /// Whether the article heading should render.
     pub visible: bool,
-    /// The visible heading text (filename, hyphens/underscores → spaces,
-    /// folder-note → parent folder name).
+    /// The visible heading text (resolved through title or filename).
     pub text: String,
+    /// Where `text` was sourced from.
+    pub source: HeadingSource,
+}
+
+/// Where the resolved heading text came from. New variants are added when a
+/// new origin is introduced; consumers handle them exhaustively.
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HeadingSource {
+    /// Text derived from filename (or parent folder for index notes).
+    Filename,
+    /// Text from frontmatter `title:`. `Some("")` and `Some("   ")` count as
+    /// Title source with empty text — `visible` will be false in that case.
+    Title,
 }
 
 /// Inputs to the heading rule.
-///
-/// Callers populate as much as they have. The editor command knows the file
-/// path and the `heading` field; the build pipeline additionally knows the
-/// rendered hero HTML and whether this file is a translation-home override.
 #[derive(Debug, Clone, Copy)]
 pub struct HeadingInputs<'a> {
     pub file_path: &'a str,
-    /// Frontmatter `heading` field. `Some(false)` opts out; `Some(true)`,
-    /// `None`, and missing all mean "show".
-    pub heading_field: Option<bool>,
-    /// Pipeline-only input: pre-rendered hero HTML. When it contains an
-    /// `<h1>` tag the hero owns the title slot and the article heading is
-    /// hidden. The editor passes `None` and accepts the narrow inconsistency
-    /// (no shortcode pipeline at edit time). See issue #609 follow-ups.
-    pub hero_html: Option<&'a str>,
-    /// Pipeline-only input: `true` iff the file is promoted to its folder's
-    /// home via `translationKey: home` (issue #587). Pipeline derives from
-    /// `page_map`; the editor passes `false` (no built page_map at edit
-    /// time). The filename-only home detection runs internally; this flag
-    /// is the page_map-only override.
+    /// Frontmatter `title:` value verbatim. `None` is "field missing"
+    /// (filename-mode); `Some("")`, `Some("   ")` is "explicitly empty"
+    /// (Title source, invisible).
+    pub frontmatter_title: Option<&'a str>,
+    /// Raw markdown body (post-frontmatter). Used to detect a leading
+    /// `:::hero` block — when present, the hero owns the heading slot and
+    /// the auto-injected H1 is suppressed regardless of title.
+    pub body_markdown: &'a str,
+    /// `true` iff the file is promoted to its folder's home via
+    /// `translationKey: home` (issue #587). Pipeline-only input; editor
+    /// passes `false`.
     pub is_translation_home: bool,
 }
 
-/// Compute just the visible heading text for a file path.
-///
-/// Used by callers that need the text before all visibility inputs are
-/// available (e.g. the build pipeline computes `filename_title` early to
-/// feed downstream label fallback). [`compute`] uses the same logic.
+/// Compute just the visible heading text for a file path. Used by callers
+/// that need the text before the full state.
 pub fn filename_text(file_path: &str) -> String {
     let path = std::path::Path::new(file_path);
     let stem = path
@@ -83,11 +91,32 @@ pub fn filename_text(file_path: &str) -> String {
     source_name.replace('-', " ").replace('_', " ")
 }
 
-/// Compute the full heading state (visible + text) for a page.
+/// Whether the body begins with a `:::hero` block, after any leading blank
+/// lines. The first non-blank content line must be `:::hero` followed
+/// optionally by attributes/whitespace.
+pub fn body_starts_with_hero(body_markdown: &str) -> bool {
+    body_markdown
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| {
+            let trimmed = line.trim_start();
+            trimmed == ":::hero"
+                || trimmed.starts_with(":::hero ")
+                || trimmed.starts_with(":::hero\t")
+        })
+        .unwrap_or(false)
+}
+
+/// Compute the full heading state for a page.
 pub fn compute(input: HeadingInputs<'_>) -> HeadingState {
     let path = std::path::Path::new(input.file_path);
 
-    let text = filename_text(input.file_path);
+    // Resolve text + source from frontmatter.title before all other rules.
+    // Some(_) → Title source (empty allowed); None → Filename source.
+    let (text, source) = match input.frontmatter_title {
+        Some(t) => (t.trim().to_string(), HeadingSource::Title),
+        None => (filename_text(input.file_path), HeadingSource::Filename),
+    };
 
     let is_markdown = matches!(
         path.extension()
@@ -107,32 +136,23 @@ pub fn compute(input: HeadingInputs<'_>) -> HeadingState {
     let is_index_file =
         home::is_home_file(&filename_lower, parent_name) || input.is_translation_home;
 
-    let opted_out = input.heading_field == Some(false);
-    let hero_owns_title = hero_contains_h1(input.hero_html);
+    let empty_title = source == HeadingSource::Title && text.is_empty();
+    let hero_at_top = body_starts_with_hero(input.body_markdown);
 
-    let visible = is_markdown && !is_index_file && !opted_out && !hero_owns_title;
+    let visible = is_markdown && !is_index_file && !empty_title && !hero_at_top;
 
-    HeadingState { visible, text }
-}
-
-/// Whether a hero HTML block contains an `<h1>` tag.
-///
-/// Substring match — sufficient because hero HTML is generated by the
-/// shortcode renderer, never user-pasted, so there is no stray `<h1` token
-/// to misclassify.
-fn hero_contains_h1(hero_html: Option<&str>) -> bool {
-    hero_html.is_some_and(|h| h.contains("<h1"))
+    HeadingState { visible, text, source }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn inputs(file_path: &str, heading_field: Option<bool>) -> HeadingInputs<'_> {
+    fn inputs<'a>(file_path: &'a str, frontmatter_title: Option<&'a str>) -> HeadingInputs<'a> {
         HeadingInputs {
             file_path,
-            heading_field,
-            hero_html: None,
+            frontmatter_title,
+            body_markdown: "",
             is_translation_home: false,
         }
     }
@@ -179,13 +199,14 @@ mod tests {
         assert_eq!(filename_text("文字/index.md"), "文字");
     }
 
-    // ── compute: visibility ──────────────────────────────────────────
+    // ── compute: visibility + filename mode ──────────────────────────
 
     #[test]
     fn visible_for_article_md() {
         let s = compute(inputs("posts/my-first-post.md", None));
         assert!(s.visible);
         assert_eq!(s.text, "my first post");
+        assert!(matches!(s.source, HeadingSource::Filename));
     }
 
     #[test]
@@ -207,26 +228,6 @@ mod tests {
         let s = compute(inputs("recipes/recipes.md", None));
         assert!(!s.visible);
         assert_eq!(s.text, "recipes");
-    }
-
-    #[test]
-    fn hidden_when_heading_false() {
-        let s = compute(inputs("posts/article.md", Some(false)));
-        assert!(!s.visible);
-    }
-
-    #[test]
-    fn visible_when_heading_true() {
-        let s = compute(inputs("posts/article.md", Some(true)));
-        assert!(s.visible);
-    }
-
-    #[test]
-    fn visible_when_heading_missing() {
-        // None mirrors `Option<bool>::None` on the typed pipeline side and
-        // YAML `null`/missing-key on the JSON-typed editor side.
-        let s = compute(inputs("posts/article.md", None));
-        assert!(s.visible);
     }
 
     #[test]
@@ -263,50 +264,101 @@ mod tests {
         assert_eq!(s.text, "文字");
     }
 
-    // ── compute: hero-H1 gate ────────────────────────────────────────
+    // ── compute: source enum / title mode ────────────────────────────
 
     #[test]
-    fn hidden_when_hero_has_h1() {
-        let s = compute(HeadingInputs {
-            file_path: "posts/article.md",
-            heading_field: None,
-            hero_html: Some("<header><h1>Hero title</h1></header>"),
-            is_translation_home: false,
-        });
-        assert!(!s.visible, "hero owns the title slot when it contains an <h1>");
-    }
-
-    #[test]
-    fn visible_when_hero_has_no_h1() {
-        let s = compute(HeadingInputs {
-            file_path: "posts/article.md",
-            heading_field: None,
-            hero_html: Some("<header><h2>Sub</h2></header>"),
-            is_translation_home: false,
-        });
+    fn source_is_title_when_frontmatter_title_set() {
+        let s = compute(inputs("posts/article.md", Some("Custom")));
+        assert_eq!(s.text, "Custom");
+        assert!(matches!(s.source, HeadingSource::Title));
         assert!(s.visible);
     }
 
     #[test]
-    fn visible_when_no_hero() {
-        let s = compute(HeadingInputs {
-            file_path: "posts/article.md",
-            heading_field: None,
-            hero_html: None,
-            is_translation_home: false,
-        });
+    fn source_is_filename_when_title_absent() {
+        let s = compute(inputs("posts/article.md", None));
+        assert!(matches!(s.source, HeadingSource::Filename));
+        assert_eq!(s.text, "article");
         assert!(s.visible);
     }
 
     #[test]
-    fn hidden_when_hero_h1_has_attributes() {
+    fn empty_title_produces_invisible_state() {
+        let s = compute(inputs("posts/article.md", Some("")));
+        assert!(matches!(s.source, HeadingSource::Title));
+        assert_eq!(s.text, "");
+        assert!(!s.visible, "title: \"\" suppresses the auto-injected H1");
+    }
+
+    #[test]
+    fn whitespace_title_produces_invisible_state() {
+        let s = compute(inputs("posts/article.md", Some("   ")));
+        assert!(matches!(s.source, HeadingSource::Title));
+        assert_eq!(s.text, "");
+        assert!(!s.visible);
+    }
+
+    #[test]
+    fn title_overrides_index_visibility_unchanged() {
+        let s = compute(inputs("site/index.md", Some("Welcome")));
+        assert!(!s.visible, "index pages still don't auto-inject");
+        assert!(matches!(s.source, HeadingSource::Title));
+        assert_eq!(s.text, "Welcome");
+    }
+
+    #[test]
+    fn title_text_is_trimmed() {
+        let s = compute(inputs("posts/article.md", Some("  Custom  ")));
+        assert_eq!(s.text, "Custom");
+        assert!(s.visible);
+    }
+
+    // ── compute: hero-from-body ──────────────────────────────────────
+
+    #[test]
+    fn hero_at_top_hides_heading_when_title_absent() {
         let s = compute(HeadingInputs {
             file_path: "posts/article.md",
-            heading_field: None,
-            hero_html: Some("<section><h1 id=\"x\" class=\"y\">Hero</h1></section>"),
+            frontmatter_title: None,
+            body_markdown: ":::hero\nimage: x.jpg\n:::\n\nBody.",
             is_translation_home: false,
         });
         assert!(!s.visible);
+        assert_eq!(s.text, "article");
+    }
+
+    #[test]
+    fn hero_at_top_hides_heading_when_title_set() {
+        let s = compute(HeadingInputs {
+            file_path: "posts/article.md",
+            frontmatter_title: Some("Custom"),
+            body_markdown: ":::hero\n:::\n\nBody.",
+            is_translation_home: false,
+        });
+        assert!(!s.visible, "hero ownership trumps title presence");
+        assert_eq!(s.text, "Custom");
+    }
+
+    #[test]
+    fn hero_only_detected_at_top_not_mid_body() {
+        let s = compute(HeadingInputs {
+            file_path: "posts/article.md",
+            frontmatter_title: None,
+            body_markdown: "Some intro paragraph.\n\n:::hero\n:::",
+            is_translation_home: false,
+        });
+        assert!(s.visible, "hero anywhere but at top does not own heading");
+    }
+
+    #[test]
+    fn hero_detection_skips_leading_blank_lines() {
+        let s = compute(HeadingInputs {
+            file_path: "posts/article.md",
+            frontmatter_title: None,
+            body_markdown: "\n\n\n:::hero\n:::",
+            is_translation_home: false,
+        });
+        assert!(!s.visible, "leading blanks before :::hero still count as 'at top'");
     }
 
     // ── compute: translation-home override ───────────────────────────
@@ -315,10 +367,23 @@ mod tests {
     fn hidden_when_translation_home() {
         let s = compute(HeadingInputs {
             file_path: "posts/article.md",
-            heading_field: None,
-            hero_html: None,
+            frontmatter_title: None,
+            body_markdown: "",
             is_translation_home: true,
         });
-        assert!(!s.visible, "translation-home overrides treat the page as an index");
+        assert!(!s.visible);
+    }
+
+    // ── body_starts_with_hero helper ─────────────────────────────────
+
+    #[test]
+    fn body_starts_with_hero_basic() {
+        assert!(body_starts_with_hero(":::hero\n:::"));
+        assert!(body_starts_with_hero("\n\n:::hero\nimage: x\n:::"));
+        assert!(body_starts_with_hero(":::hero attr=value\n:::"));
+        assert!(!body_starts_with_hero("# Heading\n:::hero\n:::"));
+        assert!(!body_starts_with_hero("Some prose first.\n\n:::hero\n:::"));
+        assert!(!body_starts_with_hero(""));
+        assert!(!body_starts_with_hero("\n\n"));
     }
 }
