@@ -655,8 +655,16 @@ fn extract_with_state(
         if in_code_fence {
             output.push_str(line);
             output.push('\n');
+            // `fence_marker` is set non-empty by `detect_code_fence_open`
+            // when we entered this state, so `chars().next()` returns
+            // `Some` in practice. `unwrap_or(' ')` is a safe degenerate
+            // fallback: a literal space could only match a fence-close
+            // line if the trimmed line *was* spaces, but `trimmed` has
+            // already had its surrounding whitespace stripped, so the
+            // is_empty check would still reject it.
+            let fence_char = fence_marker.chars().next().unwrap_or(' ');
             if trimmed.starts_with(&fence_marker)
-                && trimmed.trim_start_matches(fence_marker.chars().next().unwrap()).trim().is_empty()
+                && trimmed.trim_start_matches(fence_char).trim().is_empty()
             {
                 in_code_fence = false;
                 fence_marker.clear();

@@ -229,10 +229,26 @@ fn is_valid_date(s: &str) -> bool {
         }
     }
 
+    // The byte-position checks above guarantee the three-segment shape and
+    // ASCII-digit content, so the parses below cannot fail today. But "panics
+    // only when the author was right" is the same shape that just bit us in
+    // `date.rs` — refactor the byte checks above and these `.unwrap()`s become
+    // a panic on user input. Use slice-pattern destructuring + `let-else`
+    // instead so the compiler enforces the three-segment shape, and bail
+    // cleanly via `Result::Err` rather than a panic if parsing ever fails.
     let parts: Vec<&str> = s.split('-').collect();
-    let year: u32 = parts[0].parse().unwrap();
-    let month: u32 = parts[1].parse().unwrap();
-    let day: u32 = parts[2].parse().unwrap();
+    let [year_str, month_str, day_str] = parts.as_slice() else {
+        return false;
+    };
+    let Ok(year) = year_str.parse::<u32>() else {
+        return false;
+    };
+    let Ok(month) = month_str.parse::<u32>() else {
+        return false;
+    };
+    let Ok(day) = day_str.parse::<u32>() else {
+        return false;
+    };
 
     if year < 1 || month < 1 || month > 12 || day < 1 {
         return false;

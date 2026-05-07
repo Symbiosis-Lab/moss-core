@@ -19,6 +19,14 @@
 // (e.g. "char-aligned: pos came from `find('/')`"). Audited at PR time, not
 // "we hope no one writes the bug shape again."
 #![deny(clippy::string_slice)]
+// `clippy::unwrap_used` / `clippy::expect_used` enforce the second half of the
+// panic-free contract: production code must never `.unwrap()` / `.expect()`
+// a value that could be `None`/`Err` at runtime. Test code (`#[cfg(test)]
+// mod tests`) is exempted via `cfg_attr(not(test), ...)` because tests
+// legitimately want to fail fast on assertion violations. Safe call sites
+// must annotate with `#[allow(clippy::unwrap_used)]` + per-site rationale,
+// same pattern as `clippy::string_slice`.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod ast;
 pub mod content_graph;

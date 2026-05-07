@@ -282,9 +282,15 @@ pub fn resolve_frontmatter_wikilinks(
             //     advanced by `+= 3` / `+= 1` past ASCII chars (`!`, `[`).
             //   * In this else branch, we read one full char from the boundary
             //     and advance by exactly its UTF-8 length, preserving the boundary.
-            // Therefore slicing `frontmatter[i..]` here is safe.
+            // Therefore slicing `frontmatter[i..]` here is safe, and the
+            // `let-else { break }` is a defensive fallback: the loop guard
+            // `i < len` already ensures at least one byte is available, but
+            // bailing cleanly is cheaper than a panic if the invariant ever
+            // breaks.
             #[allow(clippy::string_slice)]
-            let ch = frontmatter[i..].chars().next().unwrap();
+            let Some(ch) = frontmatter[i..].chars().next() else {
+                break;
+            };
             result.push(ch);
             i += ch.len_utf8();
         }
