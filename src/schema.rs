@@ -254,8 +254,8 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 30 non-skip fields (29 + slot)
-        assert_eq!(schema.frontmatter.fields.len(), 30);
+        // 29 non-skip fields after dropping `heading:` (2026-05-06 consolidation).
+        assert_eq!(schema.frontmatter.fields.len(), 29);
     }
 
     #[test]
