@@ -22,3 +22,9 @@ serde_json = "1.0"
 default = []
 # Enable specta::Type derives for Tauri command boundary types.
 specta = ["dep:specta"]
+
+[dev-dependencies]
+# Property-based tests for moss-core's pure functions. moss-core consumes
+# user-provided strings (filenames, frontmatter, content); proptest is the
+# cheapest way to assert "never panics on arbitrary UTF-8" as a contract.
+proptest = "1.5"

@@ -83,13 +83,14 @@ fn date_from_frontmatter(frontmatter: &HashMap<String, Value>) -> Option<String>
 /// The filename must START with the date in the exact form, optionally
 /// followed by `-rest` and an extension. `news-2025-11-15.md` does NOT match.
 fn date_from_filename_prefix(filename: &str) -> Option<String> {
-    if filename.len() < 10 {
+    // Operate on bytes throughout: `&filename[..10]` panics when byte 10 lands
+    // inside a multi-byte char (e.g. `纽约诸法门.md`). All bytes we *match*
+    // against (digits, `-`, `.`) are ASCII, so byte comparisons are
+    // semantically equivalent to char comparisons here.
+    let bytes = filename.as_bytes();
+    if bytes.len() < 10 {
         return None;
     }
-    let head = &filename[..10];
-    let after = &filename[10..];
-
-    let bytes = head.as_bytes();
     if bytes[4] != b'-' || bytes[7] != b'-' {
         return None;
     }
@@ -100,8 +101,9 @@ fn date_from_filename_prefix(filename: &str) -> Option<String> {
         return None;
     }
 
-    if !after.is_empty() && !after.starts_with('-') && !after.starts_with('.') {
-        return None;
+    match bytes.get(10) {
+        None | Some(b'-') | Some(b'.') => {}
+        _ => return None,
     }
 
     Some(format!("{:04}-{:02}-{:02}", y, m, d))
@@ -263,5 +265,63 @@ mod tests {
     fn filename_extensionless() {
         let r = resolve_publish_date(&fm(&[]), &["2025-11-15-foo"], None);
         assert_eq!(r.0, Some("2025-11-15".to_string()));
+    }
+
+    // ── non-ASCII filenames must not panic (regression: #date-utf8-panic) ──
+
+    #[test]
+    fn filename_cjk_only_is_rejected_without_panic() {
+        // The original report: opening this file in the editor crashed moss
+        // because `&filename[..10]` cut inside the third byte of `法`.
+        let r = resolve_publish_date(&fm(&[]), &["纽约诸法门.md"], None);
+        assert_eq!(r, (None, DateSource::None));
+    }
+
+    #[test]
+    fn filename_dated_then_cjk_slug_matches() {
+        let r = resolve_publish_date(&fm(&[]), &["2025-11-15-纽约诸法门.md"], None);
+        assert_eq!(r.0, Some("2025-11-15".to_string()));
+    }
+
+    #[test]
+    fn filename_emoji_only_is_rejected_without_panic() {
+        let r = resolve_publish_date(&fm(&[]), &["📝-notes.md"], None);
+        assert_eq!(r, (None, DateSource::None));
+    }
+
+    #[test]
+    fn filename_date_followed_by_cjk_without_separator_is_rejected() {
+        // Byte 10 is the first byte of `春` (0xE6) — not `-` or `.`, so the
+        // function must reject the filename rather than slice through `春`.
+        let r = resolve_publish_date(&fm(&[]), &["2025-11-15春节.md"], None);
+        assert_eq!(r, (None, DateSource::None));
+    }
+
+    #[test]
+    fn filename_with_non_ascii_inside_date_window_is_rejected() {
+        // `é` (2 bytes) at position 0 means bytes[4] lands on a digit, not
+        // `-` — the date prefix is broken before we reach the boundary check.
+        // Earlier code panicked before getting this far for some inputs in
+        // this shape; the test pins the no-panic invariant for the whole
+        // pre-position-10 window.
+        let r = resolve_publish_date(&fm(&[]), &["é025-11-15.md"], None);
+        assert_eq!(r, (None, DateSource::None));
+    }
+
+    // ── property test: pure functions in moss-core must not panic on user input ──
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2048))]
+
+        #[test]
+        fn resolve_publish_date_never_panics_on_arbitrary_input(
+            name in ".*",
+            ctime in proptest::option::of(".*"),
+        ) {
+            // The contract: moss-core takes untrusted user strings (filenames,
+            // frontmatter values) and must return a value, not abort the host
+            // process. Anything that reaches a Tauri command must satisfy this.
+            let _ = resolve_publish_date(&HashMap::new(), &[name.as_str()], ctime.as_deref());
+        }
     }
 }
