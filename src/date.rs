@@ -30,6 +30,41 @@ pub fn date_from_frontmatter(frontmatter: &HashMap<String, Value>) -> Option<Str
     normalize_date(&raw)
 }
 
+/// Parse a `YYYY-MM-DD-…` prefix from a filename.
+///
+/// Returns the canonical `YYYY-MM-DD` string when the filename starts with
+/// a valid date in this exact form, optionally followed by `-rest` and an
+/// extension. Otherwise returns `None`.
+///
+/// Examples:
+///   `2025-11-15-research-proposals.md` → `Some("2025-11-15")`
+///   `2025-11-15.md`                    → `Some("2025-11-15")`
+///   `news-2025-11-15.md`               → `None`
+pub fn date_from_filename_prefix(filename: &str) -> Option<String> {
+    if filename.len() < 10 {
+        return None;
+    }
+    let head = &filename[..10];
+    let after = &filename[10..];
+
+    let bytes = head.as_bytes();
+    if bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let y = std::str::from_utf8(&bytes[0..4]).ok()?.parse::<u32>().ok()?;
+    let m = std::str::from_utf8(&bytes[5..7]).ok()?.parse::<u32>().ok()?;
+    let d = std::str::from_utf8(&bytes[8..10]).ok()?.parse::<u32>().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || y == 0 {
+        return None;
+    }
+
+    if !after.is_empty() && !after.starts_with('-') && !after.starts_with('.') {
+        return None;
+    }
+
+    Some(format!("{:04}-{:02}-{:02}", y, m, d))
+}
+
 /// Normalize a date-ish string to `YYYY-MM-DD`. Accepts:
 ///   - `YYYY-MM-DD`
 ///   - `YYYY-MM-DDTHH:MM:SS[Z]`
@@ -104,5 +139,46 @@ mod tests {
     #[test]
     fn empty_string_returns_none() {
         assert_eq!(date_from_frontmatter(&fm(&[("date", "")])), None);
+    }
+
+    // --- date_from_filename_prefix ---
+
+    #[test]
+    fn filename_with_dated_slug() {
+        assert_eq!(
+            date_from_filename_prefix("2025-11-15-research-proposals.md"),
+            Some("2025-11-15".to_string())
+        );
+    }
+
+    #[test]
+    fn filename_bare_date_md() {
+        assert_eq!(
+            date_from_filename_prefix("2025-11-15.md"),
+            Some("2025-11-15".to_string())
+        );
+    }
+
+    #[test]
+    fn filename_no_prefix() {
+        assert_eq!(date_from_filename_prefix("research-proposals.md"), None);
+    }
+
+    #[test]
+    fn filename_date_in_middle_does_not_match() {
+        assert_eq!(date_from_filename_prefix("news-2025-11-15.md"), None);
+    }
+
+    #[test]
+    fn filename_invalid_date_returns_none() {
+        assert_eq!(date_from_filename_prefix("2025-13-99-foo.md"), None);
+    }
+
+    #[test]
+    fn filename_extensionless() {
+        assert_eq!(
+            date_from_filename_prefix("2025-11-15-foo"),
+            Some("2025-11-15".to_string())
+        );
     }
 }
