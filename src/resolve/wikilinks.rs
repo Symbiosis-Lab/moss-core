@@ -395,6 +395,23 @@ fn resolve_embed(
 
     let (file_part, section, query, alias) = parse_wikilink_inner(inner);
 
+    // Trailing-slash on the literal target signals a folder-list embed.
+    // We dispatch BEFORE running through resolve_reference because
+    // ContentGraph::resolve_path normalizes trailing slashes away — running
+    // it first would always discard the folder-embed signal. The actual
+    // listing is rendered by the src-tauri marker resolver (Task 16) which
+    // has `all_docs` available; here we just emit a marker carrying the
+    // user-written path + the source file path (for relative resolution).
+    if !file_part.is_empty() && file_part.ends_with('/') {
+        outgoing_links.push(OutgoingLink {
+            target_path: file_part.to_string(),
+            display_text: file_part.to_string(),
+            link_type: LinkType::Embed,
+        });
+        let params = super::embed_renderer::folder_list::parse_params(alias.unwrap_or(""));
+        return super::embed_renderer::folder_list::emit_marker(file_part, from_path, &params);
+    }
+
     let resolved = if file_part.is_empty() {
         ResolvedRef::Found(from_path.to_string())
     } else {
@@ -408,13 +425,6 @@ fn resolve_embed(
                 display_text: file_part.to_string(),
                 link_type: LinkType::Embed,
             });
-
-            // Trailing-slash signals a folder-list embed; dispatch via folder_list
-            // instead of the extension lookup. Pipe params follow the trailing slash.
-            if target_path.ends_with('/') {
-                let params = super::embed_renderer::folder_list::parse_params(alias.unwrap_or(""));
-                return super::embed_renderer::folder_list::emit_marker(&target_path, &params);
-            }
 
             let parsed = ParsedEmbed {
                 resolved_path: &target_path,

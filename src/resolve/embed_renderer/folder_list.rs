@@ -47,12 +47,15 @@ pub fn parse_params(raw: &str) -> FolderEmbedParams {
 
 /// Marker prefix for folder-list embeds emitted by moss-core.
 /// The src-tauri marker resolver (Task 16) reads everything between the prefix
-/// and the terminator as `path|key=value|key=value|flag`.
+/// and the terminator as `path=...|from=...|limit=N|more|sort=axis`. The `path`
+/// is the user-written target (which may carry a leading `/`); `from` is the
+/// source markdown file path, used for resolving relative paths against the
+/// current document's location.
 pub const MARKER_FOLDER_LIST: &str = "<!--MOSS_MARKER_FOLDER_LIST:";
 pub const MARKER_END: &str = "-->";
 
-pub fn emit_marker(path: &str, params: &FolderEmbedParams) -> String {
-    let mut parts = vec![format!("path={}", path)];
+pub fn emit_marker(path: &str, from: &str, params: &FolderEmbedParams) -> String {
+    let mut parts = vec![format!("path={}", path), format!("from={}", from)];
     if let Some(n) = params.limit {
         parts.push(format!("limit={}", n));
     }
@@ -112,9 +115,10 @@ mod tests {
             more: true,
             sort: Some(SortAxis::Date),
         };
-        let m = emit_marker("/journal/", &p);
+        let m = emit_marker("/journal/", "index.md", &p);
         assert!(m.starts_with(MARKER_FOLDER_LIST));
         assert!(m.contains("path=/journal/"));
+        assert!(m.contains("from=index.md"));
         assert!(m.contains("limit=3"));
         assert!(m.contains("more"));
         assert!(m.contains("sort=date"));

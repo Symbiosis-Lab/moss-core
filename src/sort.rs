@@ -42,6 +42,15 @@ pub trait SortableDoc {
     fn weight(&self) -> Option<i32>;
     fn declared_sort(&self) -> Option<&SortField>;
     fn clean_stem(&self) -> &str;
+    /// Whether this doc is a folder-index page. moss uses pretty URLs
+    /// (`<stem>/index.html`) for both articles and subfolder indexes, so
+    /// the URL pattern alone can't tell them apart. Implementors that
+    /// distinguish via metadata (e.g. `kind == Folder`) should override.
+    /// Default returns false — safe for callers that only ever pass
+    /// articles in.
+    fn is_folder_index(&self) -> bool {
+        false
+    }
 }
 
 const DATE_FRACTION_THRESHOLD: f32 = 0.8;
@@ -50,9 +59,16 @@ pub fn resolve_folder_sort<D: SortableDoc>(
     folder: &D,
     children: &[&D],
 ) -> ResolvedSort {
+    // Exclude subfolder indexes via the kind-aware trait method.
+    // The legacy URL-pattern filter (`!url.ends_with("/index.html")`) is
+    // wrong under pretty URLs — every article also ends with
+    // `<stem>/index.html` — so we delegate to the impl. The default
+    // `is_folder_index() == false` keeps moss-core's existing single-file
+    // tests (`a.url = "a.html"`) green; src-tauri's `ParsedDocument`
+    // returns true when `kind == Folder`.
     let article_children: Vec<&&D> = children
         .iter()
-        .filter(|c| !c.url_path().ends_with("/index.html"))
+        .filter(|c| !c.is_folder_index())
         .collect();
 
     let (axis, explicit_order) = match folder.declared_sort() {
