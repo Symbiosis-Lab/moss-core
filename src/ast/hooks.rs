@@ -135,20 +135,31 @@ pub trait RenderHooks {
                 if args.items.is_empty() {
                     return;
                 }
+                // v1: the inverted variant is expressed via `data-style="inverted"`.
+                // Any other authoring classes flow through as-is on `class=`.
+                let mut data_style: Option<&str> = None;
+                let mut extra_classes_vec: Vec<&str> = Vec::new();
+                for token in args.classes.split_ascii_whitespace() {
+                    if token == "inverted" {
+                        data_style = Some("inverted");
+                    } else {
+                        extra_classes_vec.push(token);
+                    }
+                }
                 let mut class_attr = String::from("moss-buttons");
-                if !args.classes.is_empty() {
+                if !extra_classes_vec.is_empty() {
                     class_attr.push(' ');
-                    class_attr.push_str(&args.classes);
+                    class_attr.push_str(&extra_classes_vec.join(" "));
                 }
                 out.push_str(r#"<div class=""#);
                 out.push_str(&escape_attr(&class_attr));
+                if let Some(style) = data_style {
+                    out.push_str(r#"" data-style=""#);
+                    out.push_str(style);
+                }
                 out.push_str(r#"">"#);
                 for (i, item) in args.items.iter().enumerate() {
-                    let primary_class = if i == 0 {
-                        "moss-btn moss-btn-primary"
-                    } else {
-                        "moss-btn moss-btn-secondary"
-                    };
+                    let data_role = if i == 0 { "primary" } else { "secondary" };
                     let track = item
                         .text
                         .to_lowercase()
@@ -166,8 +177,8 @@ pub trait RenderHooks {
                             // Release: emit href as-is so we don't crash.
                             out.push_str(r#"<a href=""#);
                             out.push_str(&escape_attr(s));
-                            out.push_str(r#"" class=""#);
-                            out.push_str(primary_class);
+                            out.push_str(r#"" class="moss-btn" data-role=""#);
+                            out.push_str(data_role);
                             out.push_str(r#"" data-track=""#);
                             out.push_str(&escape_attr(&track));
                             out.push_str(r#"">"#);
@@ -178,13 +189,14 @@ pub trait RenderHooks {
                     };
                     out.push_str(r#"<a href=""#);
                     out.push_str(&escape_attr(&resolved.href));
-                    out.push_str(r#"" class=""#);
-                    out.push_str(primary_class);
+                    out.push_str(r#"" class="moss-btn"#);
                     // Wikilink kind adds class="wikilink" suffix; collapse
                     // both classes into a single class attribute.
                     if matches!(resolved.kind, crate::ast::url::UrlKind::Wikilink) {
                         out.push_str(" wikilink");
                     }
+                    out.push_str(r#"" data-role=""#);
+                    out.push_str(data_role);
                     out.push_str(r#"" data-track=""#);
                     out.push_str(&escape_attr(&track));
                     out.push_str(r#"""#);

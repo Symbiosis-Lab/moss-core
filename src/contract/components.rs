@@ -886,7 +886,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-aspect",
                 values: &["portrait", "square", "auto"],
                 default: "auto",
-                description: "v1 image aspect-ratio hint. Today expressed via BEM modifiers (`.moss-image--portrait` / `--square` / `--auto`); Phase 1c collapses to this `data-aspect` attribute.",
+                description: "v1 image aspect-ratio hint. Theme authors target `.moss-image[data-aspect=...]`. Emitter wiring lands in a follow-up.",
             },
             DataAttr {
                 name: "data-width",
@@ -1015,7 +1015,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-style",
                 values: &["default", "inverted"],
                 default: "default",
-                description: "v1 button-row style. Today the inverted variant is expressed via `.moss-buttons.inverted`; Phase 1c collapses to this `data-style` attribute.",
+                description: "v1 button-row style. Theme authors target `.moss-buttons[data-style=...]`.",
             },
         ],
         example_html: r#"<div class="moss-buttons" data-style="inverted">
@@ -1024,7 +1024,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Container for a row of `.moss-btn` buttons (assembled at runtime in hooks). v1 collapses the inverted variant from `.moss-buttons.inverted` to `data-style=\"inverted\"`.",
+        description: "Container for a row of `.moss-btn` buttons. v1: the inverted variant is on `data-style=\"inverted\"`.",
     },
     // -------------------------------------------------------------------
     // Button primitive (used by subscribe + general CTAs).
@@ -1038,7 +1038,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-role",
                 values: &["default", "primary", "secondary"],
                 default: "default",
-                description: "v1 button role. Today expressed via sibling classes `.moss-btn-primary` / `.moss-btn-secondary`; Phase 1c collapses to this `data-role` attribute.",
+                description: "v1 button role. Theme authors target `.moss-btn[data-role=...]`.",
             },
         ],
         example_html: r#"<button class="moss-btn" data-role="primary">
@@ -1047,7 +1047,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Generic button primitive. Variants today emitted as `.moss-btn-primary` / `.moss-btn-secondary`; v1 collapses to `data-role`.",
+        description: "Generic button primitive. Role on `data-role` (v1).",
     },
     ComponentEntry {
         class: "moss-btn__label",
