@@ -43,5 +43,6 @@ pub use page_kind::PageKind;
 pub mod resolve;
 pub mod schema;
 pub mod schema_fields;
+pub mod sort;
 pub mod shortcode_tokens;
 pub mod validation;
