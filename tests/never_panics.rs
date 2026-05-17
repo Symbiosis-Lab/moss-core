@@ -240,6 +240,7 @@ proptest! {
             has_header: true,
             caption: None,
             class: "moss-table".to_string(),
+            data_type: None,
         };
         let _ = moss_core::csv_table::render(&content, &opts);
     }
