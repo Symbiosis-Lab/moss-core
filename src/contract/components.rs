@@ -100,6 +100,46 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Auto-generated listing of child pages. Today emitted as `.moss-card-grid` / `.moss-card-list` / `.moss-card-minimal`; collapsing into `.moss-cards[data-layout]` is Phase 1c.",
     },
     // -------------------------------------------------------------------
+    // v1 articles family — text-only chronological listing.
+    // No equivalent in the current vocabulary; introduced fresh in v1 as
+    // a sibling of `.moss-cards` for prose-style year-grouped indexes.
+    // -------------------------------------------------------------------
+    ComponentEntry {
+        class: "moss-articles",
+        kind: "container",
+        parent: "",
+        data_attrs: &[
+            DataAttr {
+                name: "data-density",
+                values: &["default", "compact"],
+                default: "default",
+                description: "Vertical spacing density.",
+            },
+        ],
+        example_html: r#"<div class="moss-articles">
+  <a class="moss-item" href="...">...</a>
+  <a class="moss-item" href="...">...</a>
+</div>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "1",
+        description: "v1 text-only chronological listing. Sibling of `.moss-cards` (which carries layout density via covers); `.moss-articles` is the prose-style index — title + date, no covers. Phase 1c will emit this from the minimal-listing renderer.",
+    },
+    ComponentEntry {
+        class: "moss-item",
+        kind: "instance",
+        parent: "moss-articles",
+        data_attrs: &[],
+        example_html: r#"<a class="moss-item" href="...">
+  <span class="moss-item-date">2024-01-15</span>
+  <span class="moss-item-title">Page title</span>
+</a>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "1",
+        description: "v1 instance inside `.moss-articles`. Phase 1c will emit this from the minimal-listing renderer in place of `.moss-card-minimal`.",
+    },
+    // -------------------------------------------------------------------
     // Cards family — current emitted vocabulary (pre-Phase 1c collapsing).
     // Three parallel layouts: grid, list, minimal. Each has its own
     // container + instance + sub-classes.
@@ -162,9 +202,9 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         data_attrs: &[],
         example_html: r#"<a class="moss-card" href="...">...</a>"#,
         example_markdown: "",
-        status: Status::Confirmed,
-        since: "0",
-        description: "Generic card instance. In Phase 1c becomes the single canonical instance class for `.moss-cards`.",
+        status: Status::Emerging,
+        since: "1",
+        description: "v1 collapsed shape — single canonical instance class inside `.moss-cards`. Collapses `.moss-card-grid` / `.moss-card-list` / `.moss-card-minimal` cells; layout selector lives on the parent's `data-layout`. Phase 1c rewrites emitters to this shape.",
     },
     ComponentEntry {
         class: "moss-card-grid",
@@ -480,12 +520,19 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "callout",
         kind: "standalone",
         parent: "",
-        data_attrs: &[],
+        data_attrs: &[
+            DataAttr {
+                name: "data-type",
+                values: &["note", "info", "tip", "warning", "pending"],
+                default: "note",
+                description: "v1 callout type. Today the type lives on `.callout-<type>` (e.g. `.callout-warning`); Phase 1c rewrites emitters to set `data-type` here instead. Theme authors should prefer `.callout[data-type=...]` in v1.",
+            },
+        ],
         example_html: r#"<div class="moss-callout callout callout-note">...</div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Obsidian-compat class co-emitted on every callout for theme parity.",
+        description: "Obsidian-compat class co-emitted on every callout for theme parity. In v1 the type collapses to `data-type` on this element; `.callout-note` / `.callout-warning` / `.callout-pending` / etc. retire after Phase 1c.",
     },
     ComponentEntry {
         class: "callout-title",
@@ -572,12 +619,25 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "moss-embed",
         kind: "standalone",
         parent: "",
-        data_attrs: &[],
+        data_attrs: &[
+            DataAttr {
+                name: "data-type",
+                values: &["audio", "video", "pdf", "notebook", "table", "iframe", "3d"],
+                default: "",
+                description: "v1 embed kind. Today the kind lives on `.moss-embed-<type>` (e.g. `.moss-embed-pdf`); Phase 1c rewrites emitters to set `data-type` here instead.",
+            },
+            DataAttr {
+                name: "data-width",
+                values: &["body", "wide", "page", "screen"],
+                default: "body",
+                description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9.",
+            },
+        ],
         example_html: r#"<div class="moss-embed moss-embed-pdf"><iframe src="..."></iframe></div>"#,
         example_markdown: "![[paper.pdf]]",
         status: Status::Confirmed,
         since: "0",
-        description: "Base class on every typed embed. Type variant via `.moss-embed-<kind>`; collapses to `data-type` in Phase 1c.",
+        description: "Base class on every typed embed. Today emits both the base and a `.moss-embed-<kind>` variant; in v1 the kind collapses to `data-type` on this element. Phase 1c rewrites emitters; `.moss-embed-audio` / `-video` / `-pdf` / `-notebook` / `-table` / `-iframe` / `-3d` retire then.",
     },
     ComponentEntry {
         class: "moss-embed-audio",
@@ -685,14 +745,21 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "moss-hero",
         kind: "standalone",
         parent: "",
-        data_attrs: &[],
-        example_html: r#"<section class="moss-hero">
+        data_attrs: &[
+            DataAttr {
+                name: "data-width",
+                values: &["body", "wide", "page", "screen"],
+                default: "body",
+                description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9. Phase 1c will emit this from authoring shortcode (e.g. `:::hero {full}` -> `data-width=\"screen\"`).",
+            },
+        ],
+        example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
 </section>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Hero banner section at the top of a page (cover image + title).",
+        description: "Hero banner section at the top of a page (cover image + title). v1 adds `data-width` for author-controlled sizing.",
     },
     ComponentEntry {
         class: "moss-hero-content",
@@ -709,12 +776,25 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "moss-image",
         kind: "standalone",
         parent: "",
-        data_attrs: &[],
-        example_html: r#"<figure class="moss-image"><img src="..." alt="..." /></figure>"#,
+        data_attrs: &[
+            DataAttr {
+                name: "data-aspect",
+                values: &["portrait", "square", "auto"],
+                default: "auto",
+                description: "v1 image aspect-ratio hint. Today expressed via BEM modifiers (`.moss-image--portrait` / `--square` / `--auto`); Phase 1c collapses to this `data-aspect` attribute.",
+            },
+            DataAttr {
+                name: "data-width",
+                values: &["body", "wide", "page", "screen"],
+                default: "body",
+                description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9.",
+            },
+        ],
+        example_html: r#"<figure class="moss-image" data-aspect="portrait" data-width="body"><img src="..." alt="..." /></figure>"#,
         example_markdown: "![alt](image.jpg)",
         status: Status::Confirmed,
         since: "0",
-        description: "Wrapper around an inline `<img>` for sizing and figure semantics.",
+        description: "Wrapper around an inline `<img>` for sizing and figure semantics. v1 adds `data-aspect` (collapses `--portrait`/`--square`/`--auto` modifiers) and `data-width` (P9).",
     },
     ComponentEntry {
         class: "moss-visual",
@@ -745,25 +825,39 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "moss-grid",
         kind: "container",
         parent: "",
-        data_attrs: &[],
-        example_html: r#"<div class="moss-grid">
+        data_attrs: &[
+            DataAttr {
+                name: "data-width",
+                values: &["body", "wide", "page", "screen"],
+                default: "body",
+                description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9.",
+            },
+        ],
+        example_html: r#"<div class="moss-grid" data-width="wide">
   <div class="moss-grid-card">...</div>
 </div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Generic grid container (used by profiles, link previews, etc.). Modifier classes: `profiles`, `featured`, `no-cards`.",
+        description: "Generic grid container (used by profiles, link previews, etc.). Modifier classes: `profiles`, `featured`, `no-cards`. v1 adds `data-width` (P9).",
     },
     ComponentEntry {
         class: "moss-grid-card",
         kind: "instance",
         parent: "moss-grid",
-        data_attrs: &[],
-        example_html: r#"<a class="moss-grid-card link-preview" href="...">...</a>"#,
+        data_attrs: &[
+            DataAttr {
+                name: "data-kind",
+                values: &["link", "friend", "card"],
+                default: "card",
+                description: "v1 grid-card variant. Today expressed via co-emitted classes (`.link-card`, `.friend-card`, `.no-cards`); Phase 1c collapses to this `data-kind` attribute.",
+            },
+        ],
+        example_html: r#"<a class="moss-grid-card" data-kind="link" href="...">...</a>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Card instance inside `.moss-grid`. Variants: `link-card`, `link-preview`.",
+        description: "Card instance inside `.moss-grid`. Today emits sibling classes `link-card` / `friend-card` / `no-cards`; v1 collapses to `data-kind`.",
     },
     ComponentEntry {
         class: "moss-gridxyz",
@@ -780,14 +874,21 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "moss-gallery",
         kind: "container",
         parent: "",
-        data_attrs: &[],
-        example_html: r#"<div class="moss-gallery">
+        data_attrs: &[
+            DataAttr {
+                name: "data-width",
+                values: &["body", "wide", "page", "screen"],
+                default: "body",
+                description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9.",
+            },
+        ],
+        example_html: r#"<div class="moss-gallery" data-width="page">
   <figure class="moss-gallery-item">...</figure>
 </div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Image gallery container.",
+        description: "Image gallery container. v1 adds `data-width` (P9).",
     },
     ComponentEntry {
         class: "moss-gallery-item",
@@ -804,14 +905,21 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "moss-buttons",
         kind: "container",
         parent: "",
-        data_attrs: &[],
-        example_html: r#"<div class="moss-buttons">
+        data_attrs: &[
+            DataAttr {
+                name: "data-style",
+                values: &["default", "inverted"],
+                default: "default",
+                description: "v1 button-row style. Today the inverted variant is expressed via `.moss-buttons.inverted`; Phase 1c collapses to this `data-style` attribute.",
+            },
+        ],
+        example_html: r#"<div class="moss-buttons" data-style="inverted">
   <a class="moss-btn" href="...">Click</a>
 </div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Container for a row of `.moss-btn` buttons (assembled at runtime in hooks).",
+        description: "Container for a row of `.moss-btn` buttons (assembled at runtime in hooks). v1 collapses the inverted variant from `.moss-buttons.inverted` to `data-style=\"inverted\"`.",
     },
     // -------------------------------------------------------------------
     // Button primitive (used by subscribe + general CTAs).
@@ -820,14 +928,21 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "moss-btn",
         kind: "standalone",
         parent: "",
-        data_attrs: &[],
-        example_html: r#"<button class="moss-btn">
+        data_attrs: &[
+            DataAttr {
+                name: "data-role",
+                values: &["default", "primary", "secondary"],
+                default: "default",
+                description: "v1 button role. Today expressed via sibling classes `.moss-btn-primary` / `.moss-btn-secondary`; Phase 1c collapses to this `data-role` attribute.",
+            },
+        ],
+        example_html: r#"<button class="moss-btn" data-role="primary">
   <span class="moss-btn__label">Submit</span>
 </button>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Generic button primitive. Variants `.moss-btn-primary` / `.moss-btn-secondary` exist in CSS.",
+        description: "Generic button primitive. Variants today emitted as `.moss-btn-primary` / `.moss-btn-secondary`; v1 collapses to `data-role`.",
     },
     ComponentEntry {
         class: "moss-btn__label",
