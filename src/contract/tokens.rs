@@ -50,7 +50,13 @@ pub struct Tokens {
 ///
 /// Returns an error if the JSON is malformed or `$order` is missing.
 pub fn load_tokens() -> Result<Tokens, String> {
-    let value: serde_json::Value = serde_json::from_str(TOKENS_JSON)
+    parse_tokens(TOKENS_JSON)
+}
+
+/// Parse a tokens.json string. Exposed for testing error paths;
+/// production callers use `load_tokens()`.
+pub fn parse_tokens(input: &str) -> Result<Tokens, String> {
+    let value: serde_json::Value = serde_json::from_str(input)
         .map_err(|e| format!("tokens.json parse error: {}", e))?;
     let top = value.as_object().ok_or("tokens.json must be a JSON object")?;
 

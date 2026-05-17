@@ -1,6 +1,6 @@
 //! Tests for the tokens loader.
 
-use moss_core::contract::tokens::{load_tokens, TokenGroup};
+use moss_core::contract::tokens::load_tokens;
 
 #[test]
 fn load_tokens_parses_w3c_format() {
@@ -44,4 +44,28 @@ fn token_value_preserves_var_references() {
     let nav_width = layout.entries.iter().find(|t| t.name == "moss-nav-width")
         .expect("moss-nav-width must exist");
     assert_eq!(nav_width.value, "var(--moss-content-width)");
+}
+
+// Error-path tests using parse_tokens helper
+use moss_core::contract::tokens::parse_tokens;
+
+#[test]
+fn parse_tokens_errors_when_order_missing() {
+    let input = "{\n  \"color\": {\n    \"moss-color-accent\": {\"$type\": \"color\", \"$value\": \"#000\"}\n  }\n}";
+    let err = parse_tokens(input).expect_err("must fail");
+    assert!(err.contains("$order"), "error should mention $order: {}", err);
+}
+
+#[test]
+fn parse_tokens_errors_when_group_named_in_order_is_missing() {
+    let input = "{\n  \"$order\": [\"color\", \"spacing\"],\n  \"color\": {\n    \"moss-color-accent\": {\"$type\": \"color\", \"$value\": \"#000\"}\n  }\n}";
+    let err = parse_tokens(input).expect_err("must fail");
+    assert!(err.contains("spacing"), "error should mention missing group: {}", err);
+}
+
+#[test]
+fn parse_tokens_errors_when_entry_missing_value() {
+    let input = "{\n  \"$order\": [\"color\"],\n  \"color\": {\n    \"moss-color-accent\": {\"$type\": \"color\"}\n  }\n}";
+    let err = parse_tokens(input).expect_err("must fail");
+    assert!(err.contains("$value"), "error should mention missing $value: {}", err);
 }
