@@ -33,6 +33,7 @@
 pub mod attrs;
 pub mod cells;
 pub mod document;
+pub mod editor_scan;
 pub mod hooks;
 pub mod node;
 pub mod parser;

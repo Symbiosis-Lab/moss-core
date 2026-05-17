@@ -164,13 +164,13 @@ pub fn tokenize_closing_line(line: &str) -> Vec<ShortcodeToken> {
     tokens
 }
 
-/// Tokenize a divider line (`---`).
+/// Tokenize a divider line (`+++` canonical, `---` deprecated).
 pub fn tokenize_divider_line(line: &str) -> Vec<ShortcodeToken> {
     let bytes = line.as_bytes();
     let pos = skip_whitespace(bytes, 0);
     let mut tokens = Vec::new();
 
-    if bytes[pos..].starts_with(b"---") {
+    if bytes[pos..].starts_with(b"+++") || bytes[pos..].starts_with(b"---") {
         tokens.push(ShortcodeToken {
             token_type: ShortcodeTokenType::Divider,
             from: pos,
