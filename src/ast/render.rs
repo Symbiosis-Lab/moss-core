@@ -45,7 +45,7 @@ fn render_block<H: RenderHooks>(hooks: &H, out: &mut String, block: &Block) {
             out.push_str("</p>\n");
         }
         Block::Callout { kind, children } => {
-            out.push_str(r#"<div class="moss-callout moss-callout-"#);
+            out.push_str(r#"<div class="moss-callout callout" data-type=""#);
             out.push_str(&escape_attr(kind));
             out.push_str(r#"">"#);
             out.push('\n');

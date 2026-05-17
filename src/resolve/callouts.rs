@@ -9,7 +9,7 @@
 ///
 /// Produces:
 /// ```html
-/// <div class="callout callout-warning">
+/// <div class="callout" data-type="warning">
 ///   <div class="callout-title">Be Careful</div>
 ///   <div class="callout-content">
 /// This is a warning callout.
@@ -114,7 +114,7 @@ pub fn transform_callouts(content: &str) -> String {
             // on the closer would be interpreted as list-item continuation
             // and pull the tag inside the final <li>.
             output.push_str(&format!(
-                "<div class=\"callout callout-{callout_type}\">\n  <div class=\"callout-title\">{escaped_title}</div>\n  <div class=\"callout-content\">\n\n{body}\n\n</div>\n</div>\n"
+                "<div class=\"callout\" data-type=\"{callout_type}\">\n  <div class=\"callout-title\">{escaped_title}</div>\n  <div class=\"callout-content\">\n\n{body}\n\n</div>\n</div>\n"
             ));
         } else {
             output.push_str(line);
@@ -193,7 +193,7 @@ mod tests {
     fn test_basic_callout() {
         let input = "> [!warning] Be Careful\n> This is a warning callout.\n> It can span multiple lines.";
         let output = transform_callouts(input);
-        let expected = "<div class=\"callout callout-warning\">\n  <div class=\"callout-title\">Be Careful</div>\n  <div class=\"callout-content\">\n\nThis is a warning callout.\nIt can span multiple lines.\n\n</div>\n</div>";
+        let expected = "<div class=\"callout\" data-type=\"warning\">\n  <div class=\"callout-title\">Be Careful</div>\n  <div class=\"callout-content\">\n\nThis is a warning callout.\nIt can span multiple lines.\n\n</div>\n</div>";
         assert_eq!(norm(&output), expected);
     }
 
@@ -202,7 +202,7 @@ mod tests {
         let input = "> [!warning]\n> Watch out!";
         let output = transform_callouts(input);
         assert!(output.contains("<div class=\"callout-title\">Warning</div>"));
-        assert!(output.contains("callout-warning"));
+        assert!(output.contains(r#"data-type="warning""#));
     }
 
     #[test]
@@ -215,7 +215,7 @@ mod tests {
             let input = format!("> [!{t}]\n> Body text.");
             let output = transform_callouts(&input);
             assert!(
-                output.contains(&format!("callout-{t}")),
+                output.contains(&format!(r#"data-type="{t}""#)),
                 "type `{t}` not recognised"
             );
         }
@@ -240,7 +240,7 @@ mod tests {
         // An empty `>` line separates paragraphs inside the callout body.
         let input = "> [!info] Multi\n> First paragraph.\n>\n> Second paragraph.";
         let output = transform_callouts(input);
-        assert!(output.contains("callout-info"));
+        assert!(output.contains(r#"data-type="info""#));
         assert!(output.contains("callout-title"));
         // Both paragraphs should appear inside callout-content.
         assert!(output.contains("First paragraph."));
@@ -251,9 +251,9 @@ mod tests {
     fn test_case_insensitive_type() {
         let input = "> [!WARNING] Loud Warning\n> This still works.";
         let output = transform_callouts(input);
-        // The CSS class must use the lowercase form.
-        assert!(output.contains("callout-warning"));
-        assert!(!output.contains("callout-WARNING"));
+        // The data-type attribute must use the lowercase form.
+        assert!(output.contains(r#"data-type="warning""#));
+        assert!(!output.contains(r#"data-type="WARNING""#));
         assert!(output.contains("Loud Warning"));
     }
 
@@ -261,8 +261,8 @@ mod tests {
     fn test_multiple_callouts() {
         let input = "> [!note] First\n> First body.\n\n> [!tip] Second\n> Second body.";
         let output = transform_callouts(input);
-        assert!(output.contains("callout-note"));
-        assert!(output.contains("callout-tip"));
+        assert!(output.contains(r#"data-type="note""#));
+        assert!(output.contains(r#"data-type="tip""#));
         assert!(output.contains("First body."));
         assert!(output.contains("Second body."));
     }
@@ -271,7 +271,7 @@ mod tests {
     fn test_callout_followed_by_text() {
         let input = "> [!note] A Note\n> Note body.\n\nSome paragraph after the callout.";
         let output = transform_callouts(input);
-        assert!(output.contains("callout-note"));
+        assert!(output.contains(r#"data-type="note""#));
         assert!(output.contains("Some paragraph after the callout."));
     }
 
@@ -280,7 +280,7 @@ mod tests {
         // Callout header with no continuation lines.
         let input = "> [!tip] No Body";
         let output = transform_callouts(input);
-        assert!(output.contains("callout-tip"));
+        assert!(output.contains(r#"data-type="tip""#));
         assert!(output.contains("<div class=\"callout-title\">No Body</div>"));
         // Body section should exist but be empty (just whitespace/newlines).
         assert!(output.contains("<div class=\"callout-content\">"));
