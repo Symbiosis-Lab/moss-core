@@ -15,11 +15,16 @@ use serde::{Deserialize, Serialize};
 /// `&str` slicing math so they line up with what the editor receives over
 /// the wire (the markdown is shipped as a `String`, and CodeMirror's own
 /// position model is on the JS side; we never index the source as chars).
+///
+/// `u32` instead of `usize` so specta maps the fields to TS `number`
+/// rather than `string` (JS Number can represent the full u32 range
+/// precisely; a 64-bit `usize` cannot fit losslessly). 4 GiB markdown
+/// is not a real moss editor scenario.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct EditorRange {
-    pub from: usize,
-    pub to: usize,
+    pub from: u32,
+    pub to: u32,
 }
 
 /// One shortcode block as seen by the editor.
@@ -63,7 +68,10 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
     let mut in_code_fence = false;
     let mut code_fence_marker = String::new();
 
-    let mut offset: usize = 0;
+    // `offset` is `u32` to match `EditorRange`'s field type. Documents larger
+    // than 4 GiB aren't a real editor scenario; we'd truncate silently rather
+    // than panic in that pathological case.
+    let mut offset: u32 = 0;
     for line in markdown.split_inclusive('\n') {
         let has_newline = line.ends_with('\n');
         let line_len_without_newline = if has_newline {
@@ -73,7 +81,7 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
         };
         let line_content = &line[..line_len_without_newline];
         let line_start = offset;
-        let line_end = offset + line_len_without_newline;
+        let line_end = offset + line_len_without_newline as u32;
 
         // Code-fence tracking: stable ``` or ~~~ fences (length >= 3).
         if let Some(fence) = match_code_fence(line_content) {
@@ -86,11 +94,11 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
                 in_code_fence = false;
                 code_fence_marker.clear();
             }
-            offset += line.len();
+            offset += line.len() as u32;
             continue;
         }
         if in_code_fence {
-            offset += line.len();
+            offset += line.len() as u32;
             continue;
         }
 
@@ -138,7 +146,7 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
             }
         }
 
-        offset += line.len();
+        offset += line.len() as u32;
     }
 
     EditorScanResult {
@@ -155,7 +163,7 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
 /// excluding leading/trailing whitespace.
 fn match_divider(
     line: &str,
-    line_start: usize,
+    line_start: u32,
     legacy_dash: &mut bool,
 ) -> Option<EditorRange> {
     let trimmed = line.trim();
@@ -165,7 +173,7 @@ fn match_divider(
         _ => return None,
     };
 
-    let leading_ws = line.len() - line.trim_start().len();
+    let leading_ws = (line.len() - line.trim_start().len()) as u32;
     if matches!(kind, DividerKind::LegacyDash) {
         *legacy_dash = true;
     }
@@ -349,7 +357,7 @@ mod tests {
         assert_eq!(r.blocks[0].dividers.len(), 1);
         // Range covers the "+++" only, not the leading spaces.
         let div = r.blocks[0].dividers[0];
-        let line_text = &md[div.from..div.to];
+        let line_text = &md[div.from as usize..div.to as usize];
         assert_eq!(line_text, "+++");
     }
 
