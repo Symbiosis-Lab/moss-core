@@ -383,12 +383,11 @@ impl EmbedRenderer for IframeRenderer {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let src = build_src(&url, embed.query, embed.section);
         let (width_attr, height_attr) = dim_attrs(embed.alias);
-        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_IFRAME);
         let title_attr = iframe_title_attr(embed.alias);
 
         let html = format!(
-            "<iframe class=\"{}\" src=\"{}\"{}{}{} loading=\"lazy\"></iframe>",
-            classes,
+            "<iframe class=\"{}\" data-type=\"iframe\" src=\"{}\"{}{}{} loading=\"lazy\"></iframe>",
+            CLASS_EMBED,
             html_escape_attr(&src),
             title_attr,
             width_attr,
@@ -435,13 +434,12 @@ impl EmbedRenderer for PdfRenderer {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let data_url = build_src(&url, embed.query, embed.section);
         let (width_attr, height_attr) = dim_attrs(embed.alias);
-        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_PDF);
         let name = html_escape_attr(&file_stem(embed.resolved_path));
 
         // <object> with inline download fallback for browsers that can't render PDFs.
         let html = format!(
-            "<object class=\"{}\" type=\"application/pdf\" data=\"{}\"{}{}><a href=\"{}\">Download {}</a></object>",
-            classes,
+            "<object class=\"{}\" data-type=\"pdf\" type=\"application/pdf\" data=\"{}\"{}{}><a href=\"{}\">Download {}</a></object>",
+            CLASS_EMBED,
             html_escape_attr(&data_url),
             width_attr,
             height_attr,
@@ -483,13 +481,12 @@ impl EmbedRenderer for AudioRenderer {
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_AUDIO);
         let ext = path_extension_lower(embed.resolved_path);
         let mime = audio_mime_for_ext(&ext);
 
         let html = format!(
-            "<audio class=\"{}\" controls preload=\"metadata\"><source src=\"{}\" type=\"{}\">Your browser does not support the audio tag.</audio>",
-            classes,
+            "<audio class=\"{}\" data-type=\"audio\" controls preload=\"metadata\"><source src=\"{}\" type=\"{}\">Your browser does not support the audio tag.</audio>",
+            CLASS_EMBED,
             html_escape_attr(&url),
             mime,
         );
@@ -561,12 +558,11 @@ impl EmbedRenderer for VideoRenderer {
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_VIDEO);
         let (width_attr, height_attr) = dim_attrs(embed.alias);
 
         let html = format!(
-            "<video class=\"{}\" src=\"{}\" controls preload=\"metadata\"{}{}></video>",
-            classes,
+            "<video class=\"{}\" data-type=\"video\" src=\"{}\" controls preload=\"metadata\"{}{}></video>",
+            CLASS_EMBED,
             html_escape_attr(&url),
             width_attr,
             height_attr,
@@ -627,12 +623,11 @@ impl EmbedRenderer for ModelViewerRenderer {
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let classes = format!("{} {}", CLASS_EMBED, CLASS_EMBED_3D);
         let style = model_viewer_style(embed.alias);
 
         let html = format!(
-            "<model-viewer class=\"{}\" src=\"{}\" camera-controls auto-rotate touch-action=\"pan-y\" loading=\"lazy\"{}></model-viewer>",
-            classes,
+            "<model-viewer class=\"{}\" data-type=\"3d\" src=\"{}\" camera-controls auto-rotate touch-action=\"pan-y\" loading=\"lazy\"{}></model-viewer>",
+            CLASS_EMBED,
             html_escape_attr(&url),
             style,
         );
@@ -1025,7 +1020,7 @@ mod tests {
         });
         assert!(out.contains("<iframe "), "got: {}", out);
         assert!(
-            out.contains("class=\"moss-embed moss-embed-iframe\""),
+            out.contains("class=\"moss-embed\" data-type=\"iframe\""),
             "got: {}",
             out
         );
@@ -1109,7 +1104,7 @@ mod tests {
         assert!(out.contains("width=\"100%\""), "got: {}", out);
         assert!(out.contains("height=\"600px\""), "got: {}", out);
         assert!(
-            out.contains("class=\"moss-embed moss-embed-iframe\""),
+            out.contains("class=\"moss-embed\" data-type=\"iframe\""),
             "got: {}",
             out
         );
@@ -1209,7 +1204,7 @@ mod tests {
             out
         );
         assert!(
-            out.contains("class=\"moss-embed moss-embed-pdf\""),
+            out.contains("class=\"moss-embed\" data-type=\"pdf\""),
             "got: {}",
             out
         );
@@ -1293,7 +1288,7 @@ mod tests {
         assert!(out.contains("<audio "), "got: {}", out);
         assert!(out.contains("controls"), "got: {}", out);
         assert!(
-            out.contains("class=\"moss-embed moss-embed-audio\""),
+            out.contains("class=\"moss-embed\" data-type=\"audio\""),
             "got: {}",
             out
         );
@@ -1374,7 +1369,7 @@ mod tests {
         assert!(out.contains("<video "), "got: {}", out);
         assert!(out.contains("controls"), "got: {}", out);
         assert!(
-            out.contains("class=\"moss-embed moss-embed-video\""),
+            out.contains("class=\"moss-embed\" data-type=\"video\""),
             "got: {}",
             out
         );
@@ -1539,7 +1534,7 @@ mod tests {
             out
         );
         assert!(
-            out.contains("class=\"moss-embed moss-embed-3d\""),
+            out.contains("class=\"moss-embed\" data-type=\"3d\""),
             "got: {}",
             out
         );

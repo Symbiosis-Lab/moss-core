@@ -14,6 +14,9 @@ pub struct CsvTableOptions {
     pub caption: Option<String>,
     /// CSS class applied to the wrapping `<table>` element.
     pub class: String,
+    /// Optional `data-type` attribute applied to the wrapping `<table>` element
+    /// (v1 vocabulary: `.moss-embed[data-type="table"]`).
+    pub data_type: Option<String>,
 }
 
 /// Render a CSV/TSV string as HTML. Caller supplies options; content is
@@ -61,11 +64,14 @@ fn parse_rows(content: &str, sep: char) -> Vec<Vec<String>> {
 }
 
 fn build_table(rows: &[Vec<String>], opts: &CsvTableOptions) -> String {
+    let data_type_attr = opts.data_type.as_deref()
+        .map(|t| format!(" data-type=\"{}\"", t))
+        .unwrap_or_default();
     if rows.is_empty() {
-        return format!("<table class=\"{}\"></table>", opts.class);
+        return format!("<table class=\"{}\"{}></table>", opts.class, data_type_attr);
     }
     let mut out = String::new();
-    out.push_str(&format!("<table class=\"{}\">", opts.class));
+    out.push_str(&format!("<table class=\"{}\"{}>", opts.class, data_type_attr));
     if let Some(cap) = &opts.caption {
         out.push_str(&format!("<caption>{}</caption>", escape(cap)));
     }
@@ -108,7 +114,8 @@ mod tests {
             separator: ',',
             has_header: true,
             caption: None,
-            class: "moss-embed moss-embed-table".to_string(),
+            class: "moss-embed".to_string(),
+            data_type: Some("table".to_string()),
         }
     }
 
@@ -119,7 +126,7 @@ mod tests {
         assert!(out.contains("<thead><tr><th>name</th><th>age</th></tr></thead>"));
         assert!(out.contains("<td>Alice</td><td>30</td>"));
         assert!(out.contains("<td>Bob</td><td>25</td>"));
-        assert!(out.contains("class=\"moss-embed moss-embed-table\""));
+        assert!(out.contains("class=\"moss-embed\" data-type=\"table\""));
     }
 
     #[test]
