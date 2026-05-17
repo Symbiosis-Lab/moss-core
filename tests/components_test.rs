@@ -11,9 +11,16 @@ fn components_table_is_non_empty() {
 
 #[test]
 fn every_component_has_a_class_name() {
+    // Legacy / Obsidian-compat classes that don't carry the `moss-` prefix.
+    // The `callout`, `callout-title`, `callout-content`, and `callout-<type>`
+    // variants are emitted alongside `moss-callout` for theme parity with
+    // Obsidian-style callouts.
+    let is_legacy_callout = |c: &str| c == "callout" || c.starts_with("callout-");
     for entry in COMPONENTS {
         assert!(
-            entry.class.starts_with("moss-") || entry.class == "main-nav" || entry.class == "callout",
+            entry.class.starts_with("moss-")
+                || entry.class == "main-nav"
+                || is_legacy_callout(entry.class),
             "class '{}' must be moss-prefixed (or be a legacy exception)",
             entry.class
         );
