@@ -145,6 +145,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Year-grouped section in minimal card layout (e.g. blog index). Modifier `--summary` collapses past years.",
     },
     ComponentEntry {
+        class: "moss-cards-minimal-year-group--summary",
+        kind: "container",
+        parent: "moss-cards-minimal-year-group",
+        data_attrs: &[],
+        example_html: r#"<section class="moss-cards-minimal-year-group moss-cards-minimal-year-group--summary">...</section>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "BEM modifier on `.moss-cards-minimal-year-group`. Applied to year groups that should render in collapsed summary form (e.g. past years on a blog index).",
+    },
+    ComponentEntry {
         class: "moss-card",
         kind: "instance",
         parent: "moss-cards",
