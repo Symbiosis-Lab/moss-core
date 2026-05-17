@@ -409,6 +409,13 @@ fn resolve_embed(
                 link_type: LinkType::Embed,
             });
 
+            // Trailing-slash signals a folder-list embed; dispatch via folder_list
+            // instead of the extension lookup. Pipe params follow the trailing slash.
+            if target_path.ends_with('/') {
+                let params = super::embed_renderer::folder_list::parse_params(alias.unwrap_or(""));
+                return super::embed_renderer::folder_list::emit_marker(&target_path, &params);
+            }
+
             let parsed = ParsedEmbed {
                 resolved_path: &target_path,
                 from_path,
