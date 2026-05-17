@@ -1589,3 +1589,14 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Syntax-highlight diff token: removed-line background.",
     },
 ];
+
+/// Iterator over class names with `Status::Retired`. Used by the build
+/// pipeline's theme lint to warn users about pre-v1 vocabulary.
+///
+/// Exposed as an iterator over `&'static str` so callers don't need to
+/// import the `Status` enum (keeps moss-core's surface narrow).
+pub fn retired_class_names() -> impl Iterator<Item = &'static str> {
+    COMPONENTS.iter()
+        .filter(|e| e.status == Status::Retired)
+        .map(|e| e.class)
+}
