@@ -112,7 +112,7 @@ mod inference_tests {
     use super::*;
 
     #[derive(Debug, Default)]
-    struct TestDoc {
+    pub(super) struct TestDoc {
         url: String,
         stem: String,
         date_v: Option<String>,
@@ -126,7 +126,7 @@ mod inference_tests {
         fn declared_sort(&self) -> Option<&SortField> { self.sort_v.as_ref() }
         fn clean_stem(&self) -> &str { &self.stem }
     }
-    fn art(stem: &str, date: Option<&str>, w: Option<i32>) -> TestDoc {
+    pub(super) fn art(stem: &str, date: Option<&str>, w: Option<i32>) -> TestDoc {
         TestDoc {
             url: format!("{}.html", stem),
             stem: stem.into(),
@@ -135,7 +135,7 @@ mod inference_tests {
             sort_v: None,
         }
     }
-    fn folder(url: &str, sort: Option<SortField>) -> TestDoc {
+    pub(super) fn folder(url: &str, sort: Option<SortField>) -> TestDoc {
         TestDoc { url: url.into(), sort_v: sort, ..Default::default() }
     }
 
@@ -228,5 +228,143 @@ mod inference_tests {
         let f = folder("empty/index.html", None);
         let r = resolve_folder_sort::<TestDoc>(&f, &[]);
         assert_eq!(r.axis, SortAxis::Title);
+    }
+}
+
+/// Optional supplementary trait for label-based sorting.
+/// Implementations that want Title-axis support implement both
+/// SortableDoc and SortableLabel.
+pub trait SortableLabel {
+    fn label(&self) -> &str;
+}
+
+pub fn sort_by_resolved<'a, D>(
+    docs: &[&'a D],
+    resolved: &ResolvedSort,
+) -> Vec<&'a D>
+where
+    D: SortableDoc + SortableLabel,
+{
+    let axis_cmp = |a: &&'a D, b: &&'a D| -> std::cmp::Ordering {
+        match resolved.axis {
+            SortAxis::Date => {
+                let ad = a.date().unwrap_or("");
+                let bd = b.date().unwrap_or("");
+                bd.cmp(ad)
+            }
+            SortAxis::Weight => match (a.weight(), b.weight()) {
+                (Some(aw), Some(bw)) => aw.cmp(&bw),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.clean_stem().cmp(b.clean_stem()),
+            },
+            SortAxis::Title => a.label().cmp(b.label()),
+        }
+    };
+
+    match &resolved.explicit_order {
+        Some(order) => {
+            let order_lower: Vec<String> = order.iter().map(|s| s.to_lowercase()).collect();
+            let order_map: std::collections::HashMap<&str, usize> = order_lower
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.as_str(), i))
+                .collect();
+            let (mut listed, mut unlisted): (Vec<_>, Vec<_>) = docs.iter().copied().partition(|d| {
+                order_map.contains_key(d.clean_stem().to_lowercase().as_str())
+            });
+            listed.sort_by(|a, b| {
+                let ai = order_map.get(a.clean_stem().to_lowercase().as_str()).copied().unwrap_or(usize::MAX);
+                let bi = order_map.get(b.clean_stem().to_lowercase().as_str()).copied().unwrap_or(usize::MAX);
+                ai.cmp(&bi)
+            });
+            unlisted.sort_by(axis_cmp);
+            listed.extend(unlisted);
+            listed
+        }
+        None => {
+            let mut sorted: Vec<&'a D> = docs.to_vec();
+            sorted.sort_by(axis_cmp);
+            sorted
+        }
+    }
+}
+
+#[cfg(test)]
+mod sort_dispatch_tests {
+    use super::*;
+    use super::inference_tests::*;  // reuse TestDoc
+
+    fn doc_with_label(stem: &str, date: Option<&str>, w: Option<i32>, label: &str) -> TestDocWithLabel {
+        TestDocWithLabel {
+            base: art(stem, date, w),
+            label_v: label.into(),
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestDocWithLabel {
+        base: TestDoc,
+        label_v: String,
+    }
+    impl SortableDoc for TestDocWithLabel {
+        fn url_path(&self) -> &str { self.base.url_path() }
+        fn date(&self) -> Option<&str> { self.base.date() }
+        fn weight(&self) -> Option<i32> { self.base.weight() }
+        fn declared_sort(&self) -> Option<&SortField> { self.base.declared_sort() }
+        fn clean_stem(&self) -> &str { self.base.clean_stem() }
+    }
+    impl SortableLabel for TestDocWithLabel {
+        fn label(&self) -> &str { &self.label_v }
+    }
+
+    #[test]
+    fn date_desc() {
+        let a = doc_with_label("a", Some("2025-01-01"), None, "A");
+        let b = doc_with_label("b", Some("2025-03-01"), None, "B");
+        let c = doc_with_label("c", Some("2025-02-01"), None, "C");
+        let r = ResolvedSort { axis: SortAxis::Date, explicit_order: None, series_default: false };
+        let sorted = sort_by_resolved(&[&a, &b, &c], &r);
+        assert_eq!(sorted[0].clean_stem(), "b");
+        assert_eq!(sorted[2].clean_stem(), "a");
+    }
+
+    #[test]
+    fn weight_asc_unweighted_last() {
+        let a = doc_with_label("a", None, Some(2), "A");
+        let b = doc_with_label("b", None, None, "B");
+        let c = doc_with_label("c", None, Some(1), "C");
+        let r = ResolvedSort { axis: SortAxis::Weight, explicit_order: None, series_default: true };
+        let sorted = sort_by_resolved(&[&a, &b, &c], &r);
+        assert_eq!(sorted[0].clean_stem(), "c");
+        assert_eq!(sorted[1].clean_stem(), "a");
+        assert_eq!(sorted[2].clean_stem(), "b");
+    }
+
+    #[test]
+    fn title_alpha() {
+        let a = doc_with_label("zebra", None, None, "Zebra");
+        let b = doc_with_label("apple", None, None, "Apple");
+        let c = doc_with_label("mango", None, None, "Mango");
+        let r = ResolvedSort { axis: SortAxis::Title, explicit_order: None, series_default: false };
+        let sorted = sort_by_resolved(&[&a, &b, &c], &r);
+        assert_eq!(sorted[0].clean_stem(), "apple");
+        assert_eq!(sorted[2].clean_stem(), "zebra");
+    }
+
+    #[test]
+    fn explicit_list_with_tail() {
+        let a = doc_with_label("a", Some("2025-03-01"), None, "A");
+        let b = doc_with_label("b", Some("2025-02-01"), None, "B");
+        let intro = doc_with_label("intro", Some("2025-01-01"), None, "Intro");
+        let r = ResolvedSort {
+            axis: SortAxis::Date,
+            explicit_order: Some(vec!["intro".into()]),
+            series_default: true,
+        };
+        let sorted = sort_by_resolved(&[&a, &b, &intro], &r);
+        assert_eq!(sorted[0].clean_stem(), "intro");  // listed first
+        assert_eq!(sorted[1].clean_stem(), "a");      // newest in tail
+        assert_eq!(sorted[2].clean_stem(), "b");
     }
 }
