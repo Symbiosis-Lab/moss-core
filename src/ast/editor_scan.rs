@@ -10,7 +10,11 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Half-open character offset range `[from, to)`.
+/// Half-open byte-offset range `[from, to)` into the original markdown
+/// source. Bytes, not characters: positions are taken straight from
+/// `&str` slicing math so they line up with what the editor receives over
+/// the wire (the markdown is shipped as a `String`, and CodeMirror's own
+/// position model is on the JS side; we never index the source as chars).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct EditorRange {
@@ -171,10 +175,14 @@ fn match_open_fence(line: &str) -> Option<(&str, &str)> {
 
     // The name starts immediately after `:::` (no space).
     let name_start_in_line = leading_ws + 3;
+    // Match the name-char set used by `parse_shortcode_opener` in
+    // `shortcode_extract.rs`: alphanumeric, underscore, hyphen. Plugins can
+    // register names like `:::my-widget`, and the editor must recognize them
+    // or its depth counter drifts from the build pipeline.
     let name_bytes = rest
         .bytes()
         .take_while(|b| {
-            b.is_ascii_alphanumeric() || *b == b'_'
+            b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-'
         })
         .count();
     if name_bytes == 0 {
@@ -305,5 +313,18 @@ mod tests {
         let div = r.blocks[0].dividers[0];
         let line_text = &md[div.from..div.to];
         assert_eq!(line_text, "+++");
+    }
+
+    #[test]
+    fn hyphenated_names_are_recognized() {
+        // Plugins can register shortcode names containing hyphens (e.g.
+        // `:::my-widget`). `parse_shortcode_opener` in shortcode_extract.rs
+        // accepts these; editor_scan must agree or its depth counter will
+        // drift on documents that use them.
+        let md = ":::my-widget\nbody\n:::\n";
+        let r = editor_scan(md);
+
+        assert_eq!(r.blocks.len(), 1);
+        assert_eq!(r.blocks[0].name, "my-widget");
     }
 }
