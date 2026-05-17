@@ -50,19 +50,14 @@ pub struct EditorScanResult {
 /// information for the editor.
 pub fn editor_scan(markdown: &str) -> EditorScanResult {
     let mut blocks = Vec::new();
-    let legacy_dash = false;
+    let mut legacy_dash = false;
 
-    // State for the currently open top-level block. We only track top-level
-    // blocks; nested blocks (depth > 1) are skipped (their bodies belong to
-    // the parent's "body" from the editor's perspective).
     let mut current: Option<PartialBlock> = None;
     let mut depth: usize = 0;
+    let mut current_is_grid: bool = false;
 
-    // Walk by lines while tracking byte offsets.
     let mut offset: usize = 0;
     for line in markdown.split_inclusive('\n') {
-        // `split_inclusive` keeps the trailing '\n'. `line_end` is the offset
-        // just past the line content (before the '\n' if present).
         let has_newline = line.ends_with('\n');
         let line_len_without_newline = if has_newline {
             line.len() - 1
@@ -75,6 +70,7 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
 
         if depth == 0 {
             if let Some((name, args)) = match_open_fence(line_content) {
+                current_is_grid = name == "grid";
                 current = Some(PartialBlock {
                     open: EditorRange {
                         from: line_start,
@@ -86,24 +82,32 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
                 });
                 depth = 1;
             }
-        } else {
-            if match_open_fence(line_content).is_some() {
-                depth += 1;
-            } else if is_close_fence(line_content) {
-                depth -= 1;
-                if depth == 0 {
-                    if let Some(partial) = current.take() {
-                        blocks.push(EditorShortcodeBlock {
-                            open: partial.open,
-                            close: EditorRange {
-                                from: line_start,
-                                to: line_end,
-                            },
-                            name: partial.name,
-                            args: partial.args,
-                            dividers: partial.dividers,
-                        });
-                    }
+        } else if match_open_fence(line_content).is_some() {
+            depth += 1;
+        } else if is_close_fence(line_content) {
+            depth -= 1;
+            if depth == 0 {
+                if let Some(partial) = current.take() {
+                    blocks.push(EditorShortcodeBlock {
+                        open: partial.open,
+                        close: EditorRange {
+                            from: line_start,
+                            to: line_end,
+                        },
+                        name: partial.name,
+                        args: partial.args,
+                        dividers: partial.dividers,
+                    });
+                }
+                current_is_grid = false;
+            }
+        } else if depth == 1 && current_is_grid {
+            // Divider check only applies at depth 1 inside a grid block.
+            if let Some(divider_range) =
+                match_divider(line_content, line_start, &mut legacy_dash)
+            {
+                if let Some(c) = current.as_mut() {
+                    c.dividers.push(divider_range);
                 }
             }
         }
@@ -115,6 +119,39 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
         blocks,
         legacy_dash,
     }
+}
+
+/// Match a grid divider line. Recognizes exactly `+++` (canonical) and
+/// exactly `---` (deprecated, sets `legacy_dash` to true). Both allow
+/// surrounding whitespace but the line must contain nothing else.
+///
+/// Returns the source range covering the `+++` or `---` characters only,
+/// excluding leading/trailing whitespace.
+fn match_divider(
+    line: &str,
+    line_start: usize,
+    legacy_dash: &mut bool,
+) -> Option<EditorRange> {
+    let trimmed = line.trim();
+    let kind = match trimmed {
+        "+++" => DividerKind::Canonical,
+        "---" => DividerKind::LegacyDash,
+        _ => return None,
+    };
+
+    let leading_ws = line.len() - line.trim_start().len();
+    if matches!(kind, DividerKind::LegacyDash) {
+        *legacy_dash = true;
+    }
+    Some(EditorRange {
+        from: line_start + leading_ws,
+        to: line_start + leading_ws + 3,
+    })
+}
+
+enum DividerKind {
+    Canonical,
+    LegacyDash,
 }
 
 struct PartialBlock {
@@ -207,5 +244,66 @@ mod tests {
         assert_eq!(r.blocks.len(), 2);
         assert_eq!(r.blocks[0].name, "buttons");
         assert_eq!(r.blocks[1].name, "gallery");
+    }
+
+    #[test]
+    fn grid_with_canonical_plus_divider() {
+        let md = ":::grid 2\nleft\n+++\nright\n:::\n";
+        let r = editor_scan(md);
+
+        assert_eq!(r.blocks.len(), 1);
+        let b = &r.blocks[0];
+        assert_eq!(b.dividers.len(), 1);
+        // "+++" starts after ":::grid 2\nleft\n" (10 + 5 = 15) and is 3 chars long.
+        assert_eq!(b.dividers[0], EditorRange { from: 15, to: 18 });
+        assert!(!r.legacy_dash);
+    }
+
+    #[test]
+    fn grid_with_legacy_dash_divider_sets_flag() {
+        let md = ":::grid 2\nleft\n---\nright\n:::\n";
+        let r = editor_scan(md);
+
+        assert_eq!(r.blocks.len(), 1);
+        assert_eq!(r.blocks[0].dividers.len(), 1);
+        assert!(r.legacy_dash, "expected legacy_dash flag for --- divider");
+    }
+
+    #[test]
+    fn dividers_only_at_top_depth() {
+        // A nested :::buttons block contains a "---" line. That line is INSIDE
+        // the nested block, so the outer grid should have zero dividers. (The
+        // nested block isn't emitted at all per the nesting rule.)
+        let md = ":::grid 2\n:::buttons\n---\n:::\n:::\n";
+        let r = editor_scan(md);
+
+        assert_eq!(r.blocks.len(), 1);
+        assert!(r.blocks[0].dividers.is_empty());
+        // legacy_dash is also false because the --- was inside a buttons block,
+        // not a grid divider.
+        assert!(!r.legacy_dash);
+    }
+
+    #[test]
+    fn extra_plus_signs_are_not_divider() {
+        // ++++ (four pluses) is NOT a divider — strict 3-char match.
+        let md = ":::grid 2\nleft\n++++\nright\n:::\n";
+        let r = editor_scan(md);
+
+        assert_eq!(r.blocks.len(), 1);
+        assert!(r.blocks[0].dividers.is_empty());
+    }
+
+    #[test]
+    fn divider_with_leading_whitespace_is_recognized() {
+        let md = ":::grid 2\nleft\n  +++\nright\n:::\n";
+        let r = editor_scan(md);
+
+        assert_eq!(r.blocks.len(), 1);
+        assert_eq!(r.blocks[0].dividers.len(), 1);
+        // Range covers the "+++" only, not the leading spaces.
+        let div = r.blocks[0].dividers[0];
+        let line_text = &md[div.from..div.to];
+        assert_eq!(line_text, "+++");
     }
 }
