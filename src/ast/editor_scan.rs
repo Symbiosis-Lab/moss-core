@@ -60,6 +60,9 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
     let mut depth: usize = 0;
     let mut current_is_grid: bool = false;
 
+    let mut in_code_fence = false;
+    let mut code_fence_marker = String::new();
+
     let mut offset: usize = 0;
     for line in markdown.split_inclusive('\n') {
         let has_newline = line.ends_with('\n');
@@ -71,6 +74,25 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
         let line_content = &line[..line_len_without_newline];
         let line_start = offset;
         let line_end = offset + line_len_without_newline;
+
+        // Code-fence tracking: stable ``` or ~~~ fences (length >= 3).
+        if let Some(fence) = match_code_fence(line_content) {
+            if !in_code_fence {
+                in_code_fence = true;
+                code_fence_marker = fence.to_string();
+            } else if fence.starts_with(code_fence_marker.as_str().chars().next().unwrap())
+                && fence.len() >= code_fence_marker.len()
+            {
+                in_code_fence = false;
+                code_fence_marker.clear();
+            }
+            offset += line.len();
+            continue;
+        }
+        if in_code_fence {
+            offset += line.len();
+            continue;
+        }
 
         if depth == 0 {
             if let Some((name, args)) = match_open_fence(line_content) {
@@ -200,6 +222,22 @@ fn is_close_fence(line: &str) -> bool {
     line.trim() == ":::"
 }
 
+/// Return the fence string (sequence of `` ` `` or `~`) if the line is a
+/// fenced-code delimiter at the start of the line, else None.
+fn match_code_fence(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let ch = trimmed.chars().next()?;
+    if ch != '`' && ch != '~' {
+        return None;
+    }
+    let len = trimmed.chars().take_while(|c| *c == ch).count();
+    if len < 3 {
+        return None;
+    }
+    let leading_ws = line.len() - trimmed.len();
+    Some(&line[leading_ws..leading_ws + len])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +364,43 @@ mod tests {
 
         assert_eq!(r.blocks.len(), 1);
         assert_eq!(r.blocks[0].name, "my-widget");
+    }
+
+    #[test]
+    fn shortcode_open_inside_code_fence_is_inert() {
+        let md = "```\n:::grid 2\n```\n";
+        let r = editor_scan(md);
+        assert!(r.blocks.is_empty());
+    }
+
+    #[test]
+    fn shortcode_open_after_closing_code_fence_works() {
+        let md = "```\nignored\n```\n:::buttons\n[a](#)\n:::\n";
+        let r = editor_scan(md);
+        assert_eq!(r.blocks.len(), 1);
+        assert_eq!(r.blocks[0].name, "buttons");
+    }
+
+    #[test]
+    fn close_fence_inside_code_fence_does_not_close_outer_shortcode() {
+        // Without code-fence tracking, the ::: inside the ``` block would
+        // incorrectly close the :::grid block, and then :::buttons after the
+        // code fence would look like a second sibling block. With tracking,
+        // only the outer ::: after the code fence closes the grid block, so
+        // we see exactly 1 block (grid) and 0 extra sibling blocks.
+        //
+        // Structure:
+        //   :::grid 2        <- open grid (depth 0→1)
+        //   ```
+        //   :::              <- should be inert (inside code fence)
+        //   ```
+        //   :::buttons       <- opens nested shortcode (depth 1→2), not a sibling
+        //   :::              <- closes nested (depth 2→1)
+        //   :::              <- closes grid (depth 1→0)
+        let md = ":::grid 2\n```\n:::\n```\n:::buttons\n:::\n:::\n";
+        let r = editor_scan(md);
+        // With correct fence tracking: grid is the only top-level block.
+        assert_eq!(r.blocks.len(), 1);
+        assert_eq!(r.blocks[0].name, "grid");
     }
 }
