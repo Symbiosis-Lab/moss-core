@@ -122,3 +122,72 @@ pub fn parse_tokens(input: &str) -> Result<Tokens, String> {
 
     Ok(Tokens { groups })
 }
+
+/// Format the loaded tokens as the CSS `:root` block per the v1 formatter
+/// decisions (see spec § Open Question 3):
+/// - Property order: group-then-alphabetical (groups in source order).
+/// - Color casing: lowercase hex.
+/// - Unit normalization: pass-through (tokens.json owns canonical units).
+/// - Comments: blank line + group-name comment between groups.
+/// - Indentation: 2 spaces.
+/// - Trailing semicolons: always.
+pub fn format_root_block(tokens: &Tokens) -> String {
+    let mut out = String::new();
+    out.push_str(":root {\n");
+
+    for (idx, group) in tokens.groups.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        // Group name is title-cased: "typography" → "Typography".
+        let title = title_case(&group.name);
+        out.push_str(&format!("  /* {} */\n", title));
+
+        for entry in &group.entries {
+            let value = normalize_value(&entry.value, entry.type_hint.as_deref());
+            out.push_str(&format!("  --{}: {};\n", entry.name, value));
+        }
+    }
+
+    out.push_str("}\n");
+    out
+}
+
+/// Title-case the group name. "typography" → "Typography", "color" → "Color".
+fn title_case(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().chain(chars).collect(),
+    }
+}
+
+/// Normalize a token value per the v1 formatter rules.
+fn normalize_value(value: &str, type_hint: Option<&str>) -> String {
+    if matches!(type_hint, Some("color")) {
+        return normalize_hex_color(value);
+    }
+    value.to_string()
+}
+
+/// Normalize a hex color to lowercase 6-digit form. Pass through any value
+/// that isn't a recognized hex literal (e.g., `var()`, `rgb()`, named colors).
+fn normalize_hex_color(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some(rest) = trimmed.strip_prefix('#') {
+        if rest.chars().all(|c| c.is_ascii_hexdigit())
+            && (rest.len() == 3 || rest.len() == 6 || rest.len() == 8)
+        {
+            let lower = rest.to_lowercase();
+            // Expand 3-digit hex to 6-digit.
+            if lower.len() == 3 {
+                let r = &lower[0..1];
+                let g = &lower[1..2];
+                let b = &lower[2..3];
+                return format!("#{r}{r}{g}{g}{b}{b}");
+            }
+            return format!("#{}", lower);
+        }
+    }
+    value.to_string()
+}
