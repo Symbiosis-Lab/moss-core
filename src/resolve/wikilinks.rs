@@ -418,6 +418,34 @@ fn resolve_embed(
         resolve_reference(file_part, graph, from_path)
     };
 
+    // Pre-pass: extract a spec § P9 width token from the alias before
+    // handing off to the renderer. Width composes orthogonally with
+    // existing alias semantics (display keywords, sizing, caption text),
+    // so we split it out at this seam so every renderer gets the same
+    // pre-classified value rather than re-parsing the alias.
+    //
+    // The image renderer handles its width path internally because the
+    // wrapper element (`<figure>`) and its emission shape are owned by
+    // moss-core (it emits the full figure HTML for the width case). All
+    // other renderers carry width as a `data-width=` attribute on their
+    // outer element (which already has `class="moss-embed"`).
+    let (width, alias_rest_owned) = match alias {
+        Some(a) => crate::media::extract_width_from_alias(a),
+        None => (None, String::new()),
+    };
+    // Hand the renderer the alias with the width token removed (if any).
+    // Use the original `alias` string when we didn't extract anything so
+    // borrowed-string callers stay efficient.
+    let alias_for_renderer: Option<&str> = if width.is_some() {
+        if alias_rest_owned.is_empty() {
+            None
+        } else {
+            Some(alias_rest_owned.as_str())
+        }
+    } else {
+        alias
+    };
+
     match resolved {
         ResolvedRef::Found(target_path) => {
             outgoing_links.push(OutgoingLink {
@@ -431,7 +459,8 @@ fn resolve_embed(
                 from_path,
                 query,
                 section,
-                alias,
+                alias: alias_for_renderer,
+                width,
             };
 
             match path_extension(&target_path).as_deref().and_then(lookup) {
@@ -778,6 +807,93 @@ mod tests {
         assert_eq!(
             result.content,
             "![a wide angle shot](../assets/photo.jpg)"
+        );
+    }
+
+    // -- Embed wrapper width (spec § P9, Task 2 of width follow-up) --
+
+    /// Width pipe-alias works on iframe embeds — `![[widget.html|full]]`
+    /// emits `<iframe class="moss-embed" data-width="screen" ...>`.
+    #[test]
+    fn test_iframe_embed_width_full_alias() {
+        let mut b = crate::content_graph::ContentGraphBuilder::new();
+        b.add_file("widget.html", "widget");
+        let graph = b.build();
+        let result = resolve_wikilinks("![[widget.html|full]]", &graph, "post.md");
+        assert!(
+            result.content.contains(r#"data-width="screen""#),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(r#"class="moss-embed""#),
+            "got: {}",
+            result.content
+        );
+    }
+
+    /// `![[clip.mp4|wide]]` → `<video class="moss-embed" data-width="wide" ...>`.
+    /// This is the explicit case from the PR brief.
+    #[test]
+    fn test_video_embed_width_wide_alias() {
+        let mut b = crate::content_graph::ContentGraphBuilder::new();
+        b.add_file("clip.mp4", "clip");
+        let graph = b.build();
+        let result = resolve_wikilinks("![[clip.mp4|wide]]", &graph, "post.md");
+        assert!(
+            result.content.contains(r#"data-width="wide""#),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(r#"class="moss-embed""#),
+            "got: {}",
+            result.content
+        );
+    }
+
+    /// Width composes with sizing aliases: `![[widget.html|400x300|wide]]`
+    /// gets both `data-width="wide"` AND `width="400px" height="300px"` —
+    /// the latter from the sizing-keyword renderer arm.
+    #[test]
+    fn test_iframe_embed_width_with_sizing_alias() {
+        let mut b = crate::content_graph::ContentGraphBuilder::new();
+        b.add_file("widget.html", "widget");
+        let graph = b.build();
+        let result = resolve_wikilinks(
+            "![[widget.html|400x300|wide]]",
+            &graph,
+            "post.md",
+        );
+        assert!(
+            result.content.contains(r#"data-width="wide""#),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(r#"width="400px""#),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(r#"height="300px""#),
+            "got: {}",
+            result.content
+        );
+    }
+
+    /// Embed without width → no data-width attribute (parity check with the
+    /// image renderer's negative test, but for the iframe wrapper path).
+    #[test]
+    fn test_iframe_embed_no_width_omits_data_width() {
+        let mut b = crate::content_graph::ContentGraphBuilder::new();
+        b.add_file("widget.html", "widget");
+        let graph = b.build();
+        let result = resolve_wikilinks("![[widget.html]]", &graph, "post.md");
+        assert!(
+            !result.content.contains("data-width="),
+            "got: {}",
+            result.content
         );
     }
 

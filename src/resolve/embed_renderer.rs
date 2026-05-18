@@ -27,7 +27,9 @@ use std::sync::OnceLock;
 
 mod common;
 pub mod folder_list;
-use common::{build_src, dim_attrs, file_stem, html_escape_attr, path_extension_lower};
+use common::{
+    build_src, dim_attrs, file_stem, html_escape_attr, path_extension_lower, width_attr,
+};
 
 // ---------------------------------------------------------------------------
 // Reserved classnames (HTML/CSS contract, per moss#508)
@@ -104,9 +106,20 @@ pub struct ParsedEmbed<'a> {
     /// For `.md` renderers this is a heading/block-ref marker (block refs
     /// keep their `^` prefix). For every other renderer this is a URL fragment.
     pub section: Option<&'a str>,
-    /// `|pipe-content` from the source wikilink. Image renderer uses this
-    /// for display keywords / size; other renderers parse per their convention.
+    /// `|pipe-content` from the source wikilink — with any spec § P9 width
+    /// token already split out into [`Self::width`]. Image renderer uses
+    /// this for display keywords / size; other renderers parse per their
+    /// convention.
     pub alias: Option<&'a str>,
+    /// Canonical width value (`body | wide | page | screen`) extracted from
+    /// the pipe-alias by the wikilink resolver. `None` means the author
+    /// did not include a width token; renderers omit `data-width` in that
+    /// case so themes can target the default via `:not([data-width])`.
+    ///
+    /// `full` is normalised to `screen` upstream — values reaching here
+    /// are already in value-space terms (see
+    /// [`crate::media::match_width_token`]).
+    pub width: Option<&'static str>,
 }
 
 /// Output of a renderer.
@@ -278,8 +291,7 @@ pub fn lookup_renderer(ext: &str) -> Option<&'static dyn EmbedRenderer> {
 
 use crate::heading_anchor::obsidian_heading_anchor;
 use crate::media::{
-    extract_width_from_alias, format_img_tag, html_escape, is_all_display_keywords,
-    parse_media_attrs,
+    format_img_tag, html_escape, is_all_display_keywords, parse_media_attrs,
 };
 
 use super::fuzzy_path::relative_asset_path;
@@ -299,26 +311,23 @@ impl EmbedRenderer for ImageRenderer {
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
 
-        // Pre-pass: extract a spec § P9 width token from the alias before
-        // any other classification runs. Width never shadows captions or
-        // display keywords (`extract_width_from_alias` matches whole
-        // segments only) — so it composes orthogonally with the existing
-        // arms below. When width is present we emit the full
-        // `<figure class="moss-image" data-width="...">…<img …></figure>`
+        // The wikilink resolver pre-extracts any spec § P9 width token from
+        // the alias into `embed.width` (a canonical value-space term — see
+        // `crate::media::match_width_token`). When width is present we emit
+        // the full `<figure class="moss-image" data-width="...">...</figure>`
         // shape directly: pulldown-cmark passes that through as an
-        // `HtmlBlock` (block-level), so the figure wrapper survives end-
-        // to-end without needing the src-tauri standalone-paragraph rule
-        // to recognise raw `<img>` HtmlBlocks. Per spec, `data-width`
-        // sits on the wrapper, not the inner img.
-        let (width, alias_rest) = match embed.alias {
-            Some(a) => extract_width_from_alias(a),
-            None => (None, String::new()),
-        };
-
-        let out = match (width, alias_rest.as_str()) {
-            // Width-only alias (`![[photo.jpg|full]]`) — emit figure-wrapped
-            // img with empty alt (width is structural, not a caption).
-            (Some(w), "") => format!(
+        // `HtmlBlock` (block-level), so the figure wrapper survives end-to-
+        // end without needing the src-tauri standalone-paragraph rule to
+        // recognise raw `<img>` HtmlBlocks. Per spec, `data-width` sits on
+        // the wrapper, not the inner img.
+        //
+        // `embed.alias` arrives with the width segment already stripped (the
+        // resolver hands the renderer the post-extraction remainder), so the
+        // arms below treat it as ordinary caption/display-keyword content.
+        let out = match (embed.width, embed.alias) {
+            // Width-only alias (`![[photo.jpg|full]]`) — empty alt because
+            // width is structural, not a caption.
+            (Some(w), None) => format!(
                 r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="" /></figure>"#,
                 w,
                 html_escape(&url),
@@ -327,7 +336,7 @@ impl EmbedRenderer for ImageRenderer {
             // display keywords land on the inner img as inline style; the
             // figure carries data-width. Filename stem becomes alt for
             // assistive tech (matches the no-width display-keyword arm).
-            (Some(w), rest) if is_all_display_keywords(rest) => {
+            (Some(w), Some(rest)) if is_all_display_keywords(rest) => {
                 let alt = file_stem(embed.resolved_path);
                 let attrs = parse_media_attrs(rest);
                 let style_attr = attrs
@@ -347,7 +356,7 @@ impl EmbedRenderer for ImageRenderer {
             // the byte shape of `image_render::wrap_in_figure(.., Some(text), ..)`
             // in src-tauri. Alt mirrors caption text for a11y parity with
             // implicit-figure rendering.
-            (Some(w), rest) => format!(
+            (Some(w), Some(rest)) => format!(
                 r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="{}" /><figcaption>{}</figcaption></figure>"#,
                 w,
                 html_escape(&url),
@@ -355,7 +364,7 @@ impl EmbedRenderer for ImageRenderer {
                 html_escape(rest),
             ),
             // No width — fall through to the pre-existing classifier.
-            (None, _) => match embed.alias {
+            (None, alias) => match alias {
                 Some(alias_text) if is_all_display_keywords(alias_text) => {
                     // Display-keyword aliases (`cover`, `left top`, …) describe
                     // layout, not content — keep the filename stem as alt so the
@@ -447,15 +456,17 @@ impl EmbedRenderer for IframeRenderer {
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let src = build_src(&url, embed.query, embed.section);
-        let (width_attr, height_attr) = dim_attrs(embed.alias);
+        let (dim_width_attr, height_attr) = dim_attrs(embed.alias);
         let title_attr = iframe_title_attr(embed.alias);
+        let width_data_attr = width_attr(embed.width);
 
         let html = format!(
-            "<iframe class=\"{}\" data-type=\"iframe\" src=\"{}\"{}{}{} loading=\"lazy\"></iframe>",
+            "<iframe class=\"{}\" data-type=\"iframe\"{} src=\"{}\"{}{}{} loading=\"lazy\"></iframe>",
             CLASS_EMBED,
+            width_data_attr,
             html_escape_attr(&src),
             title_attr,
-            width_attr,
+            dim_width_attr,
             height_attr,
         );
         RenderedEmbed::Html(html)
@@ -498,15 +509,17 @@ impl EmbedRenderer for PdfRenderer {
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let data_url = build_src(&url, embed.query, embed.section);
-        let (width_attr, height_attr) = dim_attrs(embed.alias);
+        let (dim_width_attr, height_attr) = dim_attrs(embed.alias);
         let name = html_escape_attr(&file_stem(embed.resolved_path));
+        let width_data_attr = width_attr(embed.width);
 
         // <object> with inline download fallback for browsers that can't render PDFs.
         let html = format!(
-            "<object class=\"{}\" data-type=\"pdf\" type=\"application/pdf\" data=\"{}\"{}{}><a href=\"{}\">Download {}</a></object>",
+            "<object class=\"{}\" data-type=\"pdf\"{} type=\"application/pdf\" data=\"{}\"{}{}><a href=\"{}\">Download {}</a></object>",
             CLASS_EMBED,
+            width_data_attr,
             html_escape_attr(&data_url),
-            width_attr,
+            dim_width_attr,
             height_attr,
             html_escape_attr(&url),
             name,
@@ -548,10 +561,12 @@ impl EmbedRenderer for AudioRenderer {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let ext = path_extension_lower(embed.resolved_path);
         let mime = audio_mime_for_ext(&ext);
+        let width_data_attr = width_attr(embed.width);
 
         let html = format!(
-            "<audio class=\"{}\" data-type=\"audio\" controls preload=\"metadata\"><source src=\"{}\" type=\"{}\">Your browser does not support the audio tag.</audio>",
+            "<audio class=\"{}\" data-type=\"audio\"{} controls preload=\"metadata\"><source src=\"{}\" type=\"{}\">Your browser does not support the audio tag.</audio>",
             CLASS_EMBED,
+            width_data_attr,
             html_escape_attr(&url),
             mime,
         );
@@ -623,13 +638,15 @@ impl EmbedRenderer for VideoRenderer {
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let (width_attr, height_attr) = dim_attrs(embed.alias);
+        let (dim_width_attr, height_attr) = dim_attrs(embed.alias);
+        let width_data_attr = width_attr(embed.width);
 
         let html = format!(
-            "<video class=\"{}\" data-type=\"video\" src=\"{}\" controls preload=\"metadata\"{}{}></video>",
+            "<video class=\"{}\" data-type=\"video\"{} src=\"{}\" controls preload=\"metadata\"{}{}></video>",
             CLASS_EMBED,
+            width_data_attr,
             html_escape_attr(&url),
-            width_attr,
+            dim_width_attr,
             height_attr,
         );
         RenderedEmbed::Html(html)
@@ -689,10 +706,12 @@ impl EmbedRenderer for ModelViewerRenderer {
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
         let style = model_viewer_style(embed.alias);
+        let width_data_attr = width_attr(embed.width);
 
         let html = format!(
-            "<model-viewer class=\"{}\" data-type=\"3d\" src=\"{}\" camera-controls auto-rotate touch-action=\"pan-y\" loading=\"lazy\"{}></model-viewer>",
+            "<model-viewer class=\"{}\" data-type=\"3d\"{} src=\"{}\" camera-controls auto-rotate touch-action=\"pan-y\" loading=\"lazy\"{}></model-viewer>",
             CLASS_EMBED,
+            width_data_attr,
             html_escape_attr(&url),
             style,
         );
@@ -771,6 +790,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -789,6 +809,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -807,6 +828,7 @@ mod tests {
             query: None,
             section: Some("Getting Started"),
             alias: None,
+            width: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -825,6 +847,7 @@ mod tests {
             query: None,
             section: Some("^block-xyz"),
             alias: None,
+            width: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -856,6 +879,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -877,6 +901,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some(""),
+            width: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -893,6 +918,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("A lovely cat"),
+            width: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -909,6 +935,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("contain"),
+            width: None,
         };
         let out = match r.render(&embed) {
             RenderedEmbed::Inline(s) => s,
@@ -936,12 +963,29 @@ mod tests {
 
     fn image_inline(alias: Option<&str>) -> String {
         let r = ImageRenderer;
+        // Pre-extract width from alias to mirror the wikilink resolver's
+        // pre-pass (so renderer tests exercise the same input shape that
+        // production renderers see).
+        let (width, alias_owned) = match alias {
+            Some(a) => crate::media::extract_width_from_alias(a),
+            None => (None, String::new()),
+        };
+        let alias_for_renderer: Option<&str> = if width.is_some() {
+            if alias_owned.is_empty() {
+                None
+            } else {
+                Some(alias_owned.as_str())
+            }
+        } else {
+            alias
+        };
         let embed = ParsedEmbed {
             resolved_path: "assets/photo.jpg",
             from_path: "posts/hello.md",
             query: None,
             section: None,
-            alias,
+            alias: alias_for_renderer,
+            width,
         };
         match r.render(&embed) {
             RenderedEmbed::Inline(s) => s,
@@ -1217,6 +1261,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(out.contains("<iframe "), "got: {}", out);
         assert!(
@@ -1236,6 +1281,7 @@ mod tests {
             query: Some("a=major,minor&r=D"),
             section: None,
             alias: None,
+            width: None,
         });
         assert!(
             out.contains("src=\"scale.html?a=major,minor&amp;r=D\""),
@@ -1252,6 +1298,7 @@ mod tests {
             query: Some("x=1"),
             section: Some("section2"),
             alias: None,
+            width: None,
         });
         assert!(
             out.contains("src=\"doc.html?x=1#section2\""),
@@ -1268,6 +1315,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("400"),
+            width: None,
         });
         assert!(out.contains("width=\"400px\""), "got: {}", out);
         assert!(!out.contains("height="), "got: {}", out);
@@ -1281,6 +1329,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("100%x600"),
+            width: None,
         });
         assert!(out.contains("width=\"100%\""), "got: {}", out);
         assert!(out.contains("height=\"600px\""), "got: {}", out);
@@ -1295,6 +1344,7 @@ mod tests {
             query: Some("a=major_pent,major_blues,in&r=major_pent:D,major_blues:D"),
             section: None,
             alias: Some("100%x600"),
+            width: None,
         });
         assert!(
             out.contains("src=\"scale-family-tree.html?a=major_pent,major_blues,in&amp;r=major_pent:D,major_blues:D\""),
@@ -1321,6 +1371,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(!out.contains("title="), "got: {}", out);
     }
@@ -1334,6 +1385,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("My cool widget"),
+            width: None,
         });
         assert!(
             out.contains("title=\"My cool widget\""),
@@ -1361,6 +1413,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("100xbad"),
+            width: None,
         });
         assert!(!out.contains("width="), "got: {}", out);
         assert!(!out.contains("height="), "got: {}", out);
@@ -1391,6 +1444,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(out.contains("<object "), "got: {}", out);
         assert!(
@@ -1419,6 +1473,7 @@ mod tests {
             query: None,
             section: Some("page=5"),
             alias: None,
+            width: None,
         });
         assert!(
             out.contains("data=\"doc.pdf#page=5\""),
@@ -1435,6 +1490,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("100%x800"),
+            width: None,
         });
         assert!(out.contains("width=\"100%\""), "got: {}", out);
         assert!(out.contains("height=\"800px\""), "got: {}", out);
@@ -1449,6 +1505,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(
             out.contains("href=\"doc.pdf\""),
@@ -1484,6 +1541,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(out.contains("<audio "), "got: {}", out);
         assert!(out.contains("controls"), "got: {}", out);
@@ -1517,6 +1575,7 @@ mod tests {
                 query: None,
                 section: None,
                 alias: None,
+            width: None,
             });
             assert!(
                 out.contains(&format!("type=\"{}\"", mime)),
@@ -1535,6 +1594,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(out.contains("preload=\"metadata\""), "got: {}", out);
     }
@@ -1565,6 +1625,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(out.contains("<video "), "got: {}", out);
         assert!(out.contains("controls"), "got: {}", out);
@@ -1601,6 +1662,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("640x360"),
+            width: None,
         });
         assert!(out.contains("width=\"640px\""), "got: {}", out);
         assert!(out.contains("height=\"360px\""), "got: {}", out);
@@ -1622,6 +1684,7 @@ mod tests {
                 query: None,
                 section: None,
                 alias: None,
+            width: None,
             });
             assert!(
                 out.contains(&format!(" src=\"clip.{}\"", ext)),
@@ -1650,6 +1713,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(out.contains("preload=\"metadata\""), "got: {}", out);
     }
@@ -1669,6 +1733,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         };
         match NotebookRenderer.render(&embed) {
             RenderedEmbed::Deferred { marker } => assert_eq!(
@@ -1687,6 +1752,7 @@ mod tests {
             query: Some("cells=1-5"),
             section: None,
             alias: None,
+            width: None,
         };
         match NotebookRenderer.render(&embed) {
             RenderedEmbed::Deferred { marker } => {
@@ -1726,6 +1792,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         assert!(out.contains("<model-viewer "), "got: {}", out);
         assert!(
@@ -1750,6 +1817,7 @@ mod tests {
             query: None,
             section: None,
             alias: Some("400x400"),
+            width: None,
         });
         assert!(
             out.contains("style=\"width:400px;height:400px\""),
@@ -1791,6 +1859,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         };
         match TableRenderer.render(&embed) {
             RenderedEmbed::Deferred { marker } => {
@@ -1798,5 +1867,88 @@ mod tests {
             }
             _ => panic!("expected Deferred"),
         }
+    }
+
+    // -- spec § P9 width: data-width on embed wrappers --------------------
+
+    /// Helper that builds a width-only ParsedEmbed (the typical
+    /// `![[file|full]]` shape after the wikilink resolver's pre-pass).
+    fn embed_with_width<'a>(
+        resolved_path: &'a str,
+        width: &'static str,
+    ) -> ParsedEmbed<'a> {
+        ParsedEmbed {
+            resolved_path,
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+            width: Some(width),
+        }
+    }
+
+    #[test]
+    fn test_iframe_width_emits_data_width_attribute() {
+        let out = iframe_html(&embed_with_width("widget.html", "screen"));
+        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
+        // class="moss-embed" is the wrapper class — data-width sits next to it.
+        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
+    }
+
+    #[test]
+    fn test_iframe_no_width_omits_data_width() {
+        let out = iframe_html(&ParsedEmbed {
+            resolved_path: "widget.html",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+            width: None,
+        });
+        assert!(!out.contains("data-width="), "got: {}", out);
+    }
+
+    #[test]
+    fn test_pdf_width_emits_data_width_attribute() {
+        let out = pdf_html(&embed_with_width("doc.pdf", "wide"));
+        assert!(out.contains(r#"data-width="wide""#), "got: {}", out);
+        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
+    }
+
+    #[test]
+    fn test_audio_width_emits_data_width_attribute() {
+        let out = audio_html(&embed_with_width("song.mp3", "body"));
+        assert!(out.contains(r#"data-width="body""#), "got: {}", out);
+        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
+    }
+
+    #[test]
+    fn test_video_width_emits_data_width_attribute() {
+        // `![[clip.mp4|full]]` — width on the <video> wrapper element.
+        let out = video_html(&embed_with_width("clip.mp4", "screen"));
+        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
+        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
+        // single src= shape must survive — this is the rewriter contract.
+        assert!(out.contains(r#" src="clip.mp4""#), "got: {}", out);
+    }
+
+    #[test]
+    fn test_video_no_width_omits_data_width() {
+        let out = video_html(&ParsedEmbed {
+            resolved_path: "clip.mp4",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+            width: None,
+        });
+        assert!(!out.contains("data-width="), "got: {}", out);
+    }
+
+    #[test]
+    fn test_model_viewer_width_emits_data_width_attribute() {
+        let out = mv_html(&embed_with_width("model.glb", "page"));
+        assert!(out.contains(r#"data-width="page""#), "got: {}", out);
+        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
     }
 }

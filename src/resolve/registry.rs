@@ -209,6 +209,7 @@ mod tests {
             query: None,
             section: None,
             alias: None,
+            width: None,
         });
         match out {
             RenderedEmbed::Html(s) => assert!(s.contains("<iframe"), "built-in iframe should win, got: {}", s),
