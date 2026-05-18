@@ -100,6 +100,11 @@ pub trait RenderHooks {
                 out.push_str(&escape_attr(&class_attr));
                 out.push('"');
                 out.push_str(&style_attr);
+                if let Some(w) = &args.width {
+                    out.push_str(r#" data-width=""#);
+                    out.push_str(w);
+                    out.push('"');
+                }
                 out.push('>');
                 for item in &args.items {
                     out.push_str(r#"<div class="moss-gallery-item"><img src=""#);
@@ -224,7 +229,13 @@ pub trait RenderHooks {
                 }
                 out.push_str(r#"<section class=""#);
                 out.push_str(&escape_attr(&class_attr));
-                out.push_str(r#"">"#);
+                out.push('"');
+                if let Some(w) = &args.width {
+                    out.push_str(r#" data-width=""#);
+                    out.push_str(w);
+                    out.push('"');
+                }
+                out.push('>');
                 if let Some(image) = &args.image {
                     let src = match image {
                         crate::ast::url::Url::Resolved(r) => r.href.clone(),
@@ -277,6 +288,11 @@ pub trait RenderHooks {
                 out.push_str(&args.columns.to_string());
                 out.push_str("\"");
                 out.push_str(&style_attr);
+                if let Some(w) = &args.width {
+                    out.push_str(r#" data-width=""#);
+                    out.push_str(w);
+                    out.push('"');
+                }
                 out.push('>');
                 for cell in &args.cells {
                     out.push_str(r#"<div class="moss-grid-card">"#);
@@ -466,5 +482,116 @@ mod tests {
         // Ensure `Url` type is reachable from this module (sanity check
         // that imports are correct after refactors).
         let _u = Url::resolved("x", UrlKind::Internal);
+    }
+
+    // ── spec § P9 `data-width` emission ──────────────────────────────
+    //
+    // The author writes `:::hero {full}` and the parser canonicalizes
+    // the flag to `Some("screen")`. The default render hook produces a
+    // `<section class="moss-hero" data-width="screen">…` wrapper.
+    // Default (no width attr) MUST omit `data-width` entirely so the
+    // emitted HTML stays sparse — themes target the absence via
+    // `:not([data-width])`.
+
+    use super::super::shortcode::{
+        GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode, Shortcode,
+    };
+
+    fn render_shortcode_html(sc: &Shortcode) -> String {
+        let mut out = String::new();
+        DefaultHooks.render_shortcode(&mut out, sc);
+        out
+    }
+
+    #[test]
+    fn hero_with_width_screen_emits_data_width() {
+        let sc = Shortcode::Hero(HeroShortcode {
+            width: Some("screen".to_string()),
+            ..Default::default()
+        });
+        let html = render_shortcode_html(&sc);
+        assert!(
+            html.contains(r#"data-width="screen""#),
+            "expected data-width=screen, got: {html}"
+        );
+        assert!(html.contains(r#"class="moss-hero""#), "got: {html}");
+    }
+
+    #[test]
+    fn hero_with_width_wide_emits_data_width() {
+        let sc = Shortcode::Hero(HeroShortcode {
+            width: Some("wide".to_string()),
+            ..Default::default()
+        });
+        let html = render_shortcode_html(&sc);
+        assert!(html.contains(r#"data-width="wide""#), "got: {html}");
+    }
+
+    #[test]
+    fn hero_default_omits_data_width() {
+        // Default: no `data-width` attribute at all. Sparse HTML matters
+        // because themes target the absence (`:not([data-width])`); a
+        // baked-in `data-width="body"` would shadow that intent.
+        let sc = Shortcode::Hero(HeroShortcode::default());
+        let html = render_shortcode_html(&sc);
+        assert!(
+            !html.contains("data-width"),
+            "default should omit data-width, got: {html}"
+        );
+    }
+
+    #[test]
+    fn gallery_with_width_page_emits_data_width() {
+        let sc = Shortcode::Gallery(GalleryShortcode {
+            width: Some("page".to_string()),
+            items: vec![GalleryItem {
+                src: Url::resolved("a.jpg", UrlKind::Asset),
+                alt: String::new(),
+                attrs: String::new(),
+            }],
+            ..Default::default()
+        });
+        let html = render_shortcode_html(&sc);
+        assert!(html.contains(r#"data-width="page""#), "got: {html}");
+        assert!(html.contains(r#"class="moss-gallery""#), "got: {html}");
+    }
+
+    #[test]
+    fn gallery_default_omits_data_width() {
+        let sc = Shortcode::Gallery(GalleryShortcode::default());
+        let html = render_shortcode_html(&sc);
+        assert!(
+            !html.contains("data-width"),
+            "default should omit data-width, got: {html}"
+        );
+    }
+
+    #[test]
+    fn grid_with_width_wide_emits_data_width() {
+        let sc = Shortcode::Grid(GridShortcode {
+            columns: 2,
+            width: Some("wide".to_string()),
+            cells: vec!["a".to_string(), "b".to_string()],
+            ..Default::default()
+        });
+        let html = render_shortcode_html(&sc);
+        assert!(html.contains(r#"data-width="wide""#), "got: {html}");
+        assert!(html.contains(r#"class="moss-grid""#), "got: {html}");
+        // Other attrs still present.
+        assert!(html.contains(r#"data-columns="2""#), "got: {html}");
+    }
+
+    #[test]
+    fn grid_default_omits_data_width() {
+        let sc = Shortcode::Grid(GridShortcode {
+            columns: 1,
+            cells: vec!["solo".to_string()],
+            ..Default::default()
+        });
+        let html = render_shortcode_html(&sc);
+        assert!(
+            !html.contains("data-width"),
+            "default should omit data-width, got: {html}"
+        );
     }
 }
