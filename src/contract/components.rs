@@ -100,46 +100,6 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Auto-generated listing of child pages. The single canonical container; layout density on `data-layout` (`grid` for cover-led tiles, `list` for cover+excerpt rows, `minimal` for text-only year-grouped indexes).",
     },
     // -------------------------------------------------------------------
-    // v1 articles family — text-only chronological listing.
-    // No equivalent in the current vocabulary; introduced fresh in v1 as
-    // a sibling of `.moss-cards` for prose-style year-grouped indexes.
-    // -------------------------------------------------------------------
-    ComponentEntry {
-        class: "moss-articles",
-        kind: "container",
-        parent: "",
-        data_attrs: &[
-            DataAttr {
-                name: "data-density",
-                values: &["default", "compact"],
-                default: "default",
-                description: "Vertical spacing density.",
-            },
-        ],
-        example_html: r#"<div class="moss-articles">
-  <a class="moss-item" href="...">...</a>
-  <a class="moss-item" href="...">...</a>
-</div>"#,
-        example_markdown: "",
-        status: Status::Emerging,
-        since: "1",
-        description: "v1 text-only chronological listing. Sibling of `.moss-cards` (which carries layout density via covers); `.moss-articles` is the prose-style index — title + date, no covers. Phase 1c will emit this from the minimal-listing renderer.",
-    },
-    ComponentEntry {
-        class: "moss-item",
-        kind: "instance",
-        parent: "moss-articles",
-        data_attrs: &[],
-        example_html: r#"<a class="moss-item" href="...">
-  <span class="moss-item-date">2024-01-15</span>
-  <span class="moss-item-title">Page title</span>
-</a>"#,
-        example_markdown: "",
-        status: Status::Emerging,
-        since: "1",
-        description: "v1 instance inside `.moss-articles`. Phase 1c will emit this from the minimal-listing renderer in place of `.moss-card-minimal`.",
-    },
-    // -------------------------------------------------------------------
     // Cards family — current emitted vocabulary (pre-Phase 1c collapsing).
     // Three parallel layouts: grid, list, minimal. Each has its own
     // container + instance + sub-classes.
