@@ -89,15 +89,53 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 default: "default",
                 description: "Vertical spacing density.",
             },
+            DataAttr {
+                name: "data-list-axis",
+                values: &["date", "weight", "title"],
+                default: "title",
+                description: "Sort axis for the listing (mirrors the folder's `sort:` frontmatter). Drives `--moss-card-min` density tuning and decides whether each `.moss-card-meta` slot is filled (date axis) or omitted (weight/title axes).",
+            },
+            DataAttr {
+                name: "data-list-has-covers",
+                values: &[""],
+                default: "",
+                description: "Boolean presence flag: emitted iff any child card has a cover. Combines with `data-list-axis` to widen `--moss-card-min` for cover-led layouts. Use `[data-list-has-covers]` in CSS to target it.",
+            },
         ],
-        example_html: r#"<div class="moss-cards" data-layout="grid">
-  <a class="moss-card" href="...">...</a>
-  <a class="moss-card" href="...">...</a>
+        example_html: r#"<div class="moss-cards-container">
+  <div class="moss-cards" data-layout="grid" data-list-axis="date" data-list-has-covers>
+    <a class="moss-card" href="...">...</a>
+    <a class="moss-card" href="...">...</a>
+  </div>
 </div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Auto-generated listing of child pages. The single canonical container; layout density on `data-layout` (`grid` for cover-led tiles, `list` for cover+excerpt rows, `minimal` for text-only year-grouped indexes).",
+        description: "Auto-generated listing of child pages. The single canonical container; layout density on `data-layout` (`grid` for cover-led tiles, `list` for cover+excerpt rows, `minimal` for text-only year-grouped indexes). Wrapped in `.moss-cards-container` to scope CSS container queries.",
+    },
+    ComponentEntry {
+        class: "moss-cards-container",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-cards-container">
+  <div class="moss-cards" data-layout="grid">...</div>
+</div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "Outer wrapper around `.moss-cards` that carries `container-type: inline-size` so the grid can use `@container` queries instead of viewport `@media` queries. Layout-agnostic — wraps any `data-layout` variant.",
+    },
+    ComponentEntry {
+        class: "moss-summary-layout",
+        kind: "container",
+        parent: "moss-cards",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-cards moss-summary-layout" data-layout="list">...</div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "Additional class on `.moss-cards[data-layout=\"list\"]` to invoke summary-card styling (`children_style: summary` in frontmatter — wider gutters, larger covers). Pre-existing emission; not specific to listing-sort.",
     },
     // -------------------------------------------------------------------
     // Cards family — current emitted vocabulary (pre-Phase 1c collapsing).
@@ -275,6 +313,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Confirmed,
         since: "1",
         description: "Excerpt / description paragraph inside a list-layout `.moss-card`.",
+    },
+    ComponentEntry {
+        class: "moss-card-count",
+        kind: "instance",
+        parent: "moss-card",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-card-count">4 articles</div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "Tertiary subtitle line showing `N articles` for a folder card. Renders only on non-date listings when the folder card has no `description` to display.",
     },
     ComponentEntry {
         class: "moss-card-grid",
@@ -802,6 +851,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Confirmed,
         since: "0",
         description: "Error state for embeds whose target cannot be resolved.",
+    },
+    ComponentEntry {
+        class: "moss-embed-missing",
+        kind: "instance",
+        parent: "moss-embed",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-embed-missing">Folder not found: journal</div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "Fallback rendered when a folder-list embed (`![[journal/]]`) targets a folder that does not exist or cannot be resolved. Distinct from `.moss-embed-error` (file/wikilink resolution failure) — this one is specifically the folder-listing path.",
     },
     // -------------------------------------------------------------------
     // Hero, image, visual primitives.
