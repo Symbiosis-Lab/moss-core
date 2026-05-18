@@ -560,7 +560,7 @@ mod tests {
         assert_eq!(result.block_ids, vec!["my-block"]);
 
         // Callout transformed
-        assert!(result.content_markdown.contains("callout-warning"));
+        assert!(result.content_markdown.contains(r#"data-type="warning""#));
         assert!(result.content_markdown.contains("Watch Out"));
     }
 
