@@ -42,11 +42,20 @@ pub struct AttrBlock {
     /// `key=value` pairs in source order. Last write wins when a key
     /// repeats — the parser drops earlier entries on collision.
     pub kvs: Vec<(String, String)>,
+    /// Width flag (spec § P9): `body | wide | page | screen`. Recognized
+    /// as a bare token in the attribute block; `{full}` is normalized to
+    /// `"screen"`. Last write wins on repeats. `None` means the author did
+    /// not specify a width — emitters should omit `data-width` in that
+    /// case so the HTML stays sparse and themes can target the absence.
+    pub width: Option<&'static str>,
 }
 
 impl AttrBlock {
     pub fn is_empty(&self) -> bool {
-        self.classes.is_empty() && self.id.is_none() && self.kvs.is_empty()
+        self.classes.is_empty()
+            && self.id.is_none()
+            && self.kvs.is_empty()
+            && self.width.is_none()
     }
 
     /// Convenience for renderers: get the value for a key.
@@ -141,11 +150,16 @@ pub fn parse_attrs(input: &str) -> Result<AttrBlock, AttrError> {
                         block.set_kv(key, value);
                     }
                     _ => {
-                        // Bare key (no `=value`): treat as a class for
-                        // ergonomics? Spec says only `.foo`/`#foo`/`key=val`
-                        // are recognized — return InvalidKey so the author
-                        // gets a clean diagnostic rather than silent dropping.
-                        return Err(AttrError::InvalidKey { token: key });
+                        // Bare keyword (no `=value`). Spec § P9 reserves four
+                        // width tokens (`body | wide | page | screen`) plus
+                        // the alias `full` (→ `screen`) as bare flags for
+                        // hero / gallery / grid / embed / image-wrapper
+                        // sizing. Any other bare keyword is still an error.
+                        if let Some(width) = match_width_token(&key) {
+                            block.width = Some(width);
+                        } else {
+                            return Err(AttrError::InvalidKey { token: key });
+                        }
                     }
                 }
             }
@@ -170,6 +184,23 @@ pub fn parse_attrs(input: &str) -> Result<AttrBlock, AttrError> {
 
 fn is_key_start(c: char) -> bool {
     c.is_ascii_alphabetic()
+}
+
+/// Recognize the spec § P9 width tokens (`body | wide | page | screen | full`).
+///
+/// `full` is the author-facing alias for `screen` (the spec keeps both shapes
+/// because `{full}` reads naturally in authoring contexts while the emitted
+/// attribute value is the value-space term `screen`). All five tokens are
+/// ASCII lowercase per the grammar; the parser feeds keys verbatim, so any
+/// case-folding decision lives here.
+fn match_width_token(s: &str) -> Option<&'static str> {
+    match s {
+        "body" => Some("body"),
+        "wide" => Some("wide"),
+        "page" => Some("page"),
+        "screen" | "full" => Some("screen"),
+        _ => None,
+    }
 }
 
 fn is_key_continue(c: char) -> bool {
@@ -599,8 +630,85 @@ mod tests {
     #[test]
     fn key_without_equals_errors() {
         // A bare keyword without `=` is invalid (spec says only `.foo`,
-        // `#foo`, `key=value` are recognized).
+        // `#foo`, `key=value` are recognized) — EXCEPT for the spec § P9
+        // width tokens (body | wide | page | screen | full), which are
+        // tested separately below.
         assert!(matches!(err("{cols}"), AttrError::InvalidKey { .. }));
+        assert!(matches!(err("{flush}"), AttrError::InvalidKey { .. }));
+    }
+
+    // ── width tokens (spec § P9) ─────────────────────────────────────
+
+    #[test]
+    fn width_token_body() {
+        let b = ok("{body}");
+        assert_eq!(b.width, Some("body"));
+        assert!(b.classes.is_empty());
+        assert!(b.id.is_none());
+        assert!(b.kvs.is_empty());
+    }
+
+    #[test]
+    fn width_token_wide() {
+        let b = ok("{wide}");
+        assert_eq!(b.width, Some("wide"));
+    }
+
+    #[test]
+    fn width_token_page() {
+        let b = ok("{page}");
+        assert_eq!(b.width, Some("page"));
+    }
+
+    #[test]
+    fn width_token_screen() {
+        let b = ok("{screen}");
+        assert_eq!(b.width, Some("screen"));
+    }
+
+    #[test]
+    fn width_token_full_aliases_to_screen() {
+        // Per spec § P9 authoring grammar: `full` is the author-facing
+        // alias for `screen`. The emitted value is always the value-space
+        // term `screen`.
+        let b = ok("{full}");
+        assert_eq!(b.width, Some("screen"));
+    }
+
+    #[test]
+    fn width_token_with_class() {
+        let b = ok("{wide .showcase}");
+        assert_eq!(b.width, Some("wide"));
+        assert_eq!(b.classes, vec!["showcase"]);
+    }
+
+    #[test]
+    fn width_token_with_kv() {
+        let b = ok("{cols=3 wide}");
+        assert_eq!(b.width, Some("wide"));
+        assert_eq!(b.get("cols"), Some("3"));
+    }
+
+    #[test]
+    fn width_token_repeated_last_wins() {
+        // Authors are unlikely to do this, but stay deterministic.
+        let b = ok("{wide page}");
+        assert_eq!(b.width, Some("page"));
+    }
+
+    #[test]
+    fn width_token_does_not_become_class() {
+        let b = ok("{wide}");
+        assert!(b.classes.is_empty());
+    }
+
+    #[test]
+    fn width_token_with_explicit_dot_is_a_class_not_width() {
+        // `.wide` is still a class — width tokens are recognized only as
+        // bare keywords, not as `.class` shortcuts.
+        let b = ok("{.wide}");
+        assert_eq!(b.classes, vec!["wide"]);
+        assert!(b.width.is_none());
     }
 
     #[test]

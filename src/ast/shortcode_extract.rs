@@ -140,6 +140,7 @@ fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
         super::attrs::parse_attrs(attr_block).unwrap_or_default()
     };
     let classes = parsed.class_string();
+    let width = parsed.width.map(str::to_string);
 
     let mut columns: u32 = 1;
     let mut ratio: Option<String> = None;
@@ -177,6 +178,7 @@ fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
             ratio,
             classes,
             cells,
+            width,
         },
         found_legacy_dash,
     )
@@ -267,6 +269,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
         super::attrs::parse_attrs(attr_block).unwrap_or_default()
     };
     let classes = parsed.class_string();
+    let width = parsed.width.map(str::to_string);
 
     // Priority 1: `image=` attribute.
     if let Some(image_value) = parsed.get("image") {
@@ -281,6 +284,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
                 attrs: attrs_str.to_string(),
                 classes,
                 overlay_markdown: body.trim().to_string(),
+                width,
             },
             false,
         );
@@ -301,6 +305,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
                 attrs: attrs_str.to_string(),
                 classes,
                 overlay_markdown: body.trim().to_string(),
+                width,
             },
             false,
         );
@@ -332,6 +337,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
             attrs: image_attrs,
             classes,
             overlay_markdown: overlay_lines.join("\n").trim().to_string(),
+            width,
         },
         used_priority_3,
     )
@@ -396,8 +402,10 @@ fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
 }
 
 fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
-    // Args: `N {.classes}` where N is optional columns count.
-    let (positional, classes) = split_positional_and_classes(args);
+    // Args: `N {.classes width}` where N is optional columns count and
+    // `width` is one of the spec § P9 width tokens (handled inside
+    // `split_positional_and_classes`).
+    let (positional, classes, width) = split_positional_classes_and_width(args);
     let columns = if positional.is_empty() {
         None
     } else {
@@ -426,7 +434,52 @@ fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
         columns,
         classes,
         items,
+        width,
     }
+}
+
+/// Split `args` into `(positional_text, classes, width)`.
+///
+/// Same routing as [`split_positional_and_classes`], but also surfaces the
+/// spec § P9 width token (`body | wide | page | screen`, with `full`
+/// aliased to `screen`). Returns `width = None` when the author did not
+/// set one, or when the legacy fallback path fires (malformed attrs
+/// where the structured parser bailed).
+fn split_positional_classes_and_width(args: &str) -> (String, String, Option<String>) {
+    let trimmed = args.trim();
+    if let Some(brace_start) = trimmed.find('{') {
+        #[allow(clippy::string_slice)]
+        let after_open = &trimmed[brace_start..];
+        if let Some(brace_end) = after_open.find('}') {
+            #[allow(clippy::string_slice)]
+            let positional = trimmed[..brace_start].trim().to_string();
+            #[allow(clippy::string_slice)]
+            let attr_block_str = &trimmed[brace_start..=brace_start + brace_end];
+            if let Ok(parsed) = super::attrs::parse_attrs(attr_block_str) {
+                return (
+                    positional,
+                    parsed.class_string(),
+                    parsed.width.map(str::to_string),
+                );
+            }
+            // Legacy fallback for malformed inputs: scan only for `.class`.
+            // Width tokens are skipped here on purpose — if attrs are
+            // malformed enough to bail, the author's intent is unclear and
+            // omitting the width is safer than guessing.
+            #[allow(clippy::string_slice)]
+            let inner = &trimmed[brace_start + 1..brace_start + brace_end];
+            let mut classes = Vec::new();
+            for token in inner.split_whitespace() {
+                if let Some(class) = token.strip_prefix('.') {
+                    if !class.is_empty() {
+                        classes.push(class);
+                    }
+                }
+            }
+            return (positional, classes.join(" "), None);
+        }
+    }
+    (trimmed.to_string(), String::new(), None)
 }
 
 /// Split `args` into `(positional_text, classes)` from `{...}` syntax.
@@ -2200,5 +2253,103 @@ mod tests {
         let md = ":::hero {image=photo.jpg}\n# Title\n:::\n";
         let result = extract_shortcodes(md);
         assert!(result.warnings.is_empty());
+    }
+
+    // ── spec § P9 width-flag extraction ─────────────────────────────
+    //
+    // `:::hero {full}` / `:::gallery {wide}` / `:::grid {page}` set the
+    // `width` field on the typed shortcode. `full` aliases to `screen`.
+    // Absence of a width flag leaves `width = None`, which the emitter
+    // turns into "no `data-width` attribute on the wrapper".
+
+    fn first_extracted(md: &str) -> Shortcode {
+        let result = extract_shortcodes(md);
+        result
+            .extracted
+            .into_iter()
+            .next()
+            .expect("at least one shortcode")
+            .shortcode
+    }
+
+    #[test]
+    fn hero_with_full_flag_sets_width_screen() {
+        let md = ":::hero {image=photo.jpg full}\n# Title\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Hero(h) => assert_eq!(h.width.as_deref(), Some("screen")),
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_with_screen_flag_sets_width_screen() {
+        let md = ":::hero {image=photo.jpg screen}\n# Title\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Hero(h) => assert_eq!(h.width.as_deref(), Some("screen")),
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_with_wide_flag_sets_width_wide() {
+        let md = ":::hero {image=photo.jpg wide}\n# Title\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Hero(h) => assert_eq!(h.width.as_deref(), Some("wide")),
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_without_width_flag_leaves_width_none() {
+        let md = ":::hero {image=photo.jpg}\n# Title\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Hero(h) => assert!(h.width.is_none(), "got {:?}", h.width),
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gallery_with_page_flag_sets_width_page() {
+        let md = ":::gallery 3 {page}\nphoto.jpg\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Gallery(g) => assert_eq!(g.width.as_deref(), Some("page")),
+            other => panic!("expected Gallery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gallery_without_width_flag_leaves_width_none() {
+        let md = ":::gallery 3\nphoto.jpg\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Gallery(g) => assert!(g.width.is_none()),
+            other => panic!("expected Gallery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grid_with_wide_flag_sets_width_wide() {
+        let md = ":::grid {cols=2 wide}\ncell A\n+++\ncell B\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Grid(g) => assert_eq!(g.width.as_deref(), Some("wide")),
+            other => panic!("expected Grid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grid_with_full_flag_normalizes_to_screen() {
+        let md = ":::grid {cols=2 full}\ncell A\n+++\ncell B\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Grid(g) => assert_eq!(g.width.as_deref(), Some("screen")),
+            other => panic!("expected Grid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grid_without_width_flag_leaves_width_none() {
+        let md = ":::grid 2\ncell A\n+++\ncell B\n:::\n";
+        match first_extracted(md) {
+            Shortcode::Grid(g) => assert!(g.width.is_none()),
+            other => panic!("expected Grid, got {other:?}"),
+        }
     }
 }

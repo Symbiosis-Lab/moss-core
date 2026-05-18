@@ -103,6 +103,11 @@ pub struct GalleryShortcode {
     pub classes: String,
     /// Each gallery image's src + alt + media attrs.
     pub items: Vec<GalleryItem>,
+    /// Spec § P9 width attribute: `body | wide | page | screen` (with
+    /// `full` aliased to `screen`). `None` means the author did not set
+    /// a width — the emitter omits `data-width` so the HTML stays sparse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<String>,
 }
 
 /// One image in a [`GalleryShortcode`].
@@ -135,6 +140,11 @@ pub struct GridShortcode {
     /// through the markdown pipeline (including any nested typed
     /// shortcodes such as `::::buttons` inside a `:::grid` cell).
     pub cells: Vec<String>,
+    /// Spec § P9 width attribute: `body | wide | page | screen` (with
+    /// `full` aliased to `screen`). `None` means the author did not set
+    /// a width — the emitter omits `data-width` so the HTML stays sparse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<String>,
 }
 
 /// Arguments for [`Shortcode::Hero`].
@@ -152,6 +162,11 @@ pub struct HeroShortcode {
     /// Markdown source for the overlay content. Renderer processes this
     /// via the surrounding markdown pipeline.
     pub overlay_markdown: String,
+    /// Spec § P9 width attribute: `body | wide | page | screen` (with
+    /// `full` aliased to `screen`). `None` means the author did not set
+    /// a width — the emitter omits `data-width` so the HTML stays sparse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<String>,
 }
 
 /// Identifier for a shortcode kind, used for AST queries (e.g.
@@ -330,6 +345,7 @@ mod tests {
                     attrs: "cover top".to_string(),
                 },
             ],
+            width: None,
         });
         match &sc {
             Shortcode::Gallery(args) => {
@@ -360,6 +376,7 @@ mod tests {
                 alt: "Photo".to_string(),
                 attrs: "1:1 contain".to_string(),
             }],
+            width: None,
         });
         let s = serde_json::to_string(&sc).expect("serialize");
         let back: Shortcode = serde_json::from_str(&s).expect("deserialize");
