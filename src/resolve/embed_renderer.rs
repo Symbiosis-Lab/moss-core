@@ -671,6 +671,10 @@ impl EmbedRenderer for NotebookRenderer {
     }
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        // NOTE: embed.width is intentionally dropped at the marker boundary.
+        // Notebook wrappers are emitted in src-tauri post-passes that don't
+        // currently read width from the marker target. Track when those
+        // switch to data-width emission — file a follow-up issue if needed.
         let target = match embed.query {
             Some(q) => format!("{}?{}", embed.resolved_path, q),
             None => embed.resolved_path.to_string(),
@@ -759,6 +763,10 @@ impl EmbedRenderer for TableRenderer {
     }
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        // NOTE: embed.width is intentionally dropped at the marker boundary.
+        // Table wrappers are emitted in src-tauri post-passes (csv_table) that
+        // don't currently read width from the marker target. Track when those
+        // switch to data-width emission — file a follow-up issue if needed.
         RenderedEmbed::Deferred {
             marker: format!("<!-- {}:{} -->", MARKER_TABLE, embed.resolved_path),
         }
