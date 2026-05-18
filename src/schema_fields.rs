@@ -206,6 +206,19 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
+        name: "sort",
+        // Polymorphic value (axis string OR list of stems). For v1 the schema
+        // describes the string form for the form widget; the list form is
+        // hand-edited in YAML. Follow-up: union types in schema_fields.
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["date", "weight", "title"]),
+        priority: 85,
+        description: "How to sort children in this folder's listing. Use date for chronological streams, weight for authored order, title for alphabetical. A list of child stems (e.g. [intro, setup]) declares explicit order.",
+        group: "Occasional",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "series",
         field_type: FieldType::Array,
         widget: Widget::TagInput,

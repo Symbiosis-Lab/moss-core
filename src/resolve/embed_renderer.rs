@@ -26,6 +26,7 @@
 use std::sync::OnceLock;
 
 mod common;
+pub mod folder_list;
 use common::{build_src, dim_attrs, file_stem, html_escape_attr, path_extension_lower};
 
 // ---------------------------------------------------------------------------
@@ -86,6 +87,9 @@ pub const MARKER_IPYNB: &str = "moss-embed-ipynb";
 /// Format: `<!-- moss-embed-table:PATH -->`. src-tauri reads the file and
 /// calls [`crate::csv_table::render`] (a pure renderer).
 pub const MARKER_TABLE: &str = "moss-embed-table";
+
+// Re-export folder_list marker constants for convenience.
+pub use folder_list::{MARKER_FOLDER_LIST, MARKER_END};
 
 /// An embed that has been parsed and path-resolved, ready for rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
