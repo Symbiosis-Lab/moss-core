@@ -320,9 +320,9 @@ mod tests {
         // <blockquote> with literal `[!type]` text.
         let input = "> [!warning] Outer\n> Outer content.\n>\n> > [!tip] Inner\n> > Inner content.";
         let output = transform_callouts(input);
-        assert!(output.contains("callout-warning"), "outer callout missing: {}", output);
+        assert!(output.contains(r#"data-type="warning""#), "outer callout missing: {}", output);
         assert!(output.contains("Outer content."), "outer body missing: {}", output);
-        assert!(output.contains("callout-tip"), "inner callout not recognized: {}", output);
+        assert!(output.contains(r#"data-type="tip""#), "inner callout not recognized: {}", output);
         assert!(output.contains("Inner content."), "inner body missing: {}", output);
         // The `[!tip]` marker must not survive as literal text.
         assert!(!output.contains("[!tip]"), "inner [!tip] marker leaked: {}", output);
@@ -374,8 +374,8 @@ mod tests {
     fn test_pending_callout_type() {
         let input = "> [!pending] Trailer video\n> Add when ready.";
         let result = transform_callouts(input);
-        assert!(result.contains(r#"<div class="callout callout-pending">"#),
-            "Expected callout-pending class. Got: {}", result);
+        assert!(result.contains(r#"data-type="pending""#),
+            "Expected callout data-type=\"pending\". Got: {}", result);
         assert!(result.contains("Trailer video"), "Expected title");
         assert!(result.contains("Add when ready."), "Expected body");
     }

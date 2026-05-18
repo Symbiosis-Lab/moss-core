@@ -1437,9 +1437,10 @@ mod tests {
             // the rewriter has finalized the path. Carrying a stale type=
             // (e.g. video/quicktime for .mov that has been rewritten to .mp4)
             // would either be ignored or worse, mislead the decoder.
+            // Bare ` type="...` only — `data-type="..."` from v1 vocab is fine.
             assert!(
-                !out.contains("type="),
-                "{}: must not emit type= (rewriter changes extension later), got {}",
+                !out.contains(" type=\""),
+                "{}: must not emit bare type= (rewriter changes extension later), got {}",
                 ext,
                 out
             );
