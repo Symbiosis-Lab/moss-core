@@ -226,6 +226,66 @@ pub fn parse_media_attrs(raw: &str) -> MediaAttrs {
     MediaAttrs { fit, position }
 }
 
+/// Recognize the spec § P9 width tokens (`body | wide | page | screen | full`).
+///
+/// `full` is the author-facing alias for `screen` — both at the fenced-div
+/// AttrBlock layer (see [`crate::ast::attrs::match_width_token`]) and here at
+/// the wikilink pipe-alias layer. The returned `&'static str` is the
+/// canonical value-space term emitted as `data-width="..."`.
+///
+/// The check is exact-match on the full input (case-sensitive ASCII): a string
+/// like `"wide screen"` returns `None` so that multi-word captions like
+/// `![[img|wide angle shot]]` are not silently classified as a width hint.
+/// Callers that handle multi-pipe wikilink aliases should split on `|` and
+/// call this on each trimmed segment individually.
+pub fn match_width_token(s: &str) -> Option<&'static str> {
+    match s {
+        "body" => Some("body"),
+        "wide" => Some("wide"),
+        "page" => Some("page"),
+        "screen" | "full" => Some("screen"),
+        _ => None,
+    }
+}
+
+/// Parse a wikilink alias for an embedded width token plus the remaining
+/// alias content.
+///
+/// The wikilink parser (`parse_wikilink_inner`) splits on the first `|` only,
+/// so when an author writes `![[img|caption|full]]`, the resulting `alias`
+/// string is `"caption|full"`. This helper splits the alias on `|` and pulls
+/// out a bare width-token segment (per [`match_width_token`]) without
+/// reordering the others. The remaining segments are rejoined with `|`.
+///
+/// Returns `(width, remaining_alias)`:
+///
+/// - `width = Some("body|wide|page|screen")` if exactly one segment matched
+///   a width token (per the "entire alias-segment is exactly one of the
+///   tokens" rule). Width tokens never shadow longer captions.
+/// - `remaining_alias` is the trimmed concatenation of non-width segments,
+///   joined with `|`. Empty if the only segment was the width token.
+///
+/// If no width token is found, returns `(None, alias.to_string())` — the
+/// caller falls through to its existing alias handling.
+pub fn extract_width_from_alias(alias: &str) -> (Option<&'static str>, String) {
+    let segments: Vec<&str> = alias.split('|').collect();
+    let mut width: Option<&'static str> = None;
+    let mut remaining: Vec<&str> = Vec::with_capacity(segments.len());
+
+    for seg in &segments {
+        let trimmed = seg.trim();
+        if width.is_none() {
+            if let Some(canonical) = match_width_token(trimmed) {
+                width = Some(canonical);
+                continue;
+            }
+        }
+        remaining.push(seg);
+    }
+
+    (width, remaining.join("|"))
+}
+
 /// Return `true` if every token in `text` is a recognized display keyword.
 ///
 /// Handles single-token keywords (`"left"`, `"contain"`) and two-word position
@@ -865,5 +925,91 @@ mod tests {
             format_img_tag("img\"bad.jpg", "a\"<b>", &attrs),
             "<img src=\"img&quot;bad.jpg\" alt=\"a&quot;&lt;b&gt;\" style=\"object-position:left\" />"
         );
+    }
+
+    // -- match_width_token / extract_width_from_alias ---------------------
+
+    #[test]
+    fn test_match_width_token_recognized() {
+        assert_eq!(match_width_token("body"), Some("body"));
+        assert_eq!(match_width_token("wide"), Some("wide"));
+        assert_eq!(match_width_token("page"), Some("page"));
+        assert_eq!(match_width_token("screen"), Some("screen"));
+        // `full` is the author-facing alias for `screen` (canonical value).
+        assert_eq!(match_width_token("full"), Some("screen"));
+    }
+
+    #[test]
+    fn test_match_width_token_rejects_non_width() {
+        assert_eq!(match_width_token(""), None);
+        assert_eq!(match_width_token("BODY"), None);
+        assert_eq!(match_width_token("widely"), None);
+        // Multi-token strings are exact-match only — no caption shadowing.
+        assert_eq!(match_width_token("wide angle"), None);
+        // Display keywords aren't width tokens.
+        assert_eq!(match_width_token("contain"), None);
+        assert_eq!(match_width_token("left"), None);
+    }
+
+    #[test]
+    fn test_extract_width_from_alias_single_segment_width() {
+        let (w, rest) = extract_width_from_alias("full");
+        assert_eq!(w, Some("screen"));
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_extract_width_from_alias_caption_only() {
+        // No width token — alias passes through unchanged.
+        let (w, rest) = extract_width_from_alias("A beautiful sunset");
+        assert_eq!(w, None);
+        assert_eq!(rest, "A beautiful sunset");
+    }
+
+    #[test]
+    fn test_extract_width_from_alias_caption_then_width() {
+        // Multi-pipe alias `caption|full` (the wikilink parser hands us
+        // the post-first-`|` slice intact).
+        let (w, rest) = extract_width_from_alias("A nice photo|full");
+        assert_eq!(w, Some("screen"));
+        assert_eq!(rest, "A nice photo");
+    }
+
+    #[test]
+    fn test_extract_width_from_alias_width_then_caption() {
+        let (w, rest) = extract_width_from_alias("wide|A nice photo");
+        assert_eq!(w, Some("wide"));
+        assert_eq!(rest, "A nice photo");
+    }
+
+    #[test]
+    fn test_extract_width_from_alias_caption_with_width_word_not_shadowed() {
+        // The phrase "caption that says wide" must NOT trigger width
+        // recognition — a width token only fires when an entire alias
+        // segment is exactly the token.
+        let (w, rest) = extract_width_from_alias("caption that says wide");
+        assert_eq!(w, None);
+        assert_eq!(rest, "caption that says wide");
+    }
+
+    #[test]
+    fn test_extract_width_from_alias_only_first_width_extracted() {
+        // If two width tokens appear, only the first one is canonical-ised;
+        // the second stays in the caption text. Authors writing two width
+        // tokens is malformed input, and rather than silently merging we
+        // preserve the surplus for diagnostic visibility downstream.
+        let (w, rest) = extract_width_from_alias("full|wide");
+        assert_eq!(w, Some("screen"));
+        assert_eq!(rest, "wide");
+    }
+
+    #[test]
+    fn test_extract_width_from_alias_segment_whitespace_trimmed() {
+        // Authors who write `caption | full` should still get width
+        // recognition — leading/trailing whitespace on a segment is
+        // ignored for the token check but preserved in the rejoined rest.
+        let (w, rest) = extract_width_from_alias("caption | full");
+        assert_eq!(w, Some("screen"));
+        assert_eq!(rest, "caption ");
     }
 }

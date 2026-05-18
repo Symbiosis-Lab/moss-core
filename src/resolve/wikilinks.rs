@@ -727,6 +727,60 @@ mod tests {
         assert_eq!(result.content, "![](../assets/_43A2045.jpg)");
     }
 
+    // 10i. Width pipe-alias (spec § P9) — `full` → `data-width="screen"`.
+    // Full `<figure>` HTML is emitted (not `![alt](url)`) so the data-width
+    // attribute lands on the wrapper element per spec. See
+    // [`crate::media::extract_width_from_alias`] for the parsing rules.
+    #[test]
+    fn test_image_embed_width_full_alias() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg|full]]", &graph, "posts/hello.md");
+        assert!(
+            result.content
+                .contains(r#"<figure class="moss-image" data-width="screen">"#),
+            "got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(r#"src="../assets/photo.jpg""#),
+            "got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_image_embed_width_wide_alias() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg|wide]]", &graph, "posts/hello.md");
+        assert!(
+            result.content
+                .contains(r#"<figure class="moss-image" data-width="wide">"#),
+            "got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_image_embed_caption_with_width_word_no_data_width() {
+        // A caption that happens to contain `wide` must not emit data-width.
+        let graph = test_graph();
+        let result = resolve_wikilinks(
+            "![[photo.jpg|a wide angle shot]]",
+            &graph,
+            "posts/hello.md",
+        );
+        assert!(
+            !result.content.contains("data-width="),
+            "got: {}",
+            result.content
+        );
+        // Caption survives as alt text via the existing markdown-fallback arm.
+        assert_eq!(
+            result.content,
+            "![a wide angle shot](../assets/photo.jpg)"
+        );
+    }
+
     // 11. Markdown embed
     #[test]
     fn test_markdown_embed() {

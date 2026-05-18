@@ -277,7 +277,10 @@ pub fn lookup_renderer(ext: &str) -> Option<&'static dyn EmbedRenderer> {
 // ---------------------------------------------------------------------------
 
 use crate::heading_anchor::obsidian_heading_anchor;
-use crate::media::{format_img_tag, is_all_display_keywords, parse_media_attrs};
+use crate::media::{
+    extract_width_from_alias, format_img_tag, html_escape, is_all_display_keywords,
+    parse_media_attrs,
+};
 
 use super::fuzzy_path::relative_asset_path;
 
@@ -295,26 +298,84 @@ impl EmbedRenderer for ImageRenderer {
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let out = match embed.alias {
-            Some(alias_text) if is_all_display_keywords(alias_text) => {
-                // Display-keyword aliases (`cover`, `left top`, …) describe
-                // layout, not content — keep the filename stem as alt so the
-                // image still has *some* description for screen readers.
+
+        // Pre-pass: extract a spec § P9 width token from the alias before
+        // any other classification runs. Width never shadows captions or
+        // display keywords (`extract_width_from_alias` matches whole
+        // segments only) — so it composes orthogonally with the existing
+        // arms below. When width is present we emit the full
+        // `<figure class="moss-image" data-width="...">…<img …></figure>`
+        // shape directly: pulldown-cmark passes that through as an
+        // `HtmlBlock` (block-level), so the figure wrapper survives end-
+        // to-end without needing the src-tauri standalone-paragraph rule
+        // to recognise raw `<img>` HtmlBlocks. Per spec, `data-width`
+        // sits on the wrapper, not the inner img.
+        let (width, alias_rest) = match embed.alias {
+            Some(a) => extract_width_from_alias(a),
+            None => (None, String::new()),
+        };
+
+        let out = match (width, alias_rest.as_str()) {
+            // Width-only alias (`![[photo.jpg|full]]`) — emit figure-wrapped
+            // img with empty alt (width is structural, not a caption).
+            (Some(w), "") => format!(
+                r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="" /></figure>"#,
+                w,
+                html_escape(&url),
+            ),
+            // Width + display keywords (`![[photo.jpg|cover|full]]`) — the
+            // display keywords land on the inner img as inline style; the
+            // figure carries data-width. Filename stem becomes alt for
+            // assistive tech (matches the no-width display-keyword arm).
+            (Some(w), rest) if is_all_display_keywords(rest) => {
                 let alt = file_stem(embed.resolved_path);
-                let attrs = parse_media_attrs(alias_text);
-                format_img_tag(&url, &alt, &attrs)
+                let attrs = parse_media_attrs(rest);
+                let style_attr = attrs
+                    .to_inline_style()
+                    .map(|s| format!(" style=\"{}\"", html_escape(&s)))
+                    .unwrap_or_default();
+                format!(
+                    r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="{}"{} /></figure>"#,
+                    w,
+                    html_escape(&url),
+                    html_escape(&alt),
+                    style_attr,
+                )
             }
-            Some(alias_text) => format!("![{}]({})", alias_text, url),
-            None => {
-                // No author-provided alias → empty alt rather than synthesizing
-                // one from the filename stem. Synthesized alts like
-                // `Pasted image 20260505161028` are not meaningful descriptions
-                // for assistive tech, AND a non-empty alt would trip the
-                // bare-image-paragraph figure rule into producing a `<figure>`
-                // captioned with the filename — visible junk.
-                // See docs/plans/2026-05-05-figure-captions-design.md.
-                format!("![]({})", url)
-            }
+            // Width + caption text (`![[photo.jpg|A nice photo|full]]`) —
+            // caption goes into a `<figcaption>` inside the figure, matching
+            // the byte shape of `image_render::wrap_in_figure(.., Some(text), ..)`
+            // in src-tauri. Alt mirrors caption text for a11y parity with
+            // implicit-figure rendering.
+            (Some(w), rest) => format!(
+                r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="{}" /><figcaption>{}</figcaption></figure>"#,
+                w,
+                html_escape(&url),
+                html_escape(rest),
+                html_escape(rest),
+            ),
+            // No width — fall through to the pre-existing classifier.
+            (None, _) => match embed.alias {
+                Some(alias_text) if is_all_display_keywords(alias_text) => {
+                    // Display-keyword aliases (`cover`, `left top`, …) describe
+                    // layout, not content — keep the filename stem as alt so the
+                    // image still has *some* description for screen readers.
+                    let alt = file_stem(embed.resolved_path);
+                    let attrs = parse_media_attrs(alias_text);
+                    format_img_tag(&url, &alt, &attrs)
+                }
+                Some(alias_text) => format!("![{}]({})", alias_text, url),
+                None => {
+                    // No author-provided alias → empty alt rather than synthesizing
+                    // one from the filename stem. Synthesized alts like
+                    // `Pasted image 20260505161028` are not meaningful descriptions
+                    // for assistive tech, AND a non-empty alt would trip the
+                    // bare-image-paragraph figure rule into producing a `<figure>`
+                    // captioned with the filename — visible junk.
+                    // See docs/plans/2026-05-05-figure-captions-design.md.
+                    format!("![]({})", url)
+                }
+            },
         };
         RenderedEmbed::Inline(out)
     }
@@ -869,6 +930,141 @@ mod tests {
                 exts
             );
         }
+    }
+
+    // -- ImageRenderer: width pipe-alias (spec § P9, follow-up to PR-1c) --
+
+    fn image_inline(alias: Option<&str>) -> String {
+        let r = ImageRenderer;
+        let embed = ParsedEmbed {
+            resolved_path: "assets/photo.jpg",
+            from_path: "posts/hello.md",
+            query: None,
+            section: None,
+            alias,
+        };
+        match r.render(&embed) {
+            RenderedEmbed::Inline(s) => s,
+            _ => panic!("image renderer should return Inline"),
+        }
+    }
+
+    #[test]
+    fn test_image_renderer_width_full_aliases_to_screen() {
+        // `full` is the author-facing alias; emitted value is `screen`.
+        let out = image_inline(Some("full"));
+        assert!(
+            out.contains(r#"data-width="screen""#),
+            "expected data-width=screen, got: {}",
+            out
+        );
+        // Full figure-wrapped HTML: spec § P9 puts data-width on the
+        // wrapper, not the inner img.
+        assert!(
+            out.starts_with(r#"<figure class="moss-image" data-width="screen">"#),
+            "got: {}",
+            out
+        );
+        assert!(out.ends_with("</figure>"), "got: {}", out);
+        // Empty alt — width is structural, not a caption.
+        assert!(out.contains(r#"alt="""#), "got: {}", out);
+        // No figcaption when there's no caption text.
+        assert!(!out.contains("<figcaption>"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_width_wide() {
+        let out = image_inline(Some("wide"));
+        assert!(out.contains(r#"data-width="wide""#), "got: {}", out);
+        assert!(
+            out.starts_with(r#"<figure class="moss-image" data-width="wide">"#),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_image_renderer_width_body_page_screen() {
+        for (token, canonical) in [("body", "body"), ("page", "page"), ("screen", "screen")] {
+            let out = image_inline(Some(token));
+            assert!(
+                out.contains(&format!("data-width=\"{}\"", canonical)),
+                "{}: got {}",
+                token,
+                out
+            );
+        }
+    }
+
+    #[test]
+    fn test_image_renderer_no_alias_omits_data_width() {
+        let out = image_inline(None);
+        assert!(!out.contains("data-width="), "got: {}", out);
+        // No alias → bare markdown form (no figure wrap from this renderer).
+        assert!(out.starts_with("!["), "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_caption_alias_omits_data_width() {
+        // Plain caption text is not a width token; data-width must be absent
+        // so themes can use the `:not([data-width])` default selector.
+        let out = image_inline(Some("A beautiful sunset"));
+        assert!(!out.contains("data-width="), "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_caption_with_width_word_not_shadowed() {
+        // The word `wide` inside a longer caption must NOT trigger width
+        // recognition — only an exact-match alias segment counts.
+        let out = image_inline(Some("a wide angle shot"));
+        assert!(!out.contains("data-width="), "got: {}", out);
+        // Caption survives as alt text via the existing markdown fallback.
+        assert!(out.contains("a wide angle shot"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_caption_then_width_pipe() {
+        // Multi-pipe form: caption text followed by a width token.
+        let out = image_inline(Some("A nice photo|full"));
+        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
+        // Caption survives as alt text AND as figcaption (mirrors implicit-
+        // figure shape from src-tauri's transform_events).
+        assert!(out.contains(r#"alt="A nice photo""#), "got: {}", out);
+        assert!(
+            out.contains("<figcaption>A nice photo</figcaption>"),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn test_image_renderer_display_keywords_with_width() {
+        // Display keywords (`cover`) compose with width (`full`).
+        let out = image_inline(Some("cover|full"));
+        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
+        assert!(out.contains("object-fit:cover"), "got: {}", out);
+        // Filename stem used as alt (matches the display-keyword arm).
+        assert!(out.contains(r#"alt="photo""#), "got: {}", out);
+        // No figcaption — display keywords are layout, not caption text.
+        assert!(!out.contains("<figcaption>"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_width_html_escapes_caption() {
+        // Caption text with HTML-unsafe chars must be escaped in the alt
+        // attribute AND in the figcaption text.
+        let out = image_inline(Some(r#"Q&A "best"|full"#));
+        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
+        assert!(
+            out.contains(r#"alt="Q&amp;A &quot;best&quot;""#),
+            "got: {}",
+            out
+        );
+        assert!(
+            out.contains("<figcaption>Q&amp;A &quot;best&quot;</figcaption>"),
+            "got: {}",
+            out
+        );
     }
 
     // --- Dim parser ---
