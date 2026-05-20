@@ -42,6 +42,8 @@ pub mod media;
 pub mod page_kind;
 pub use page_kind::PageKind;
 pub mod resolve;
+pub mod resolved;
+pub use resolved::{Resolved, ResolvedOrigin};
 pub mod schema;
 pub mod schema_fields;
 pub mod sort;
