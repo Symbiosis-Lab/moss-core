@@ -254,10 +254,9 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 32 non-skip fields: 31 baseline + `sort` (2026-05-17 listing-sort
-        // migration, Task 4). Baseline of 31 already exceeded the previous
-        // count of 29 (test was stale).
-        assert_eq!(schema.frontmatter.fields.len(), 32);
+        // 35 non-skip fields: 32 prior baseline + `author`, `publisher`,
+        // `external_url` (added by moss-import / linkblog work, 2026-05).
+        assert_eq!(schema.frontmatter.fields.len(), 35);
     }
 
     #[test]
