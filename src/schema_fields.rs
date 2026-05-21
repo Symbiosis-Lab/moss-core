@@ -162,6 +162,33 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
+        name: "author",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 35,
+        description: "Author name (or 'A and B' / 'A, B, and C' for co-authors). Captured by moss import from JSON-LD / OpenGraph.",
+        group: "Occasional",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "publisher",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 36,
+        description: "Publishing outlet name. Captured by moss import from schema.org publisher (resolved via @id) or OpenGraph site_name.",
+        group: "Occasional",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "source_url",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        priority: 37,
+        description: "Original publication URL for imported pages. moss import sets this; the rendered article surfaces an attribution blockquote.",
+        group: "Occasional",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "cover",
         field_type: FieldType::String,
         widget: Widget::FilePicker,
