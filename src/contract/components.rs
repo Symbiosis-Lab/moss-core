@@ -290,7 +290,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Date / count meta line inside `.moss-card`.",
+        description: "Type-aware metadata slot (date for articles, count for folders, domain for links). Renders ABOVE the title in horizontal mode — filling the kicker position when the explicit `kicker` slot is unset, per `docs/design-system/preview-cards.md:22-30`. To the right of the title in vertical CJK mode (the horizontal kicker position transposed). Meta IS the visual kicker, with the same uppercase overline treatment.",
     },
     ComponentEntry {
         class: "moss-card-kicker",
