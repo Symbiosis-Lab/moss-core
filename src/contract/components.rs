@@ -1542,21 +1542,6 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Excerpt slot inside `.moss-preview-popup` (auto-extracted from the linked article body).",
     },
     ComponentEntry {
-        class: "moss-toc",
-        kind: "container",
-        parent: "",
-        data_attrs: &[],
-        example_html: r##"<nav class="moss-toc">
-  <ul>
-    <li><a href="#section">Section</a></li>
-  </ul>
-</nav>"##,
-        example_markdown: ":::toc\n:::",
-        status: Status::Retired,
-        since: "0",
-        description: "Retired: the `:::toc` shortcode was removed in c2e2c8cb6 but the default theme still ships the styling. Authors who hand-wrote a `<nav class=\"moss-toc\">` continue to render correctly. Scheduled for CSS removal in a later cleanup pass.",
-    },
-    ComponentEntry {
         class: "moss-colophon",
         kind: "chrome",
         parent: "",
