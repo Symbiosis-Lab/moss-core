@@ -180,11 +180,11 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "source_url",
+        name: "external_url",
         field_type: FieldType::String,
         widget: Widget::TextInput,
         priority: 37,
-        description: "Original publication URL for imported pages. moss import sets this; the rendered article surfaces an attribution blockquote.",
+        description: "Linkblog target: when set, internal references to this page (cards, link rewrites, canonical, sitemap) point here instead of the local URL. The page is still built locally — direct visits to its slug still work — but the canonical home is elsewhere on the web. Pattern from JSON Feed 1.1.",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
