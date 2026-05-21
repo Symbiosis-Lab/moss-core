@@ -1368,6 +1368,103 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Inline-link primitive (resets `<button>` chrome too). Use `--subtle` for muted variant.",
     },
+    ComponentEntry {
+        class: "moss-field--inline",
+        kind: "instance",
+        parent: "moss-field",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-field moss-field--inline">
+  <label class="moss-label">Email</label>
+  <input class="moss-input" />
+</div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "BEM modifier on `.moss-field` for horizontal label+input layout (used by settings UI primitives).",
+    },
+    ComponentEntry {
+        class: "moss-label--small",
+        kind: "instance",
+        parent: "moss-label",
+        data_attrs: &[],
+        example_html: r#"<label class="moss-label moss-label--small">Compact label</label>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "BEM modifier on `.moss-label` for compact form (used by services settings rows).",
+    },
+    ComponentEntry {
+        class: "moss-info-grid",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-info-grid">
+  <div class="moss-field moss-field--inline">...</div>
+  <div class="moss-field moss-field--inline">...</div>
+</div>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Two-column aligned label+value rows (CSS grid with `display: contents` children). Used by the deployment settings panel; ships in the default theme so authors can reuse the layout.",
+    },
+    ComponentEntry {
+        class: "moss-row",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-row">
+  <div class="moss-field">...</div>
+  <div class="moss-field">...</div>
+</div>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Horizontal flex row of equal-flex `.moss-field` children. Form-row layout helper shipped in the default theme.",
+    },
+    ComponentEntry {
+        class: "moss-input-feedback",
+        kind: "instance",
+        parent: "moss-field",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-input-feedback">Saving…</span>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Auto-save status hint slot under `.moss-field`. Three state modifiers: `--success`, `--error`, `--fade-out`.",
+    },
+    ComponentEntry {
+        class: "moss-input-feedback--success",
+        kind: "instance",
+        parent: "moss-input-feedback",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-input-feedback moss-input-feedback--success">Saved</span>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Success state modifier on `.moss-input-feedback`.",
+    },
+    ComponentEntry {
+        class: "moss-input-feedback--error",
+        kind: "instance",
+        parent: "moss-input-feedback",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-input-feedback moss-input-feedback--error">Failed to save</span>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Error state modifier on `.moss-input-feedback`.",
+    },
+    ComponentEntry {
+        class: "moss-input-feedback--fade-out",
+        kind: "instance",
+        parent: "moss-input-feedback",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-input-feedback moss-input-feedback--success moss-input-feedback--fade-out">Saved</span>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Transient fade-out modifier on `.moss-input-feedback` (applied after a success message to dismiss it).",
+    },
     // -------------------------------------------------------------------
     // Other emit surfaces (comments, colophon, shell frame, misc).
     // -------------------------------------------------------------------
@@ -1381,6 +1478,83 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Confirmed,
         since: "0",
         description: "Comments surface (per-site SQLite backend or Artalk legacy).",
+    },
+    ComponentEntry {
+        class: "moss-service-inactive",
+        kind: "instance",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<section class="moss-comments moss-service-inactive">...</section>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Co-class applied to `.moss-comments` and `.moss-subscribe-form` when the backing service is not configured. Hidden by default in published sites and revealed inside the preview chrome so authors can see the inactive surface during editing.",
+    },
+    // -------------------------------------------------------------------
+    // Preview link popover — emitted by `assets/js/preview.js` runtime.
+    // -------------------------------------------------------------------
+    ComponentEntry {
+        class: "moss-preview-popup",
+        kind: "chrome",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-preview-popup" role="tooltip" aria-live="polite">
+  <strong class="moss-preview-title">...</strong>
+  <p class="moss-preview-desc">...</p>
+  <p class="moss-preview-text">...</p>
+</div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Floating link-preview popover injected at `document.body` level by the runtime `preview.js`. Fetches `/_moss/previews.json` and renders a hover card with title, description, and excerpt for internal links.",
+    },
+    ComponentEntry {
+        class: "moss-preview-title",
+        kind: "instance",
+        parent: "moss-preview-popup",
+        data_attrs: &[],
+        example_html: r#"<strong class="moss-preview-title">Article title</strong>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Title slot inside `.moss-preview-popup`.",
+    },
+    ComponentEntry {
+        class: "moss-preview-desc",
+        kind: "instance",
+        parent: "moss-preview-popup",
+        data_attrs: &[],
+        example_html: r#"<p class="moss-preview-desc">Short description</p>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Description slot inside `.moss-preview-popup` (from frontmatter `description`).",
+    },
+    ComponentEntry {
+        class: "moss-preview-text",
+        kind: "instance",
+        parent: "moss-preview-popup",
+        data_attrs: &[],
+        example_html: r#"<p class="moss-preview-text">Excerpt of the linked article…</p>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Excerpt slot inside `.moss-preview-popup` (auto-extracted from the linked article body).",
+    },
+    ComponentEntry {
+        class: "moss-toc",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r##"<nav class="moss-toc">
+  <ul>
+    <li><a href="#section">Section</a></li>
+  </ul>
+</nav>"##,
+        example_markdown: ":::toc\n:::",
+        status: Status::Retired,
+        since: "0",
+        description: "Retired: the `:::toc` shortcode was removed in c2e2c8cb6 but the default theme still ships the styling. Authors who hand-wrote a `<nav class=\"moss-toc\">` continue to render correctly. Scheduled for CSS removal in a later cleanup pass.",
     },
     ComponentEntry {
         class: "moss-colophon",
