@@ -33,6 +33,18 @@ pub struct ContentSchema {
 pub struct FrontmatterSchema {
     /// Field definitions keyed by field name.
     pub fields: HashMap<String, FieldDefinition>,
+    /// Field names that exist in the build pipeline's `FrontMatter` struct
+    /// but are not surfaced in the editor form (the `skip_schema: true`
+    /// entries from `BUILTIN_FIELDS`). The editor uses this list to filter
+    /// unknown values it shouldn't render as chips — auto-generated fields,
+    /// build-only fields, and site-level config.
+    ///
+    /// Empty for plugin-contributed schemas loaded from JSON (they have no
+    /// notion of internal fields). `#[serde(default)]` keeps backward
+    /// compatibility with externally-loaded schema JSON that predates this
+    /// field.
+    #[serde(default)]
+    pub internal_fields: Vec<String>,
 }
 
 /// A single field definition in the frontmatter schema.
@@ -161,9 +173,11 @@ pub struct ShortcodeParam {
 /// ensuring the schema and the `FrontMatter` struct can never drift apart.
 pub fn builtin_schema() -> ContentSchema {
     let mut fields = HashMap::new();
+    let mut internal_fields = Vec::new();
 
     for bf in BUILTIN_FIELDS {
         if bf.skip_schema {
+            internal_fields.push(bf.name.to_string());
             continue;
         }
 
@@ -214,7 +228,7 @@ pub fn builtin_schema() -> ContentSchema {
     ContentSchema {
         generator: "moss".to_string(),
         version: "1.0".to_string(),
-        frontmatter: FrontmatterSchema { fields },
+        frontmatter: FrontmatterSchema { fields, internal_fields },
         shortcodes: Some(ShortcodeSchema {
             delimiters: (":::".to_string(), ":::".to_string()),
             definitions: HashMap::new(),

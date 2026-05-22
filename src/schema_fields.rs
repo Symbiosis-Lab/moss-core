@@ -57,11 +57,11 @@ pub struct BuiltinField {
     /// exposed in the editor schema or validation. Used for site-level config,
     /// auto-generated fields, and fields migrating to plugin-contributed schemas.
     ///
-    /// **Drift warning:** Because `skip_schema: true` fields are excluded from
-    /// the specta bindings, the frontend cannot see them. The chip bar uses a
-    /// hand-maintained denylist at `src/editor/form-renderer.ts`
-    /// (`INTERNAL_FRONTMATTER_FIELDS`). When adding a `skip_schema: true` field
-    /// here, also add its name to that set.
+    /// The field name IS surfaced to the frontend via
+    /// `FrontmatterSchema::internal_fields` (populated by `builtin_schema()`),
+    /// so the chip bar can filter these out of its render list without a
+    /// hand-maintained denylist. Adding a new `skip_schema: true` field here
+    /// is sufficient — no TS-side edit needed.
     pub skip_schema: bool,
     /// UI group for the add-property dropdown. Fields with the same group
     /// are displayed together. Empty string for skip_schema fields.
