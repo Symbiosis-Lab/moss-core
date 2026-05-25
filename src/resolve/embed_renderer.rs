@@ -574,6 +574,41 @@ impl EmbedRenderer for IframeRenderer {
     }
 }
 
+impl IframeRenderer {
+    /// Render directly to final `<iframe>` HTML, bypassing the Stage 1
+    /// markdown emission path. Used by direct consumers (notably
+    /// `src-tauri/src/build/folder_embed.rs`'s folder-as-iframe feature)
+    /// that don't run their output through pulldown-cmark + the Stage 2
+    /// dispatcher.
+    ///
+    /// Preserves the pre-Stage-1 IframeRenderer byte shape so downstream
+    /// callers don't have to learn a second emission grammar. When Phase 1
+    /// ships the src-tauri `synthesize_iframe_html` synthesizer, folder_embed
+    /// can migrate to call that and this method can retire.
+    pub fn render_to_html(&self, embed: &ParsedEmbed<'_>) -> String {
+        let url = relative_asset_path(embed.from_path, embed.resolved_path);
+        let src = common::build_src(&url, embed.query, embed.section);
+        let (dim_width_attr, height_attr) = common::dim_attrs(embed.alias);
+        let width_data_attr = common::width_attr(embed.width);
+        // title= attribute: alias text when not a Sizing token.
+        let title_attr = match embed.alias {
+            Some(a) if Sizing::parse(a).is_none() =>
+                format!(" title=\"{}\"", common::html_escape_attr(a)),
+            _ => String::new(),
+        };
+
+        format!(
+            "<iframe class=\"{}\" data-type=\"iframe\"{} src=\"{}\"{}{}{} loading=\"lazy\"></iframe>",
+            CLASS_EMBED,
+            width_data_attr,
+            common::html_escape_attr(&src),
+            title_attr,
+            dim_width_attr,
+            height_attr,
+        )
+    }
+}
+
 /// Iframe-specific param extraction:
 ///
 /// - `?query` and `#fragment` from the wikilink fold into a `src` param so
