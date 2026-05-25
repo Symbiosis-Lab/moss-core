@@ -7,6 +7,8 @@
 //!
 //! Pure Rust, zero I/O.
 
+use std::collections::BTreeMap;
+
 use crate::content_graph::ContentGraph;
 
 // ---------------------------------------------------------------------------
@@ -150,23 +152,49 @@ impl AlignSide {
 // ---------------------------------------------------------------------------
 
 /// Parsed display attributes for a media reference.
+///
+/// In addition to moss's recognized vocabulary (`fit` / `position` / `align`),
+/// `class_names` and `extra_attrs` carry author-provided passthroughs from
+/// Pandoc attribute blocks (`{.theme-rounded key=value}`). The moss-vocabulary
+/// fields map to typed enums and `moss-*` classes / inline style; the
+/// passthrough fields flow through to the emitted HTML unmodified (classes
+/// joined as a space-separated list, extras as additional attributes in
+/// deterministic alphabetical order).
+///
+/// See `docs/architecture/unified-image-emission.md` Decision #10.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MediaAttrs {
     pub fit: Option<Fit>,
     pub position: Option<Position>,
     pub align: Option<AlignSide>,
+    /// Author-provided class names that aren't in moss's recognized
+    /// vocabulary (`.align-left` / `.alignleft` get folded into `align`
+    /// upstream; everything else lands here). Joined with spaces by
+    /// [`Self::class_attr`] after any `moss-*` class from `css_class()`.
+    pub class_names: Vec<String>,
+    /// Author-provided `key=value` attributes from Pandoc attribute blocks
+    /// that aren't recognized moss vocabulary. Emitted as additional HTML
+    /// attributes by [`format_img_tag`] in deterministic alphabetical order
+    /// (BTreeMap iteration is sorted).
+    pub extra_attrs: BTreeMap<String, String>,
 }
 
 impl MediaAttrs {
-    /// True when no display attributes are set.
+    /// True when no display attributes or passthroughs are set.
     pub fn is_empty(&self) -> bool {
-        self.fit.is_none() && self.position.is_none() && self.align.is_none()
+        self.fit.is_none()
+            && self.position.is_none()
+            && self.align.is_none()
+            && self.class_names.is_empty()
+            && self.extra_attrs.is_empty()
     }
 
     /// Build an inline CSS style string, or `None` if empty.
     ///
     /// Example output: `"object-fit:contain;object-position:left"`.
     /// `align` does NOT contribute — it emits as a class (see [`Self::css_class`]).
+    /// `class_names` and `extra_attrs` are also out of style: classes ride on
+    /// the `class` attribute, extras ride on their own attribute slots.
     pub fn to_inline_style(&self) -> Option<String> {
         if self.fit.is_none() && self.position.is_none() {
             return None;
@@ -182,11 +210,36 @@ impl MediaAttrs {
         Some(parts.join(";"))
     }
 
-    /// CSS class name for the emitter, or `None` if no class-bearing
-    /// attribute is set. Today only `align` produces a class; future
-    /// class-bearing attributes can extend this method.
+    /// CSS class name for the moss-recognized vocabulary, or `None` if no
+    /// class-bearing attribute is set. Today only `align` produces a class;
+    /// future class-bearing attributes can extend this method.
+    ///
+    /// This is the moss-prefixed half — see [`Self::class_attr`] for the
+    /// merged value that includes author-provided `class_names`.
     pub fn css_class(&self) -> Option<&'static str> {
         self.align.map(AlignSide::css_class)
+    }
+
+    /// Build the full `class` attribute value, merging the moss-vocabulary
+    /// class (from [`Self::css_class`]) with author-provided `class_names`.
+    /// Returns `None` if both sources are empty.
+    ///
+    /// Order: moss-vocabulary class first (e.g. `moss-align-left`), then
+    /// `class_names` in author-provided order. Both halves are joined with a
+    /// single space.
+    pub fn class_attr(&self) -> Option<String> {
+        let moss_class = self.css_class();
+        if moss_class.is_none() && self.class_names.is_empty() {
+            return None;
+        }
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(c) = moss_class {
+            parts.push(c);
+        }
+        for c in &self.class_names {
+            parts.push(c.as_str());
+        }
+        Some(parts.join(" "))
     }
 }
 
@@ -281,7 +334,12 @@ pub fn parse_media_attrs(raw: &str) -> MediaAttrs {
         i += 1;
     }
 
-    MediaAttrs { fit, position, align }
+    MediaAttrs {
+        fit,
+        position,
+        align,
+        ..Default::default()
+    }
 }
 
 /// Recognize the spec § P9 width tokens (`body | wide | page | screen | full`).
@@ -407,22 +465,31 @@ pub fn html_escape(s: &str) -> String {
 /// Format an `<img>` tag with optional class + inline style from [`MediaAttrs`].
 ///
 /// All attribute values are HTML-escaped. Attribute order: `src`, `alt`,
-/// `class` (if any), `style` (if any), self-closing slash. The class+style
-/// pair is shape-locked by snapshot tests in `embed_renderer`.
+/// `class` (if any), `style` (if any), then `extra_attrs` in deterministic
+/// alphabetical order (BTreeMap iteration), self-closing slash. The
+/// class+style pair is shape-locked by snapshot tests in `embed_renderer`.
+///
+/// The `class` value merges moss-vocabulary classes (e.g. `moss-align-left`)
+/// with author-provided `class_names` (e.g. `theme-rounded`) — see
+/// [`MediaAttrs::class_attr`].
 pub fn format_img_tag(src: &str, alt: &str, attrs: &MediaAttrs) -> String {
     let escaped_src = html_escape(src);
     let escaped_alt = html_escape(alt);
     let class_attr = attrs
-        .css_class()
-        .map(|c| format!(" class=\"{}\"", c))
+        .class_attr()
+        .map(|c| format!(" class=\"{}\"", html_escape(&c)))
         .unwrap_or_default();
     let style_attr = attrs
         .to_inline_style()
         .map(|s| format!(" style=\"{}\"", s))
         .unwrap_or_default();
+    let mut extras = String::new();
+    for (k, v) in &attrs.extra_attrs {
+        extras.push_str(&format!(" {}=\"{}\"", html_escape(k), html_escape(v)));
+    }
     format!(
-        "<img src=\"{}\" alt=\"{}\"{}{} />",
-        escaped_src, escaped_alt, class_attr, style_attr
+        "<img src=\"{}\" alt=\"{}\"{}{}{} />",
+        escaped_src, escaped_alt, class_attr, style_attr, extras
     )
 }
 
@@ -600,6 +667,8 @@ mod tests {
             fit: None,
             position: None,
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert!(empty.is_empty());
 
@@ -607,6 +676,8 @@ mod tests {
             fit: Some(Fit::Cover),
             position: None,
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert!(!with_fit.is_empty());
 
@@ -614,6 +685,8 @@ mod tests {
             fit: None,
             position: Some(Position::Center),
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert!(!with_pos.is_empty());
     }
@@ -624,6 +697,8 @@ mod tests {
             fit: None,
             position: None,
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(attrs.to_inline_style(), None);
     }
@@ -634,6 +709,8 @@ mod tests {
             fit: Some(Fit::Contain),
             position: None,
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(attrs.to_inline_style(), Some("object-fit:contain".into()));
     }
@@ -644,6 +721,8 @@ mod tests {
             fit: None,
             position: Some(Position::Left),
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(
             attrs.to_inline_style(),
@@ -657,6 +736,8 @@ mod tests {
             fit: Some(Fit::Cover),
             position: Some(Position::TopLeft),
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(
             attrs.to_inline_style(),
@@ -998,6 +1079,8 @@ mod tests {
             fit: Some(Fit::Contain),
             position: Some(Position::Left),
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt text", &attrs),
@@ -1011,6 +1094,8 @@ mod tests {
             fit: None,
             position: None,
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
@@ -1024,6 +1109,8 @@ mod tests {
             fit: None,
             position: None,
             align: Some(AlignSide::Left),
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
@@ -1039,6 +1126,8 @@ mod tests {
             fit: Some(Fit::Cover),
             position: None,
             align: Some(AlignSide::Right),
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
@@ -1093,6 +1182,8 @@ mod tests {
             fit: None,
             position: Some(Position::Left),
             align: None,
+            class_names: Vec::new(),
+            extra_attrs: BTreeMap::new(),
         };
         assert_eq!(
             format_img_tag("img\"bad.jpg", "a\"<b>", &attrs),
@@ -1184,5 +1275,92 @@ mod tests {
         let (w, rest) = extract_width_from_alias("caption | full");
         assert_eq!(w, Some("screen"));
         assert_eq!(rest, "caption ");
+    }
+
+    // -- MediaAttrs passthroughs: class_names + extra_attrs ----------------
+
+    #[test]
+    fn test_media_attrs_class_names_preserved() {
+        // Author-provided class names (not in moss vocabulary) survive on
+        // MediaAttrs and emit unprefixed via class_attr / format_img_tag.
+        let attrs = MediaAttrs {
+            fit: None,
+            position: None,
+            align: None,
+            class_names: vec!["theme-rounded".to_string(), "shadow-lg".to_string()],
+            extra_attrs: BTreeMap::new(),
+        };
+        assert!(!attrs.is_empty());
+        assert_eq!(
+            attrs.class_attr(),
+            Some("theme-rounded shadow-lg".to_string())
+        );
+        assert_eq!(
+            format_img_tag("photo.jpg", "alt", &attrs),
+            "<img src=\"photo.jpg\" alt=\"alt\" class=\"theme-rounded shadow-lg\" />"
+        );
+    }
+
+    #[test]
+    fn test_media_attrs_class_names_compose_with_align() {
+        // moss-vocabulary class (from align) and author class_names compose:
+        // moss-prefixed class comes first, then author classes in order.
+        let attrs = MediaAttrs {
+            fit: None,
+            position: None,
+            align: Some(AlignSide::Left),
+            class_names: vec!["theme-rounded".to_string()],
+            extra_attrs: BTreeMap::new(),
+        };
+        assert_eq!(
+            attrs.class_attr(),
+            Some("moss-align-left theme-rounded".to_string())
+        );
+        assert_eq!(
+            format_img_tag("photo.jpg", "alt", &attrs),
+            "<img src=\"photo.jpg\" alt=\"alt\" class=\"moss-align-left theme-rounded\" />"
+        );
+    }
+
+    #[test]
+    fn test_media_attrs_extra_attrs_emitted() {
+        // extra_attrs flow through to the emitted <img> in deterministic
+        // alphabetical order (BTreeMap iteration). They appear AFTER
+        // class/style and before the self-closing slash.
+        let mut extras = BTreeMap::new();
+        extras.insert("data-zoom".to_string(), "true".to_string());
+        extras.insert("data-id".to_string(), "42".to_string());
+        let attrs = MediaAttrs {
+            fit: None,
+            position: None,
+            align: None,
+            class_names: vec![],
+            extra_attrs: extras,
+        };
+        assert!(!attrs.is_empty());
+        // data-id < data-zoom alphabetically — id appears first.
+        assert_eq!(
+            format_img_tag("photo.jpg", "alt", &attrs),
+            "<img src=\"photo.jpg\" alt=\"alt\" data-id=\"42\" data-zoom=\"true\" />"
+        );
+    }
+
+    #[test]
+    fn test_media_attrs_extra_attrs_escaped() {
+        // extra_attrs keys and values are HTML-escaped on emission so a
+        // hostile author can't break out of the attribute or inject tags.
+        let mut extras = BTreeMap::new();
+        extras.insert("data-title".to_string(), r#"a "quoted" & <b>bold</b>"#.to_string());
+        let attrs = MediaAttrs {
+            fit: None,
+            position: None,
+            align: None,
+            class_names: vec![],
+            extra_attrs: extras,
+        };
+        assert_eq!(
+            format_img_tag("photo.jpg", "alt", &attrs),
+            "<img src=\"photo.jpg\" alt=\"alt\" data-title=\"a &quot;quoted&quot; &amp; &lt;b&gt;bold&lt;/b&gt;\" />"
+        );
     }
 }
