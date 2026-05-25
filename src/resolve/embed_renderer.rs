@@ -27,9 +27,7 @@ use std::sync::OnceLock;
 
 mod common;
 pub mod folder_list;
-use common::{
-    build_src, dim_attrs, file_stem, html_escape_attr, path_extension_lower, width_attr,
-};
+use common::{file_stem, path_extension_lower};
 
 // ---------------------------------------------------------------------------
 // Reserved classnames (HTML/CSS contract, per moss#508)
@@ -290,11 +288,10 @@ pub fn lookup_renderer(ext: &str) -> Option<&'static dyn EmbedRenderer> {
 // ---------------------------------------------------------------------------
 
 use crate::heading_anchor::obsidian_heading_anchor;
-use crate::media::{
-    format_img_tag, html_escape, is_all_display_keywords, parse_media_attrs,
-};
+use crate::media::{is_all_display_keywords, parse_media_attrs};
 
 use super::fuzzy_path::relative_asset_path;
+use super::title_params::{emit_title, TitleParams};
 
 /// Image file extensions recognized by `ImageRenderer`.
 pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
@@ -309,93 +306,204 @@ impl EmbedRenderer for ImageRenderer {
     }
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
+        RenderedEmbed::Inline(self.render_to_markdown(embed))
+    }
+}
+
+impl ImageRenderer {
+    /// Stage 1 emission: produce a standard CommonMark image
+    /// `![alt](url)` or `![alt](url "moss:params")`. pulldown-cmark parses this
+    /// natively as `Tag::Image`; Phase 1's Stage 2 dispatcher reads the
+    /// `moss:` title and synthesizes the final `<figure>`/`<img>` HTML.
+    ///
+    /// The wikilink resolver pre-extracts the spec § P9 width token into
+    /// `embed.width`, and feeds the remaining alias text into `embed.alias`.
+    /// We translate both into title-attribute params here — no HTML is emitted
+    /// by moss-core anymore.
+    fn render_to_markdown(&self, embed: &ParsedEmbed<'_>) -> String {
         let url = relative_asset_path(embed.from_path, embed.resolved_path);
 
-        // The wikilink resolver pre-extracts any spec § P9 width token from
-        // the alias into `embed.width` (a canonical value-space term — see
-        // `crate::media::match_width_token`). When width is present we emit
-        // the full `<figure class="moss-image" data-width="...">...</figure>`
-        // shape directly: pulldown-cmark passes that through as an
-        // `HtmlBlock` (block-level), so the figure wrapper survives end-to-
-        // end without needing the src-tauri standalone-paragraph rule to
-        // recognise raw `<img>` HtmlBlocks. Per spec, `data-width` sits on
-        // the wrapper, not the inner img.
-        //
-        // `embed.alias` arrives with the width segment already stripped (the
-        // resolver hands the renderer the post-extraction remainder), so the
-        // arms below treat it as ordinary caption/display-keyword content.
-        let out = match (embed.width, embed.alias) {
-            // Width-only alias (`![[photo.jpg|full]]`) — empty alt because
-            // width is structural, not a caption.
-            (Some(w), None) => format!(
-                r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="" /></figure>"#,
-                w,
-                html_escape(&url),
-            ),
-            // Width + display keywords (`![[photo.jpg|cover|full]]` or
-            // `![[photo.jpg|align-left|wide]]`) — fit/position land on the
-            // inner img as inline style; align lands on the inner img as a
-            // class; the figure carries data-width. Filename stem becomes
-            // alt for assistive tech (matches the no-width display-keyword
-            // arm). Attribute order is locked by snapshot tests below:
-            // `src` → `alt` → `class` → `style`.
-            (Some(w), Some(rest)) if is_all_display_keywords(rest) => {
-                let alt = file_stem(embed.resolved_path);
-                let attrs = parse_media_attrs(rest);
-                let class_attr = attrs
-                    .css_class()
-                    .map(|c| format!(" class=\"{}\"", c))
-                    .unwrap_or_default();
-                let style_attr = attrs
-                    .to_inline_style()
-                    .map(|s| format!(" style=\"{}\"", html_escape(&s)))
-                    .unwrap_or_default();
-                format!(
-                    r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="{}"{}{} /></figure>"#,
-                    w,
-                    html_escape(&url),
-                    html_escape(&alt),
-                    class_attr,
-                    style_attr,
-                )
-            }
-            // Width + caption text (`![[photo.jpg|A nice photo|full]]`) —
-            // caption goes into a `<figcaption>` inside the figure, matching
-            // the byte shape of `image_render::wrap_in_figure(.., Some(text), ..)`
-            // in src-tauri. Alt mirrors caption text for a11y parity with
-            // implicit-figure rendering.
-            (Some(w), Some(rest)) => format!(
-                r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="{}" /><figcaption>{}</figcaption></figure>"#,
-                w,
-                html_escape(&url),
-                html_escape(rest),
-                html_escape(rest),
-            ),
-            // No width — fall through to the pre-existing classifier.
-            (None, alias) => match alias {
-                Some(alias_text) if is_all_display_keywords(alias_text) => {
-                    // Display-keyword aliases (`cover`, `left top`, …) describe
-                    // layout, not content — keep the filename stem as alt so the
-                    // image still has *some* description for screen readers.
-                    let alt = file_stem(embed.resolved_path);
-                    let attrs = parse_media_attrs(alias_text);
-                    format_img_tag(&url, &alt, &attrs)
-                }
-                Some(alias_text) => format!("![{}]({})", alias_text, url),
-                None => {
-                    // No author-provided alias → empty alt rather than synthesizing
-                    // one from the filename stem. Synthesized alts like
-                    // `Pasted image 20260505161028` are not meaningful descriptions
-                    // for assistive tech, AND a non-empty alt would trip the
-                    // bare-image-paragraph figure rule into producing a `<figure>`
-                    // captioned with the filename — visible junk.
-                    // See docs/plans/2026-05-05-figure-captions-design.md.
-                    format!("![]({})", url)
-                }
-            },
+        let mut params = TitleParams::default();
+
+        // Width comes from the resolver's pre-extracted width segment
+        // (canonical value-space term — see `crate::media::match_width_token`).
+        if let Some(w) = embed.width {
+            params.insert("width", w);
+        }
+
+        // Classify alias. An alias is "display keywords" if every
+        // space-separated token is either a recognized display keyword
+        // (`is_all_display_keywords`) OR a recognized width token
+        // (`match_width_token`). This lets authors write the compound form
+        // `align-left wide` in a single pipe segment — both classify as
+        // structural, not as a caption.
+        // Empty alias (`![[file|]]`) is treated as no alias.
+        let (display_kw, caption_text) = match embed.alias {
+            Some(alias) if alias.is_empty() => (None, None),
+            Some(alias) if is_structural_alias(alias) => (Some(alias), None),
+            Some(other) => (None, Some(other.to_string())),
+            None => (None, None),
         };
-        RenderedEmbed::Inline(out)
+
+        // Fold display keywords + inline width tokens into typed params.
+        if let Some(dk) = display_kw {
+            // Pull any inline width tokens out of the alias before parsing
+            // display keywords (so parse_media_attrs sees a clean stream of
+            // align / fit / position tokens).
+            let mut kept = Vec::new();
+            for tok in dk.split_whitespace() {
+                if let Some(canonical) = crate::media::match_width_token(tok) {
+                    // Last-wins if multiple width tokens appear (defensive —
+                    // production input has at most one).
+                    params.insert("width", canonical);
+                } else {
+                    kept.push(tok);
+                }
+            }
+            let attrs = parse_media_attrs(&kept.join(" "));
+            if let Some(side) = attrs.align {
+                params.insert("align", align_keyword(side));
+            }
+            if let Some(fit) = attrs.fit {
+                params.insert("fit", fit.to_css_value());
+            }
+            if let Some(pos) = attrs.position {
+                params.insert("position", pos.to_css_value());
+            }
+            if !attrs.class_names.is_empty() {
+                params.insert("classes", attrs.class_names.join(" "));
+            }
+            for (k, v) in &attrs.extra_attrs {
+                params.insert(k.clone(), v.clone());
+            }
+        }
+
+        let alt = caption_text.unwrap_or_default();
+
+        if params.is_empty() {
+            format!("![{}]({})", markdown_escape_alt(&alt), url)
+        } else {
+            let title = emit_title(&params);
+            format!(
+                r#"![{}]({} "{}")"#,
+                markdown_escape_alt(&alt),
+                url,
+                markdown_escape_title(&title),
+            )
+        }
     }
+}
+
+/// True when every whitespace-separated token in `alias` is either a
+/// recognized display keyword (fit / position / align) OR a canonical
+/// width token (body / wide / page / screen / full).
+///
+/// This is the structural-vs-caption classifier for image aliases: a
+/// fully-structural alias contributes only to title params; anything else
+/// becomes alt text. The `is_all_display_keywords` half is unchanged
+/// (covers two-word position tokens like `top left`); the width-token
+/// half lets authors write `align-left wide` without breaking the pipe.
+fn is_structural_alias(alias: &str) -> bool {
+    // Fast path: any caption-like text fails `is_all_display_keywords`
+    // and would also fail the per-token loop below.
+    if is_all_display_keywords(alias) {
+        return true;
+    }
+    let tokens: Vec<&str> = alias.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    // Walk tokens; admit width tokens, otherwise defer to display-keyword
+    // recognition (per-token, since position tokens may pair across two).
+    let mut i = 0;
+    while i < tokens.len() {
+        // Width token: single-token, simple admit.
+        if crate::media::match_width_token(tokens[i]).is_some() {
+            i += 1;
+            continue;
+        }
+        // Two-word position (e.g. `top left`).
+        if i + 1 < tokens.len() {
+            let combined = format!("{} {}", tokens[i], tokens[i + 1]);
+            if crate::media::Position::from_keyword(&combined).is_some() {
+                i += 2;
+                continue;
+            }
+        }
+        // Single-token display keyword.
+        if crate::media::Fit::from_keyword(tokens[i]).is_some()
+            || crate::media::Position::from_keyword(tokens[i]).is_some()
+            || crate::media::AlignSide::from_keyword(tokens[i]).is_some()
+        {
+            i += 1;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+/// Map an `AlignSide` to its canonical title-param keyword (`"left"` or
+/// `"right"`). Stage 2 reverses this via `AlignSide::from_keyword`-style
+/// recognition (it accepts both `left` and `align-left`).
+fn align_keyword(side: crate::media::AlignSide) -> &'static str {
+    match side {
+        crate::media::AlignSide::Left => "left",
+        crate::media::AlignSide::Right => "right",
+    }
+}
+
+/// Escape alt text for markdown `![...](url)` syntax.
+///
+/// Brackets MUST be escaped; HTML entities are NOT needed (pulldown-cmark
+/// handles `<` `>` `&` per CommonMark rules when alt text is rendered).
+fn markdown_escape_alt(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
+/// Escape title text for markdown `(url "title")` syntax.
+///
+/// CommonMark allows three quoting styles; we always emit `"..."` so we
+/// only need to escape literal `"` and `\` inside the title body.
+fn markdown_escape_title(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Shared Stage 1 emitter for the five non-image renderers (iframe, pdf,
+/// audio, video, 3D). Produces a CommonMark link:
+///
+/// ```text
+/// [filename](url "moss:kind=<kind> <params>")
+/// ```
+///
+/// pulldown-cmark parses this as `Tag::Link`; Phase 1's Stage 2 dispatcher
+/// keys off `moss:kind=` to choose the right HTML synthesizer.
+///
+/// `kind` is the canonical kind name (`iframe`, `pdf`, `audio`, `video`,
+/// `3d`). `extra` is invoked to inject renderer-specific params; the helper
+/// pre-fills `kind=` so callers only handle their own grammar.
+fn render_link_markdown(
+    embed: &ParsedEmbed<'_>,
+    kind: &'static str,
+    extra: impl FnOnce(&ParsedEmbed<'_>, &mut TitleParams),
+) -> String {
+    let url = relative_asset_path(embed.from_path, embed.resolved_path);
+    let mut params = TitleParams::default();
+    params.insert("kind", kind);
+    if let Some(w) = embed.width {
+        params.insert("data-width", w);
+    }
+    extra(embed, &mut params);
+    let title = emit_title(&params);
+    let name = file_stem(embed.resolved_path);
+    format!(
+        r#"[{}]({} "{}")"#,
+        markdown_escape_alt(&name),
+        url,
+        markdown_escape_title(&title),
+    )
 }
 
 // file_stem now lives in common.rs — imported via common::file_stem below.
@@ -462,38 +570,43 @@ impl EmbedRenderer for IframeRenderer {
     }
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
-        let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let src = build_src(&url, embed.query, embed.section);
-        let (dim_width_attr, height_attr) = dim_attrs(embed.alias);
-        let title_attr = iframe_title_attr(embed.alias);
-        let width_data_attr = width_attr(embed.width);
-
-        let html = format!(
-            "<iframe class=\"{}\" data-type=\"iframe\"{} src=\"{}\"{}{}{} loading=\"lazy\"></iframe>",
-            CLASS_EMBED,
-            width_data_attr,
-            html_escape_attr(&src),
-            title_attr,
-            dim_width_attr,
-            height_attr,
-        );
-        RenderedEmbed::Html(html)
+        RenderedEmbed::Inline(render_link_markdown(embed, "iframe", iframe_extra_params))
     }
 }
 
-/// Derive the `title=` attribute from alias.
+/// Iframe-specific param extraction:
 ///
-/// - `|400x300` (sizing): no title (browser shows no tooltip).
-/// - `|My cool widget` (plain text): use as title (accessible name + tooltip).
-/// - No alias: no title (iframe's own `<title>` provides accessible name).
-fn iframe_title_attr(alias: Option<&str>) -> String {
-    let Some(a) = alias else {
-        return String::new();
-    };
-    if Sizing::parse(a).is_some() {
-        return String::new();
+/// - `?query` and `#fragment` from the wikilink fold into a `src` param so
+///   Stage 2 can reconstruct the URL it serves on the iframe element. They
+///   are NOT re-inserted into the markdown URL slot because pulldown-cmark
+///   would percent-encode them, which would break iframe `src` semantics
+///   downstream.
+/// - `|WxH` sizing in alias becomes `width=`/`height=` params.
+/// - Non-sizing alias text becomes the `title=` param (used today as
+///   accessible name / tooltip on the iframe).
+fn iframe_extra_params(embed: &ParsedEmbed<'_>, params: &mut TitleParams) {
+    if let Some(q) = embed.query {
+        params.insert("query", q);
     }
-    format!(" title=\"{}\"", html_escape_attr(a))
+    if let Some(f) = embed.section {
+        params.insert("fragment", f);
+    }
+    let Some(alias) = embed.alias else {
+        return;
+    };
+    match Sizing::parse(alias) {
+        Some(Sizing::Width(w)) => {
+            params.insert("width", w.to_css());
+        }
+        Some(Sizing::Box(w, h)) => {
+            params.insert("width", w.to_css());
+            params.insert("height", h.to_css());
+        }
+        None => {
+            // Non-sizing text alias → iframe title.
+            params.insert("title", alias);
+        }
+    }
 }
 
 // build_src, dim_attrs, html_escape_attr now live in common.rs — imported above.
@@ -515,24 +628,29 @@ impl EmbedRenderer for PdfRenderer {
     }
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
-        let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let data_url = build_src(&url, embed.query, embed.section);
-        let (dim_width_attr, height_attr) = dim_attrs(embed.alias);
-        let name = html_escape_attr(&file_stem(embed.resolved_path));
-        let width_data_attr = width_attr(embed.width);
+        RenderedEmbed::Inline(render_link_markdown(embed, "pdf", pdf_extra_params))
+    }
+}
 
-        // <object> with inline download fallback for browsers that can't render PDFs.
-        let html = format!(
-            "<object class=\"{}\" data-type=\"pdf\"{} type=\"application/pdf\" data=\"{}\"{}{}><a href=\"{}\">Download {}</a></object>",
-            CLASS_EMBED,
-            width_data_attr,
-            html_escape_attr(&data_url),
-            dim_width_attr,
-            height_attr,
-            html_escape_attr(&url),
-            name,
-        );
-        RenderedEmbed::Html(html)
+/// PDF-specific params: viewer fragment (`#page=5`), sizing.
+fn pdf_extra_params(embed: &ParsedEmbed<'_>, params: &mut TitleParams) {
+    if let Some(q) = embed.query {
+        params.insert("query", q);
+    }
+    if let Some(f) = embed.section {
+        params.insert("fragment", f);
+    }
+    if let Some(alias) = embed.alias {
+        match Sizing::parse(alias) {
+            Some(Sizing::Width(w)) => {
+                params.insert("width", w.to_css());
+            }
+            Some(Sizing::Box(w, h)) => {
+                params.insert("width", w.to_css());
+                params.insert("height", h.to_css());
+            }
+            None => {}
+        }
     }
 }
 
@@ -566,38 +684,26 @@ impl EmbedRenderer for AudioRenderer {
     }
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
-        let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let ext = path_extension_lower(embed.resolved_path);
-        let mime = audio_mime_for_ext(&ext);
-        let width_data_attr = width_attr(embed.width);
-
-        let html = format!(
-            "<audio class=\"{}\" data-type=\"audio\"{} controls preload=\"metadata\"><source src=\"{}\" type=\"{}\">Your browser does not support the audio tag.</audio>",
-            CLASS_EMBED,
-            width_data_attr,
-            html_escape_attr(&url),
-            mime,
-        );
-        RenderedEmbed::Html(html)
+        RenderedEmbed::Inline(render_link_markdown(embed, "audio", audio_extra_params))
     }
 }
 
-fn audio_mime_for_ext(ext: &str) -> &'static str {
-    match ext {
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "ogg" => "audio/ogg",
-        "flac" => "audio/flac",
-        "m4a" => "audio/mp4",
-        "opus" => "audio/opus",
-        _ => {
-            // Defensive: registry-gated, so only reachable if AUDIO_EXTENSIONS
-            // gains an entry without a matching mime entry here.
-            debug_assert!(false, "unmapped audio extension: {}", ext);
-            "application/octet-stream"
-        }
+/// Audio-specific params: source extension (for downstream MIME selection).
+/// The historical author grammar exposed no per-embed audio flags, so today
+/// the only extra param is the file extension. Future flags (`controls`,
+/// `loop`, `autoplay`, `muted`) extend here.
+fn audio_extra_params(embed: &ParsedEmbed<'_>, params: &mut TitleParams) {
+    let ext = path_extension_lower(embed.resolved_path);
+    if !ext.is_empty() {
+        params.insert("ext", ext);
     }
 }
+
+// MIME-type selection for audio embeds now lives downstream (Phase 1
+// Stage 2 picks the MIME from the `ext=` title param when synthesizing the
+// `<audio><source>` HTML). moss-core's Stage 1 emits the file extension
+// directly via `audio_extra_params`; the legacy `audio_mime_for_ext` helper
+// is no longer needed here.
 
 // ---------------------------------------------------------------------------
 // VideoRenderer
@@ -645,19 +751,24 @@ impl EmbedRenderer for VideoRenderer {
     }
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
-        let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let (dim_width_attr, height_attr) = dim_attrs(embed.alias);
-        let width_data_attr = width_attr(embed.width);
+        RenderedEmbed::Inline(render_link_markdown(embed, "video", video_extra_params))
+    }
+}
 
-        let html = format!(
-            "<video class=\"{}\" data-type=\"video\"{} src=\"{}\" controls preload=\"metadata\"{}{}></video>",
-            CLASS_EMBED,
-            width_data_attr,
-            html_escape_attr(&url),
-            dim_width_attr,
-            height_attr,
-        );
-        RenderedEmbed::Html(html)
+/// Video-specific params: sizing from alias. Author flags (controls, loop,
+/// autoplay, muted, poster) extend here when wired up.
+fn video_extra_params(embed: &ParsedEmbed<'_>, params: &mut TitleParams) {
+    if let Some(alias) = embed.alias {
+        match Sizing::parse(alias) {
+            Some(Sizing::Width(w)) => {
+                params.insert("width", w.to_css());
+            }
+            Some(Sizing::Box(w, h)) => {
+                params.insert("width", w.to_css());
+                params.insert("height", h.to_css());
+            }
+            None => {}
+        }
     }
 }
 
@@ -716,18 +827,7 @@ impl EmbedRenderer for ModelViewerRenderer {
     }
 
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
-        let url = relative_asset_path(embed.from_path, embed.resolved_path);
-        let style = model_viewer_style(embed.alias);
-        let width_data_attr = width_attr(embed.width);
-
-        let html = format!(
-            "<model-viewer class=\"{}\" data-type=\"3d\"{} src=\"{}\" camera-controls auto-rotate touch-action=\"pan-y\" loading=\"lazy\"{}></model-viewer>",
-            CLASS_EMBED,
-            width_data_attr,
-            html_escape_attr(&url),
-            style,
-        );
-        RenderedEmbed::Html(html)
+        RenderedEmbed::Inline(render_link_markdown(embed, "3d", model_viewer_extra_params))
     }
 
     fn head_assets(&self) -> &[&'static str] {
@@ -735,22 +835,20 @@ impl EmbedRenderer for ModelViewerRenderer {
     }
 }
 
-/// Derive the inline `style="width:..;height:.."` for `<model-viewer>`.
-///
-/// Unlike iframe/video, the `<model-viewer>` element uses CSS length values
-/// not HTML `width=`/`height=` attributes — hence inline style.
-fn model_viewer_style(alias: Option<&str>) -> String {
-    let Some(a) = alias else {
-        return String::new();
-    };
-    match Sizing::parse(a) {
-        Some(Sizing::Width(w)) => format!(" style=\"width:{}\"", w.to_css()),
-        Some(Sizing::Box(w, h)) => format!(
-            " style=\"width:{};height:{}\"",
-            w.to_css(),
-            h.to_css()
-        ),
-        None => String::new(),
+/// 3D-viewer-specific params: sizing from alias. Author flags (`auto-rotate`,
+/// `camera-controls`, `ar`) extend here when surfaced in the wikilink grammar.
+fn model_viewer_extra_params(embed: &ParsedEmbed<'_>, params: &mut TitleParams) {
+    if let Some(alias) = embed.alias {
+        match Sizing::parse(alias) {
+            Some(Sizing::Width(w)) => {
+                params.insert("width", w.to_css());
+            }
+            Some(Sizing::Box(w, h)) => {
+                params.insert("width", w.to_css());
+                params.insert("height", h.to_css());
+            }
+            None => {}
+        }
     }
 }
 
@@ -881,17 +979,15 @@ mod tests {
     // --- ImageRenderer ---
 
     #[test]
-    fn test_image_renderer_no_alias_emits_empty_alt() {
-        // No author-provided alias → empty alt. Synthesizing one from the
-        // filename stem (`photo`, or worse: `Pasted image 20260505161028`)
-        // is not a real description for assistive tech, AND a non-empty alt
-        // would trip the bare-image-paragraph figure rule into producing a
-        // `<figure>` captioned with the filename. Empty alt is the right
-        // boundary: image still renders, no spurious caption.
+    fn test_image_renderer_no_alias_emits_bare_markdown() {
+        // Stage 1: no params, no caption → bare CommonMark image with empty alt.
+        // pulldown-cmark's default Tag::Image handler converts this to <img>
+        // with no figure wrapper at all; the bare-image-paragraph rule (in
+        // src-tauri post-pass) decides figure-wrap separately.
         let r = ImageRenderer;
         let embed = ParsedEmbed {
             resolved_path: "assets/photo.jpg",
-            from_path: "posts/hello.md",
+            from_path: "hello.md", // sibling — no `../` prefix in output
             query: None,
             section: None,
             alias: None,
@@ -899,17 +995,14 @@ mod tests {
         };
         assert_eq!(
             r.render(&embed),
-            RenderedEmbed::Inline("![](../assets/photo.jpg)".to_string())
+            RenderedEmbed::Inline("![](assets/photo.jpg)".to_string())
         );
     }
 
     #[test]
     fn test_image_renderer_empty_alias_treated_as_no_alias() {
-        // `![[file|]]` (literal empty pipe) goes through `Some("")`. The
-        // first match arm checks `is_all_display_keywords("")` which returns
-        // false (no tokens), so it falls into the plain-alias branch with
-        // empty string — same outcome as `None`: empty alt, no figure
-        // wrapping by the bare-image-paragraph rule.
+        // `![[file|]]` (literal empty pipe) goes through `Some("")`. Stage 1
+        // treats an empty alias as "no alias": no params, empty alt.
         let r = ImageRenderer;
         let embed = ParsedEmbed {
             resolved_path: "photo.jpg",
@@ -927,6 +1020,7 @@ mod tests {
 
     #[test]
     fn test_image_renderer_alias_plain_text() {
+        // Stage 1: plain caption text becomes the alt slot (no params).
         let r = ImageRenderer;
         let embed = ParsedEmbed {
             resolved_path: "photo.jpg",
@@ -943,25 +1037,6 @@ mod tests {
     }
 
     #[test]
-    fn test_image_renderer_display_keywords() {
-        let r = ImageRenderer;
-        let embed = ParsedEmbed {
-            resolved_path: "photo.jpg",
-            from_path: "hello.md",
-            query: None,
-            section: None,
-            alias: Some("contain"),
-            width: None,
-        };
-        let out = match r.render(&embed) {
-            RenderedEmbed::Inline(s) => s,
-            _ => panic!("image renderer should return Inline"),
-        };
-        assert!(out.starts_with("<img "), "expected <img tag, got: {}", out);
-        assert!(out.contains("src=\"photo.jpg\""), "got: {}", out);
-    }
-
-    #[test]
     fn test_image_renderer_extensions_cover_all_formats() {
         let r = ImageRenderer;
         let exts: Vec<&&str> = r.extensions().iter().collect();
@@ -975,13 +1050,12 @@ mod tests {
         }
     }
 
-    // -- ImageRenderer: width pipe-alias (spec § P9, follow-up to PR-1c) --
+    // -- ImageRenderer Stage 1: markdown emission with `moss:` title -----
 
+    /// Pre-extract width from alias (mirrors the wikilink resolver's pre-pass)
+    /// then run the renderer. Returns the Inline string — Stage 1 markdown.
     fn image_inline(alias: Option<&str>) -> String {
         let r = ImageRenderer;
-        // Pre-extract width from alias to mirror the wikilink resolver's
-        // pre-pass (so renderer tests exercise the same input shape that
-        // production renderers see).
         let (width, alias_owned) = match alias {
             Some(a) => crate::media::extract_width_from_alias(a),
             None => (None, String::new()),
@@ -997,7 +1071,7 @@ mod tests {
         };
         let embed = ParsedEmbed {
             resolved_path: "assets/photo.jpg",
-            from_path: "posts/hello.md",
+            from_path: "hello.md", // sibling — keeps URL == resolved_path
             query: None,
             section: None,
             alias: alias_for_renderer,
@@ -1010,158 +1084,150 @@ mod tests {
     }
 
     #[test]
-    fn test_image_renderer_width_full_aliases_to_screen() {
-        // `full` is the author-facing alias; emitted value is `screen`.
-        let out = image_inline(Some("full"));
-        assert!(
-            out.contains(r#"data-width="screen""#),
-            "expected data-width=screen, got: {}",
-            out
-        );
-        // Full figure-wrapped HTML: spec § P9 puts data-width on the
-        // wrapper, not the inner img.
-        assert!(
-            out.starts_with(r#"<figure class="moss-image" data-width="screen">"#),
-            "got: {}",
-            out
-        );
-        assert!(out.ends_with("</figure>"), "got: {}", out);
-        // Empty alt — width is structural, not a caption.
-        assert!(out.contains(r#"alt="""#), "got: {}", out);
-        // No figcaption when there's no caption text.
-        assert!(!out.contains("<figcaption>"), "got: {}", out);
+    fn stage1_image_no_params_is_bare_markdown() {
+        let out = image_inline(None);
+        assert_eq!(out, "![](assets/photo.jpg)");
     }
 
     #[test]
-    fn test_image_renderer_width_wide() {
+    fn stage1_image_with_align_emits_moss_title() {
+        let out = image_inline(Some("align-left"));
+        assert_eq!(out, r#"![](assets/photo.jpg "moss:align=left")"#);
+    }
+
+    #[test]
+    fn stage1_image_with_width_emits_moss_title() {
+        // `wide` is a canonical width token; no other params.
         let out = image_inline(Some("wide"));
-        assert!(out.contains(r#"data-width="wide""#), "got: {}", out);
-        assert!(
-            out.starts_with(r#"<figure class="moss-image" data-width="wide">"#),
-            "got: {}",
-            out
-        );
+        assert_eq!(out, r#"![](assets/photo.jpg "moss:width=wide")"#);
     }
 
     #[test]
-    fn test_image_renderer_width_body_page_screen() {
+    fn stage1_image_full_aliases_to_screen() {
+        // `full` is the author-facing alias; canonical value is `screen`.
+        let out = image_inline(Some("full"));
+        assert_eq!(out, r#"![](assets/photo.jpg "moss:width=screen")"#);
+    }
+
+    #[test]
+    fn stage1_image_width_body_page_screen_round_trip() {
         for (token, canonical) in [("body", "body"), ("page", "page"), ("screen", "screen")] {
             let out = image_inline(Some(token));
-            assert!(
-                out.contains(&format!("data-width=\"{}\"", canonical)),
-                "{}: got {}",
-                token,
-                out
+            assert_eq!(
+                out,
+                format!(r#"![](assets/photo.jpg "moss:width={}")"#, canonical),
+                "token={}",
+                token
             );
         }
     }
 
     #[test]
-    fn test_image_renderer_no_alias_omits_data_width() {
-        let out = image_inline(None);
-        assert!(!out.contains("data-width="), "got: {}", out);
-        // No alias → bare markdown form (no figure wrap from this renderer).
-        assert!(out.starts_with("!["), "got: {}", out);
-    }
-
-    #[test]
-    fn test_image_renderer_caption_alias_omits_data_width() {
-        // Plain caption text is not a width token; data-width must be absent
-        // so themes can use the `:not([data-width])` default selector.
-        let out = image_inline(Some("A beautiful sunset"));
-        assert!(!out.contains("data-width="), "got: {}", out);
-    }
-
-    #[test]
-    fn test_image_renderer_caption_with_width_word_not_shadowed() {
-        // The word `wide` inside a longer caption must NOT trigger width
-        // recognition — only an exact-match alias segment counts.
-        let out = image_inline(Some("a wide angle shot"));
-        assert!(!out.contains("data-width="), "got: {}", out);
-        // Caption survives as alt text via the existing markdown fallback.
-        assert!(out.contains("a wide angle shot"), "got: {}", out);
-    }
-
-    #[test]
-    fn test_image_renderer_caption_then_width_pipe() {
-        // Multi-pipe form: caption text followed by a width token.
+    fn stage1_image_width_caption_moss_title_with_caption_as_alt() {
+        // Caption text + width: caption becomes alt, width goes into the
+        // title. Multi-pipe form `caption|full` exercises extract_width.
         let out = image_inline(Some("A nice photo|full"));
-        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
-        // Caption survives as alt text AND as figcaption (mirrors implicit-
-        // figure shape from src-tauri's transform_events).
-        assert!(out.contains(r#"alt="A nice photo""#), "got: {}", out);
+        assert_eq!(out, r#"![A nice photo](assets/photo.jpg "moss:width=screen")"#);
+    }
+
+    #[test]
+    fn stage1_image_align_and_width_compose() {
+        // BTreeMap canonicalises params alphabetically: align < width.
+        let out = image_inline(Some("align-left wide"));
         assert!(
-            out.contains("<figcaption>A nice photo</figcaption>"),
+            out.contains(r#""moss:align=left width=wide""#),
             "got: {}",
             out
         );
     }
 
     #[test]
-    fn test_image_renderer_display_keywords_with_width() {
-        // Display keywords (`cover`) compose with width (`full`).
-        let out = image_inline(Some("cover|full"));
-        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
-        assert!(out.contains("object-fit:cover"), "got: {}", out);
-        // Filename stem used as alt (matches the display-keyword arm).
-        assert!(out.contains(r#"alt="photo""#), "got: {}", out);
-        // No figcaption — display keywords are layout, not caption text.
-        assert!(!out.contains("<figcaption>"), "got: {}", out);
-    }
-
-    #[test]
-    fn test_image_renderer_align_left_alone() {
-        // `align-left` is a display keyword recognized by parse_media_attrs;
-        // emits class="moss-align-left" on the inner img via format_img_tag.
-        let out = image_inline(Some("align-left"));
-        assert!(out.contains(r#"class="moss-align-left""#),
-                "expected align class, got: {}", out);
-        // No figure wrapper without width.
-        assert!(!out.starts_with("<figure"), "got: {}", out);
-        // No figcaption — align is layout, not caption.
-        assert!(!out.contains("<figcaption>"), "got: {}", out);
-    }
-
-    #[test]
-    fn test_image_renderer_align_right_with_width() {
-        // `align-right|wide` composes: figure carries data-width, inner img
-        // carries the align class.
+    fn stage1_image_align_with_width_pipe_composes() {
+        // Pipe-separated form: `align-right|wide` — align segment first,
+        // width pipe second. Result is the same composition.
         let out = image_inline(Some("align-right|wide"));
-        assert!(out.contains(r#"data-width="wide""#),
-                "expected data-width=wide on figure, got: {}", out);
-        assert!(out.contains(r#"class="moss-align-right""#),
-                "expected align class on inner img, got: {}", out);
-        assert!(out.starts_with(r#"<figure class="moss-image" data-width="wide">"#),
-                "got: {}", out);
+        assert!(
+            out.contains(r#""moss:align=right width=wide""#),
+            "got: {}",
+            out
+        );
     }
 
     #[test]
-    fn test_image_renderer_align_composes_with_cover_and_width() {
-        // `align-left cover|full` — cover stays inline-style, align is class.
+    fn stage1_image_display_keywords_with_width_compose() {
+        // `cover` (object-fit) composes with `full` (width).
+        let out = image_inline(Some("cover|full"));
+        assert!(
+            out.contains(r#""moss:fit=cover width=screen""#),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn stage1_image_align_cover_width_compose() {
+        // Three-way composition: align (class), cover (fit), full (width).
         let out = image_inline(Some("align-left cover|full"));
-        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
-        assert!(out.contains(r#"class="moss-align-left""#),
-                "expected align class, got: {}", out);
-        assert!(out.contains("object-fit:cover"),
-                "expected cover style, got: {}", out);
+        assert!(
+            out.contains(r#""moss:align=left fit=cover width=screen""#),
+            "got: {}",
+            out
+        );
     }
 
     #[test]
-    fn test_image_renderer_width_html_escapes_caption() {
-        // Caption text with HTML-unsafe chars must be escaped in the alt
-        // attribute AND in the figcaption text.
-        let out = image_inline(Some(r#"Q&A "best"|full"#));
-        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
+    fn stage1_image_caption_with_width_word_not_shadowed() {
+        // The word `wide` inside a longer caption must NOT trigger width
+        // classification — only an exact-match alias segment counts.
+        // Caption survives in the alt slot.
+        let out = image_inline(Some("a wide angle shot"));
+        assert!(!out.contains("moss:"), "no params expected, got: {}", out);
+        assert_eq!(out, "![a wide angle shot](assets/photo.jpg)");
+    }
+
+    #[test]
+    fn stage1_image_html_escapes_caption_for_alt() {
+        // Caption goes into alt. CommonMark alt allows " and & inline;
+        // only [ and ] need escaping. Title escaping handles the param side.
+        let out = image_inline(Some(r#"Q&A "best"|wide"#));
         assert!(
-            out.contains(r#"alt="Q&amp;A &quot;best&quot;""#),
-            "got: {}",
+            out.starts_with(r#"![Q&A "best"]("#),
+            "alt should preserve & and \" verbatim: {}",
             out
         );
         assert!(
-            out.contains("<figcaption>Q&amp;A &quot;best&quot;</figcaption>"),
+            out.ends_with(r#""moss:width=wide")"#),
+            "title param expected: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn stage1_image_alt_brackets_escaped() {
+        // Brackets in caption text must be backslash-escaped to keep the
+        // CommonMark parser from terminating the alt span early.
+        let out = image_inline(Some("a [bracketed] caption"));
+        assert!(
+            out.contains(r"![a \[bracketed\] caption]("),
             "got: {}",
             out
         );
+    }
+
+    // -- markdown escape helpers (covered above; spec from plan §D1) -----
+
+    #[test]
+    fn markdown_escape_alt_brackets() {
+        assert_eq!(markdown_escape_alt("plain"), "plain");
+        assert_eq!(markdown_escape_alt("has [brackets]"), r"has \[brackets\]");
+        assert_eq!(markdown_escape_alt(r"with \ backslash"), r"with \\ backslash");
+    }
+
+    #[test]
+    fn markdown_escape_title_quotes() {
+        assert_eq!(markdown_escape_title("plain"), "plain");
+        assert_eq!(markdown_escape_title(r#"has "quotes""#), r#"has \"quotes\""#);
+        assert_eq!(markdown_escape_title(r"\backslash"), r"\\backslash");
     }
 
     // --- Dim parser ---
@@ -1299,16 +1365,18 @@ mod tests {
         assert!(exts.iter().any(|&&x| x == "htm"));
     }
 
-    fn iframe_html(e: &ParsedEmbed) -> String {
+    /// Helper: render iframe embed to Stage 1 markdown (Inline string).
+    fn iframe_md(e: &ParsedEmbed) -> String {
         match IframeRenderer.render(e) {
-            RenderedEmbed::Html(s) => s,
-            _ => panic!("expected Html variant"),
+            RenderedEmbed::Inline(s) => s,
+            _ => panic!("expected Inline (Stage 1 markdown)"),
         }
     }
 
     #[test]
-    fn test_iframe_renderer_basic() {
-        let out = iframe_html(&ParsedEmbed {
+    fn stage1_iframe_basic_is_link_with_kind() {
+        // Stage 1 emits `[filename](url "moss:kind=iframe")`.
+        let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
             query: None,
@@ -1316,19 +1384,14 @@ mod tests {
             alias: None,
             width: None,
         });
-        assert!(out.contains("<iframe "), "got: {}", out);
-        assert!(
-            out.contains("class=\"moss-embed\" data-type=\"iframe\""),
-            "got: {}",
-            out
-        );
-        assert!(out.contains("src=\"widget.html\""), "got: {}", out);
-        assert!(out.contains("loading=\"lazy\""), "got: {}", out);
+        assert_eq!(out, r#"[widget](widget.html "moss:kind=iframe")"#);
     }
 
     #[test]
-    fn test_iframe_renderer_with_query() {
-        let out = iframe_html(&ParsedEmbed {
+    fn stage1_iframe_with_query_param() {
+        // `?query` is preserved as a title-attribute param (not on the URL
+        // slot) so pulldown-cmark doesn't percent-encode reserved chars.
+        let out = iframe_md(&ParsedEmbed {
             resolved_path: "scale.html",
             from_path: "post.md",
             query: Some("a=major,minor&r=D"),
@@ -1336,47 +1399,13 @@ mod tests {
             alias: None,
             width: None,
         });
-        assert!(
-            out.contains("src=\"scale.html?a=major,minor&amp;r=D\""),
-            "got: {}",
-            out
-        );
+        assert!(out.contains(r#"kind=iframe"#), "got: {}", out);
+        assert!(out.contains(r#"query="a=major,minor"#) || out.contains("query=a=major,minor"), "got: {}", out);
     }
 
     #[test]
-    fn test_iframe_renderer_with_query_and_fragment() {
-        let out = iframe_html(&ParsedEmbed {
-            resolved_path: "doc.html",
-            from_path: "post.md",
-            query: Some("x=1"),
-            section: Some("section2"),
-            alias: None,
-            width: None,
-        });
-        assert!(
-            out.contains("src=\"doc.html?x=1#section2\""),
-            "got: {}",
-            out
-        );
-    }
-
-    #[test]
-    fn test_iframe_renderer_with_width_only() {
-        let out = iframe_html(&ParsedEmbed {
-            resolved_path: "widget.html",
-            from_path: "post.md",
-            query: None,
-            section: None,
-            alias: Some("400"),
-            width: None,
-        });
-        assert!(out.contains("width=\"400px\""), "got: {}", out);
-        assert!(!out.contains("height="), "got: {}", out);
-    }
-
-    #[test]
-    fn test_iframe_renderer_with_width_and_height() {
-        let out = iframe_html(&ParsedEmbed {
+    fn stage1_iframe_with_sizing_alias_emits_width_height_params() {
+        let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
             query: None,
@@ -1384,55 +1413,17 @@ mod tests {
             alias: Some("100%x600"),
             width: None,
         });
-        assert!(out.contains("width=\"100%\""), "got: {}", out);
-        assert!(out.contains("height=\"600px\""), "got: {}", out);
-    }
-
-    #[test]
-    fn test_iframe_renderer_scale_tree_example() {
-        // Real-world case from test-sites/刘果/交互/音阶对比/音阶对比.md
-        let out = iframe_html(&ParsedEmbed {
-            resolved_path: "scale-family-tree.html",
-            from_path: "post.md",
-            query: Some("a=major_pent,major_blues,in&r=major_pent:D,major_blues:D"),
-            section: None,
-            alias: Some("100%x600"),
-            width: None,
-        });
-        assert!(
-            out.contains("src=\"scale-family-tree.html?a=major_pent,major_blues,in&amp;r=major_pent:D,major_blues:D\""),
-            "got: {}",
-            out
-        );
-        assert!(out.contains("width=\"100%\""), "got: {}", out);
-        assert!(out.contains("height=\"600px\""), "got: {}", out);
-        assert!(
-            out.contains("class=\"moss-embed\" data-type=\"iframe\""),
-            "got: {}",
-            out
-        );
-        // Sizing alias → no title attr (avoid filename leakage as tooltip).
+        assert!(out.contains("height=600px"), "got: {}", out);
+        // 100% contains no whitespace, emitted unquoted.
+        assert!(out.contains("width=100%"), "got: {}", out);
+        assert!(out.contains("kind=iframe"), "got: {}", out);
+        // No `title=` for sizing alias.
         assert!(!out.contains("title="), "got: {}", out);
     }
 
     #[test]
-    fn test_iframe_renderer_no_alias_emits_no_title() {
-        // No alias: iframe's own <title> provides accessible name; no outer tooltip.
-        let out = iframe_html(&ParsedEmbed {
-            resolved_path: "widget.html",
-            from_path: "post.md",
-            query: None,
-            section: None,
-            alias: None,
-            width: None,
-        });
-        assert!(!out.contains("title="), "got: {}", out);
-    }
-
-    #[test]
-    fn test_iframe_renderer_text_alias_becomes_title() {
-        // Non-sizing alias text is used as title (accessible name + tooltip).
-        let out = iframe_html(&ParsedEmbed {
+    fn stage1_iframe_text_alias_becomes_title_param() {
+        let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
             query: None,
@@ -1440,13 +1431,40 @@ mod tests {
             alias: Some("My cool widget"),
             width: None,
         });
-        assert!(
-            out.contains("title=\"My cool widget\""),
-            "got: {}",
-            out
-        );
-        // And no dim attrs, since alias isn't a sizing hint.
-        assert!(!out.contains("width="), "got: {}", out);
+        // Whitespace forces quoting; emit_title wraps in `"..."`. Inside the
+        // markdown title we then escape the inner quotes.
+        assert!(out.contains(r#"title=\"My cool widget\""#), "got: {}", out);
+        // Filename slot is the file stem (no extension).
+        assert!(out.starts_with("[widget]("), "got: {}", out);
+    }
+
+    #[test]
+    fn stage1_iframe_with_fragment_emits_fragment_param() {
+        let out = iframe_md(&ParsedEmbed {
+            resolved_path: "doc.html",
+            from_path: "post.md",
+            query: Some("x=1"),
+            section: Some("section2"),
+            alias: None,
+            width: None,
+        });
+        assert!(out.contains("fragment=section2"), "got: {}", out);
+        assert!(out.contains("query=x=1"), "got: {}", out);
+    }
+
+    #[test]
+    fn stage1_iframe_with_canonical_width_emits_data_width_param() {
+        // `embed.width` is a canonical spec § P9 value, preserved as
+        // `data-width=` so Stage 2 can route it to the wrapper attribute.
+        let out = iframe_md(&ParsedEmbed {
+            resolved_path: "widget.html",
+            from_path: "post.md",
+            query: None,
+            section: None,
+            alias: None,
+            width: Some("wide"),
+        });
+        assert!(out.contains("data-width=wide"), "got: {}", out);
     }
 
     // --- Sizing malformed-input coverage ---
@@ -1459,8 +1477,10 @@ mod tests {
     }
 
     #[test]
-    fn test_iframe_renderer_malformed_sizing_drops_dim_attrs() {
-        let out = iframe_html(&ParsedEmbed {
+    fn stage1_iframe_malformed_sizing_falls_through_to_title() {
+        // Malformed sizing isn't recognised by Sizing::parse; the alias
+        // becomes a title param instead (matches the legacy iframe behaviour).
+        let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
             query: None,
@@ -1468,19 +1488,16 @@ mod tests {
             alias: Some("100xbad"),
             width: None,
         });
-        assert!(!out.contains("width="), "got: {}", out);
+        assert!(out.contains("title=100xbad"), "got: {}", out);
         assert!(!out.contains("height="), "got: {}", out);
-        // Malformed sizing isn't recognized by Sizing::parse, so it falls through
-        // to the title-attr path and becomes a title.
-        assert!(out.contains("title=\"100xbad\""), "got: {}", out);
     }
 
     // --- PdfRenderer ---
 
-    fn pdf_html(e: &ParsedEmbed) -> String {
+    fn pdf_md(e: &ParsedEmbed) -> String {
         match PdfRenderer.render(e) {
-            RenderedEmbed::Html(s) => s,
-            _ => panic!("expected Html variant"),
+            RenderedEmbed::Inline(s) => s,
+            _ => panic!("expected Inline (Stage 1 markdown)"),
         }
     }
 
@@ -1490,37 +1507,22 @@ mod tests {
     }
 
     #[test]
-    fn test_pdf_renderer_basic() {
-        let out = pdf_html(&ParsedEmbed {
-            resolved_path: "assets/report.pdf",
-            from_path: "posts/hello.md",
+    fn stage1_pdf_basic_is_link_with_kind() {
+        let out = pdf_md(&ParsedEmbed {
+            resolved_path: "report.pdf",
+            from_path: "post.md",
             query: None,
             section: None,
             alias: None,
             width: None,
         });
-        assert!(out.contains("<object "), "got: {}", out);
-        assert!(
-            out.contains("type=\"application/pdf\""),
-            "got: {}",
-            out
-        );
-        assert!(
-            out.contains("data=\"../assets/report.pdf\""),
-            "got: {}",
-            out
-        );
-        assert!(
-            out.contains("class=\"moss-embed\" data-type=\"pdf\""),
-            "got: {}",
-            out
-        );
+        assert_eq!(out, r#"[report](report.pdf "moss:kind=pdf")"#);
     }
 
     #[test]
-    fn test_pdf_renderer_with_page_fragment() {
-        // #page=5 is the standard PDF viewer fragment.
-        let out = pdf_html(&ParsedEmbed {
+    fn stage1_pdf_with_page_fragment_emits_fragment_param() {
+        // PDF viewer fragments like `#page=5` round-trip through `fragment=`.
+        let out = pdf_md(&ParsedEmbed {
             resolved_path: "doc.pdf",
             from_path: "post.md",
             query: None,
@@ -1528,16 +1530,13 @@ mod tests {
             alias: None,
             width: None,
         });
-        assert!(
-            out.contains("data=\"doc.pdf#page=5\""),
-            "got: {}",
-            out
-        );
+        assert!(out.contains("fragment=page=5"), "got: {}", out);
+        assert!(out.contains("kind=pdf"), "got: {}", out);
     }
 
     #[test]
-    fn test_pdf_renderer_with_sizing() {
-        let out = pdf_html(&ParsedEmbed {
+    fn stage1_pdf_with_sizing_emits_width_height_params() {
+        let out = pdf_md(&ParsedEmbed {
             resolved_path: "doc.pdf",
             from_path: "post.md",
             query: None,
@@ -1545,35 +1544,16 @@ mod tests {
             alias: Some("100%x800"),
             width: None,
         });
-        assert!(out.contains("width=\"100%\""), "got: {}", out);
-        assert!(out.contains("height=\"800px\""), "got: {}", out);
-    }
-
-    #[test]
-    fn test_pdf_renderer_fallback_link() {
-        // <object> must contain fallback content for browsers that can't render PDFs.
-        let out = pdf_html(&ParsedEmbed {
-            resolved_path: "doc.pdf",
-            from_path: "post.md",
-            query: None,
-            section: None,
-            alias: None,
-            width: None,
-        });
-        assert!(
-            out.contains("href=\"doc.pdf\""),
-            "fallback link missing: {}",
-            out
-        );
-        assert!(out.contains("Download doc"), "got: {}", out);
+        assert!(out.contains("width=100%"), "got: {}", out);
+        assert!(out.contains("height=800px"), "got: {}", out);
     }
 
     // --- AudioRenderer ---
 
-    fn audio_html(e: &ParsedEmbed) -> String {
+    fn audio_md(e: &ParsedEmbed) -> String {
         match AudioRenderer.render(e) {
-            RenderedEmbed::Html(s) => s,
-            _ => panic!("expected Html"),
+            RenderedEmbed::Inline(s) => s,
+            _ => panic!("expected Inline (Stage 1 markdown)"),
         }
     }
 
@@ -1587,61 +1567,8 @@ mod tests {
     }
 
     #[test]
-    fn test_audio_renderer_basic() {
-        let out = audio_html(&ParsedEmbed {
-            resolved_path: "assets/song.mp3",
-            from_path: "posts/hello.md",
-            query: None,
-            section: None,
-            alias: None,
-            width: None,
-        });
-        assert!(out.contains("<audio "), "got: {}", out);
-        assert!(out.contains("controls"), "got: {}", out);
-        assert!(
-            out.contains("class=\"moss-embed\" data-type=\"audio\""),
-            "got: {}",
-            out
-        );
-        assert!(
-            out.contains("<source src=\"../assets/song.mp3\""),
-            "got: {}",
-            out
-        );
-        assert!(out.contains("type=\"audio/mpeg\""), "got: {}", out);
-    }
-
-    #[test]
-    fn test_audio_renderer_mime_types() {
-        let cases: &[(&str, &str)] = &[
-            ("a.mp3", "audio/mpeg"),
-            ("a.wav", "audio/wav"),
-            ("a.ogg", "audio/ogg"),
-            ("a.flac", "audio/flac"),
-            ("a.m4a", "audio/mp4"),
-            ("a.opus", "audio/opus"),
-        ];
-        for (file, mime) in cases {
-            let out = audio_html(&ParsedEmbed {
-                resolved_path: file,
-                from_path: "post.md",
-                query: None,
-                section: None,
-                alias: None,
-            width: None,
-            });
-            assert!(
-                out.contains(&format!("type=\"{}\"", mime)),
-                "{}: got {}",
-                file,
-                out
-            );
-        }
-    }
-
-    #[test]
-    fn test_audio_renderer_preload_metadata() {
-        let out = audio_html(&ParsedEmbed {
+    fn stage1_audio_basic_is_link_with_kind_and_ext() {
+        let out = audio_md(&ParsedEmbed {
             resolved_path: "song.mp3",
             from_path: "post.md",
             query: None,
@@ -1649,15 +1576,40 @@ mod tests {
             alias: None,
             width: None,
         });
-        assert!(out.contains("preload=\"metadata\""), "got: {}", out);
+        // BTreeMap alphabetises params: ext < kind.
+        assert_eq!(out, r#"[song](song.mp3 "moss:ext=mp3 kind=audio")"#);
+    }
+
+    #[test]
+    fn stage1_audio_emits_ext_param_for_each_extension() {
+        // Stage 2 reads `ext=` to derive the `<source type=>` MIME type;
+        // the renderer's job is just to preserve the extension.
+        for ext in ["mp3", "wav", "ogg", "flac", "m4a", "opus"] {
+            let path = format!("a.{}", ext);
+            let out = audio_md(&ParsedEmbed {
+                resolved_path: &path,
+                from_path: "post.md",
+                query: None,
+                section: None,
+                alias: None,
+                width: None,
+            });
+            assert!(
+                out.contains(&format!("ext={}", ext)),
+                "ext={}: got {}",
+                ext,
+                out
+            );
+            assert!(out.contains("kind=audio"), "got: {}", out);
+        }
     }
 
     // --- VideoRenderer ---
 
-    fn video_html(e: &ParsedEmbed) -> String {
+    fn video_md(e: &ParsedEmbed) -> String {
         match VideoRenderer.render(e) {
-            RenderedEmbed::Html(s) => s,
-            _ => panic!("expected Html"),
+            RenderedEmbed::Inline(s) => s,
+            _ => panic!("expected Inline (Stage 1 markdown)"),
         }
     }
 
@@ -1671,88 +1623,37 @@ mod tests {
     }
 
     #[test]
-    fn test_video_renderer_basic() {
-        let out = video_html(&ParsedEmbed {
-            resolved_path: "assets/trailer.mp4",
-            from_path: "posts/hello.md",
+    fn stage1_video_basic_is_link_with_kind() {
+        let out = video_md(&ParsedEmbed {
+            resolved_path: "trailer.mp4",
+            from_path: "post.md",
             query: None,
             section: None,
             alias: None,
             width: None,
         });
-        assert!(out.contains("<video "), "got: {}", out);
-        assert!(out.contains("controls"), "got: {}", out);
-        assert!(
-            out.contains("class=\"moss-embed\" data-type=\"video\""),
-            "got: {}",
-            out
-        );
-        // Single src= attribute on <video>, not nested <source>. Required so
-        // the downstream add_video_placeholder_attributes rewriter can match
-        // the element and perform .mov→.mp4 conversion + placeholder injection.
-        assert!(
-            out.contains(" src=\"../assets/trailer.mp4\""),
-            "expected single src attribute, got: {}",
-            out
-        );
-        assert!(
-            !out.contains("<source"),
-            "must not emit <source> child (rewriter only matches <video src=>), got: {}",
-            out
-        );
-        assert!(
-            out.ends_with("</video>"),
-            "must end with closing </video>, got: {}",
-            out
-        );
+        assert_eq!(out, r#"[trailer](trailer.mp4 "moss:kind=video")"#);
     }
 
     #[test]
-    fn test_video_renderer_with_sizing() {
-        let out = video_html(&ParsedEmbed {
-            resolved_path: "clip.mp4",
-            from_path: "post.md",
-            query: None,
-            section: None,
-            alias: Some("640x360"),
-            width: None,
-        });
-        assert!(out.contains("width=\"640px\""), "got: {}", out);
-        assert!(out.contains("height=\"360px\""), "got: {}", out);
-    }
-
-    /// `.mov` source files are valid input — moss converts them to `.mp4`
-    /// during build via `add_video_placeholder_attributes`. The renderer
-    /// emits the path verbatim with `.mov`; the rewriter swaps the extension
-    /// and stores the original in `data-placeholder-src`. This test covers
-    /// only the renderer's contribution: it must emit the original extension
-    /// without trying to be clever about MIME types or rewriting.
-    #[test]
-    fn test_video_renderer_emits_original_extension() {
+    fn stage1_video_emits_original_extension_in_url() {
+        // The URL slot carries the original extension (e.g. `.mov`) so the
+        // downstream `add_video_placeholder_attributes` rewriter can perform
+        // `.mov→.mp4` swap on the served URL. The renderer never modifies it.
         for ext in ["mp4", "webm", "mov", "m4v"] {
             let path = format!("clip.{}", ext);
-            let out = video_html(&ParsedEmbed {
+            let out = video_md(&ParsedEmbed {
                 resolved_path: &path,
                 from_path: "post.md",
                 query: None,
                 section: None,
                 alias: None,
-            width: None,
+                width: None,
             });
             assert!(
-                out.contains(&format!(" src=\"clip.{}\"", ext)),
-                "{}: src must reflect original extension, got {}",
-                ext,
-                out
-            );
-            // No type= attribute: the browser sniffs MIME from the URL after
-            // the rewriter has finalized the path. Carrying a stale type=
-            // (e.g. video/quicktime for .mov that has been rewritten to .mp4)
-            // would either be ignored or worse, mislead the decoder.
-            // Bare ` type="...` only — `data-type="..."` from v1 vocab is fine.
-            assert!(
-                !out.contains(" type=\""),
-                "{}: must not emit bare type= (rewriter changes extension later), got {}",
+                out.contains(&format!("({}.", "clip"))
+                    && out.contains(&format!("({}.{}", "clip", ext)),
+                "{}: url slot must reflect original extension, got {}",
                 ext,
                 out
             );
@@ -1760,16 +1661,17 @@ mod tests {
     }
 
     #[test]
-    fn test_video_renderer_preload_metadata() {
-        let out = video_html(&ParsedEmbed {
+    fn stage1_video_with_sizing_emits_width_height_params() {
+        let out = video_md(&ParsedEmbed {
             resolved_path: "clip.mp4",
             from_path: "post.md",
             query: None,
             section: None,
-            alias: None,
+            alias: Some("640x360"),
             width: None,
         });
-        assert!(out.contains("preload=\"metadata\""), "got: {}", out);
+        assert!(out.contains("width=640px"), "got: {}", out);
+        assert!(out.contains("height=360px"), "got: {}", out);
     }
 
     // --- NotebookRenderer ---
@@ -1824,10 +1726,10 @@ mod tests {
 
     // --- ModelViewerRenderer ---
 
-    fn mv_html(e: &ParsedEmbed) -> String {
+    fn mv_md(e: &ParsedEmbed) -> String {
         match ModelViewerRenderer.render(e) {
-            RenderedEmbed::Html(s) => s,
-            _ => panic!("expected Html"),
+            RenderedEmbed::Inline(s) => s,
+            _ => panic!("expected Inline (Stage 1 markdown)"),
         }
     }
 
@@ -1839,33 +1741,21 @@ mod tests {
     }
 
     #[test]
-    fn test_model_viewer_basic() {
-        let out = mv_html(&ParsedEmbed {
-            resolved_path: "models/teapot.glb",
-            from_path: "posts/hello.md",
+    fn stage1_model_viewer_basic_is_link_with_3d_kind() {
+        let out = mv_md(&ParsedEmbed {
+            resolved_path: "teapot.glb",
+            from_path: "post.md",
             query: None,
             section: None,
             alias: None,
             width: None,
         });
-        assert!(out.contains("<model-viewer "), "got: {}", out);
-        assert!(
-            out.contains("src=\"../models/teapot.glb\""),
-            "got: {}",
-            out
-        );
-        assert!(
-            out.contains("class=\"moss-embed\" data-type=\"3d\""),
-            "got: {}",
-            out
-        );
-        assert!(out.contains("camera-controls"), "got: {}", out);
-        assert!(out.contains("auto-rotate"), "got: {}", out);
+        assert_eq!(out, r#"[teapot](teapot.glb "moss:kind=3d")"#);
     }
 
     #[test]
-    fn test_model_viewer_with_sizing() {
-        let out = mv_html(&ParsedEmbed {
+    fn stage1_model_viewer_with_sizing_emits_width_height_params() {
+        let out = mv_md(&ParsedEmbed {
             resolved_path: "m.glb",
             from_path: "post.md",
             query: None,
@@ -1873,11 +1763,9 @@ mod tests {
             alias: Some("400x400"),
             width: None,
         });
-        assert!(
-            out.contains("style=\"width:400px;height:400px\""),
-            "got: {}",
-            out
-        );
+        assert!(out.contains("width=400px"), "got: {}", out);
+        assert!(out.contains("height=400px"), "got: {}", out);
+        assert!(out.contains("kind=3d"), "got: {}", out);
     }
 
     #[test]
@@ -1923,10 +1811,10 @@ mod tests {
         }
     }
 
-    // -- spec § P9 width: data-width on embed wrappers --------------------
+    // -- spec § P9 width: data-width title-param round-trip ---------------
 
-    /// Helper that builds a width-only ParsedEmbed (the typical
-    /// `![[file|full]]` shape after the wikilink resolver's pre-pass).
+    /// Build a width-only `ParsedEmbed` mirroring the wikilink resolver's
+    /// pre-pass output for `![[file|full]]`-style aliases.
     fn embed_with_width<'a>(
         resolved_path: &'a str,
         width: &'static str,
@@ -1942,16 +1830,15 @@ mod tests {
     }
 
     #[test]
-    fn test_iframe_width_emits_data_width_attribute() {
-        let out = iframe_html(&embed_with_width("widget.html", "screen"));
-        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
-        // class="moss-embed" is the wrapper class — data-width sits next to it.
-        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
+    fn stage1_iframe_width_emits_data_width_title_param() {
+        let out = iframe_md(&embed_with_width("widget.html", "screen"));
+        assert!(out.contains("data-width=screen"), "got: {}", out);
+        assert!(out.contains("kind=iframe"), "got: {}", out);
     }
 
     #[test]
-    fn test_iframe_no_width_omits_data_width() {
-        let out = iframe_html(&ParsedEmbed {
+    fn stage1_iframe_no_width_omits_data_width_param() {
+        let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
             query: None,
@@ -1963,32 +1850,32 @@ mod tests {
     }
 
     #[test]
-    fn test_pdf_width_emits_data_width_attribute() {
-        let out = pdf_html(&embed_with_width("doc.pdf", "wide"));
-        assert!(out.contains(r#"data-width="wide""#), "got: {}", out);
-        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
+    fn stage1_pdf_width_emits_data_width_title_param() {
+        let out = pdf_md(&embed_with_width("doc.pdf", "wide"));
+        assert!(out.contains("data-width=wide"), "got: {}", out);
+        assert!(out.contains("kind=pdf"), "got: {}", out);
     }
 
     #[test]
-    fn test_audio_width_emits_data_width_attribute() {
-        let out = audio_html(&embed_with_width("song.mp3", "body"));
-        assert!(out.contains(r#"data-width="body""#), "got: {}", out);
-        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
+    fn stage1_audio_width_emits_data_width_title_param() {
+        let out = audio_md(&embed_with_width("song.mp3", "body"));
+        assert!(out.contains("data-width=body"), "got: {}", out);
+        assert!(out.contains("kind=audio"), "got: {}", out);
     }
 
     #[test]
-    fn test_video_width_emits_data_width_attribute() {
-        // `![[clip.mp4|full]]` — width on the <video> wrapper element.
-        let out = video_html(&embed_with_width("clip.mp4", "screen"));
-        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
-        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
-        // single src= shape must survive — this is the rewriter contract.
-        assert!(out.contains(r#" src="clip.mp4""#), "got: {}", out);
+    fn stage1_video_width_emits_data_width_title_param() {
+        let out = video_md(&embed_with_width("clip.mp4", "screen"));
+        assert!(out.contains("data-width=screen"), "got: {}", out);
+        assert!(out.contains("kind=video"), "got: {}", out);
+        // URL slot still carries the original extension — the rewriter
+        // contract is preserved at the markdown level.
+        assert!(out.contains("](clip.mp4"), "got: {}", out);
     }
 
     #[test]
-    fn test_video_no_width_omits_data_width() {
-        let out = video_html(&ParsedEmbed {
+    fn stage1_video_no_width_omits_data_width_param() {
+        let out = video_md(&ParsedEmbed {
             resolved_path: "clip.mp4",
             from_path: "post.md",
             query: None,
@@ -2000,9 +1887,9 @@ mod tests {
     }
 
     #[test]
-    fn test_model_viewer_width_emits_data_width_attribute() {
-        let out = mv_html(&embed_with_width("model.glb", "page"));
-        assert!(out.contains(r#"data-width="page""#), "got: {}", out);
-        assert!(out.contains(r#"class="moss-embed""#), "got: {}", out);
+    fn stage1_model_viewer_width_emits_data_width_title_param() {
+        let out = mv_md(&embed_with_width("model.glb", "page"));
+        assert!(out.contains("data-width=page"), "got: {}", out);
+        assert!(out.contains("kind=3d"), "got: {}", out);
     }
 }

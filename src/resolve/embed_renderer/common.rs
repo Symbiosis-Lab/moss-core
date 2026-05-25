@@ -8,6 +8,11 @@ use super::Sizing;
 
 /// Build a `src` URL for embed elements: `path?query#fragment` (URL order,
 /// independent of authoring order).
+///
+/// Retained for Phase 1's Stage 2 dispatcher, which may reconstruct embed
+/// URLs from title-attribute params (`query=…`, `fragment=…`). Tests in this
+/// module keep it exercised.
+#[allow(dead_code)]
 pub(super) fn build_src(
     path: &str,
     query: Option<&str>,
@@ -28,6 +33,11 @@ pub(super) fn build_src(
 /// Parse `|WxH` into HTML `width="..."` and `height="..."` attribute strings
 /// (each with a leading space). Empty strings if alias is missing or not a
 /// sizing hint.
+///
+/// Phase 0 Stage 1 emitters now route sizing through title-attribute params
+/// (`width=…` / `height=…`); this helper is retained for Phase 1's Stage 2
+/// dispatcher to consume those params back into the HTML attribute form.
+#[allow(dead_code)]
 pub(super) fn dim_attrs(alias: Option<&str>) -> (String, String) {
     let Some(a) = alias else {
         return (String::new(), String::new());
@@ -44,6 +54,9 @@ pub(super) fn dim_attrs(alias: Option<&str>) -> (String, String) {
 
 /// Minimal HTML attribute-value escaper for `src`, `title`, and similar.
 /// Escapes `& < > "`. Apostrophe is safe inside `"..."` attributes per HTML5.
+///
+/// Retained for Phase 1's Stage 2 dispatcher (which still emits HTML).
+#[allow(dead_code)]
 pub(super) fn html_escape_attr(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -58,6 +71,9 @@ pub(super) fn html_escape_attr(s: &str) -> String {
 /// Values reaching here are pre-validated by [`crate::media::match_width_token`]
 /// (only `body | wide | page | screen`), so HTML escaping is a defensive
 /// belt-and-braces and never actually substitutes.
+///
+/// Retained for Phase 1's Stage 2 dispatcher.
+#[allow(dead_code)]
 pub(super) fn width_attr(width: Option<&str>) -> String {
     match width {
         Some(w) => format!(r#" data-width="{}""#, html_escape_attr(w)),

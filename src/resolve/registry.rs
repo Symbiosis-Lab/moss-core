@@ -211,9 +211,15 @@ mod tests {
             alias: None,
             width: None,
         });
+        // Phase 0 Stage 1: built-in IframeRenderer emits CommonMark link
+        // markdown carrying `moss:kind=iframe`, not literal `<iframe>` HTML.
         match out {
-            RenderedEmbed::Html(s) => assert!(s.contains("<iframe"), "built-in iframe should win, got: {}", s),
-            _ => panic!("expected Html from built-in IframeRenderer"),
+            RenderedEmbed::Inline(s) => assert!(
+                s.contains("kind=iframe"),
+                "built-in iframe should win, got: {}",
+                s
+            ),
+            _ => panic!("expected Inline (Stage 1 markdown) from built-in IframeRenderer"),
         }
     }
 

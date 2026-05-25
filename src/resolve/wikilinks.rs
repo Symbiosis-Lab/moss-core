@@ -667,47 +667,51 @@ mod tests {
         assert_eq!(result.content, "![](../assets/photo.jpg)");
     }
 
-    // 10a. Image embed with position keyword → raw HTML <img> with style
+    // 10a. Image embed with position keyword → Stage 1 markdown with
+    // `moss:position=…` title param. Stage 2 (Phase 1) reads the title and
+    // synthesises the final `<img style=…>`.
     #[test]
     fn test_image_embed_position_keyword() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg|left]]", &graph, "posts/hello.md");
         assert_eq!(
             result.content,
-            "<img src=\"../assets/photo.jpg\" alt=\"photo\" style=\"object-position:left\" />"
+            r#"![](../assets/photo.jpg "moss:position=left")"#
         );
     }
 
-    // 10b. Image embed with fit keyword → raw HTML <img> with style
+    // 10b. Image embed with fit keyword → Stage 1 `moss:fit=…` title param.
     #[test]
     fn test_image_embed_fit_keyword() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg|contain]]", &graph, "posts/hello.md");
         assert_eq!(
             result.content,
-            "<img src=\"../assets/photo.jpg\" alt=\"photo\" style=\"object-fit:contain\" />"
+            r#"![](../assets/photo.jpg "moss:fit=contain")"#
         );
     }
 
-    // 10c. Image embed with fit + position keywords → combined style
+    // 10c. Image embed with fit + position keywords → composed params
+    // (BTreeMap canonicalises alphabetically: fit < position).
     #[test]
     fn test_image_embed_fit_and_position_keywords() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg|contain left]]", &graph, "posts/hello.md");
         assert_eq!(
             result.content,
-            "<img src=\"../assets/photo.jpg\" alt=\"photo\" style=\"object-fit:contain;object-position:left\" />"
+            r#"![](../assets/photo.jpg "moss:fit=contain position=left")"#
         );
     }
 
-    // 10d. Image embed with two-word position keyword → combined style
+    // 10d. Image embed with two-word position keyword `top left` →
+    // single `moss:position="top left"` param (quoted because of whitespace).
     #[test]
     fn test_image_embed_two_word_position_keyword() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg|top left]]", &graph, "posts/hello.md");
         assert_eq!(
             result.content,
-            "<img src=\"../assets/photo.jpg\" alt=\"photo\" style=\"object-position:top left\" />"
+            r#"![](../assets/photo.jpg "moss:position=\"top left\"")"#
         );
     }
 
@@ -756,24 +760,16 @@ mod tests {
         assert_eq!(result.content, "![](../assets/_43A2045.jpg)");
     }
 
-    // 10i. Width pipe-alias (spec § P9) — `full` → `data-width="screen"`.
-    // Full `<figure>` HTML is emitted (not `![alt](url)`) so the data-width
-    // attribute lands on the wrapper element per spec. See
-    // [`crate::media::extract_width_from_alias`] for the parsing rules.
+    // 10i. Width pipe-alias (spec § P9) — `full` → canonical `screen`,
+    // emitted as a `moss:width=…` title param. Stage 2 (Phase 1) lifts the
+    // param onto the `<figure data-width>` wrapper.
     #[test]
     fn test_image_embed_width_full_alias() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg|full]]", &graph, "posts/hello.md");
-        assert!(
-            result.content
-                .contains(r#"<figure class="moss-image" data-width="screen">"#),
-            "got: {}",
-            result.content
-        );
-        assert!(
-            result.content.contains(r#"src="../assets/photo.jpg""#),
-            "got: {}",
-            result.content
+        assert_eq!(
+            result.content,
+            r#"![](../assets/photo.jpg "moss:width=screen")"#
         );
     }
 
@@ -781,11 +777,9 @@ mod tests {
     fn test_image_embed_width_wide_alias() {
         let graph = test_graph();
         let result = resolve_wikilinks("![[photo.jpg|wide]]", &graph, "posts/hello.md");
-        assert!(
-            result.content
-                .contains(r#"<figure class="moss-image" data-width="wide">"#),
-            "got: {}",
-            result.content
+        assert_eq!(
+            result.content,
+            r#"![](../assets/photo.jpg "moss:width=wide")"#
         );
     }
 
@@ -812,8 +806,9 @@ mod tests {
 
     // -- Embed wrapper width (spec § P9, Task 2 of width follow-up) --
 
-    /// Width pipe-alias works on iframe embeds — `![[widget.html|full]]`
-    /// emits `<iframe class="moss-embed" data-width="screen" ...>`.
+    /// Width pipe-alias on iframe embeds — `![[widget.html|full]]` emits
+    /// Stage 1 markdown with `moss:kind=iframe data-width=screen` title.
+    /// Stage 2 (Phase 1) lifts `data-width` onto the rendered wrapper.
     #[test]
     fn test_iframe_embed_width_full_alias() {
         let mut b = crate::content_graph::ContentGraphBuilder::new();
@@ -821,19 +816,18 @@ mod tests {
         let graph = b.build();
         let result = resolve_wikilinks("![[widget.html|full]]", &graph, "post.md");
         assert!(
-            result.content.contains(r#"data-width="screen""#),
+            result.content.contains("data-width=screen"),
             "got: {}",
             result.content
         );
         assert!(
-            result.content.contains(r#"class="moss-embed""#),
+            result.content.contains("kind=iframe"),
             "got: {}",
             result.content
         );
     }
 
-    /// `![[clip.mp4|wide]]` → `<video class="moss-embed" data-width="wide" ...>`.
-    /// This is the explicit case from the PR brief.
+    /// `![[clip.mp4|wide]]` → Stage 1 link with `moss:kind=video data-width=wide`.
     #[test]
     fn test_video_embed_width_wide_alias() {
         let mut b = crate::content_graph::ContentGraphBuilder::new();
@@ -841,20 +835,21 @@ mod tests {
         let graph = b.build();
         let result = resolve_wikilinks("![[clip.mp4|wide]]", &graph, "post.md");
         assert!(
-            result.content.contains(r#"data-width="wide""#),
+            result.content.contains("data-width=wide"),
             "got: {}",
             result.content
         );
         assert!(
-            result.content.contains(r#"class="moss-embed""#),
+            result.content.contains("kind=video"),
             "got: {}",
             result.content
         );
     }
 
-    /// Width composes with sizing aliases: `![[widget.html|400x300|wide]]`
-    /// gets both `data-width="wide"` AND `width="400px" height="300px"` —
-    /// the latter from the sizing-keyword renderer arm.
+    /// Width composes with sizing: `![[widget.html|400x300|wide]]` gets
+    /// `data-width=wide` AND `width=400px height=300px` as title params.
+    /// Stage 2 (Phase 1) routes data-width to the wrapper and width/height
+    /// to the inner element.
     #[test]
     fn test_iframe_embed_width_with_sizing_alias() {
         let mut b = crate::content_graph::ContentGraphBuilder::new();
@@ -866,17 +861,17 @@ mod tests {
             "post.md",
         );
         assert!(
-            result.content.contains(r#"data-width="wide""#),
+            result.content.contains("data-width=wide"),
             "got: {}",
             result.content
         );
         assert!(
-            result.content.contains(r#"width="400px""#),
+            result.content.contains("width=400px"),
             "got: {}",
             result.content
         );
         assert!(
-            result.content.contains(r#"height="300px""#),
+            result.content.contains("height=300px"),
             "got: {}",
             result.content
         );
@@ -1298,23 +1293,25 @@ mod tests {
     #[test]
     fn test_embed_html_dispatches_to_iframe_renderer() {
         // End-to-end: resolve_wikilinks routes .html via IframeRenderer.
+        // Phase 0 Stage 1: emits CommonMark link markdown with the
+        // `moss:kind=iframe` discriminator + sizing params.
         let mut b = ContentGraphBuilder::new();
         b.add_file("widget.html", "widget");
         let graph = b.build();
 
         let result = resolve_wikilinks("![[widget.html|400x300]]", &graph, "post.md");
         assert!(
-            result.content.contains("<iframe "),
+            result.content.contains("kind=iframe"),
             "got: {}",
             result.content
         );
         assert!(
-            result.content.contains("width=\"400px\""),
+            result.content.contains("width=400px"),
             "got: {}",
             result.content
         );
         assert!(
-            result.content.contains("height=\"300px\""),
+            result.content.contains("height=300px"),
             "got: {}",
             result.content
         );
