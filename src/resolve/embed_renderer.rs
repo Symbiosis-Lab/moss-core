@@ -92,7 +92,7 @@ pub const MARKER_TABLE: &str = "moss-embed-table";
 pub use folder_list::{MARKER_FOLDER_LIST, MARKER_END};
 
 /// An embed that has been parsed and path-resolved, ready for rendering.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedEmbed<'a> {
     /// Resolved target path, as returned by the ContentGraph.
     pub resolved_path: &'a str,
@@ -118,6 +118,14 @@ pub struct ParsedEmbed<'a> {
     /// are already in value-space terms (see
     /// [`crate::media::match_width_token`]).
     pub width: Option<&'static str>,
+    /// Trailing Pandoc `{.class key=value}` attribute block, if present.
+    ///
+    /// Per Decision #8 of the unified-image-emission architecture, Pandoc-
+    /// style attribute blocks are the canonical author surface for moss-
+    /// vocabulary attributes; the pipe-keyword form remains as compat sugar.
+    /// When both are present, the attribute block wins on typed-field
+    /// conflicts (Decision #11); class lists union+dedupe.
+    pub attrs: Option<crate::ast::attrs::AttrBlock>,
 }
 
 /// Output of a renderer.
@@ -345,6 +353,13 @@ impl ImageRenderer {
             None => (None, None),
         };
 
+        // Track passthrough classes from BOTH the pipe-alias display-keyword
+        // stream AND the trailing Pandoc attribute block. They union+dedupe
+        // when both forms are present (Decision #11).
+        let mut class_names: Vec<String> = Vec::new();
+        let mut extra_attrs: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+
         // Fold display keywords + inline width tokens into typed params.
         if let Some(dk) = display_kw {
             // Pull any inline width tokens out of the alias before parsing
@@ -370,12 +385,69 @@ impl ImageRenderer {
             if let Some(pos) = attrs.position {
                 params.insert("position", pos.to_css_value());
             }
-            if !attrs.class_names.is_empty() {
-                params.insert("classes", attrs.class_names.join(" "));
+            class_names.extend(attrs.class_names.into_iter());
+            for (k, v) in attrs.extra_attrs.into_iter() {
+                extra_attrs.insert(k, v);
             }
-            for (k, v) in &attrs.extra_attrs {
-                params.insert(k.clone(), v.clone());
+        }
+
+        // Fold the trailing Pandoc attribute block. Attribute block wins on
+        // typed-field conflicts (Decision #11). Class lists union+dedupe
+        // (handled by `add_class_dedup`). Pandoc `class="..."` longhand is
+        // treated as a space-separated class list (Pandoc spec parity); the
+        // same recognized-vocabulary extraction applies as for `.class`.
+        if let Some(block) = &embed.attrs {
+            // `.class` shorthand → typed fields (align) or passthrough.
+            for class in &block.classes {
+                if let Some(side) = crate::media::AlignSide::from_keyword(class) {
+                    params.insert("align", align_keyword(side));
+                } else if let Some(f) = crate::media::Fit::from_keyword(class) {
+                    params.insert("fit", f.to_css_value());
+                } else if let Some(p) = crate::media::Position::from_keyword(class) {
+                    params.insert("position", p.to_css_value());
+                } else {
+                    add_class_dedup(&mut class_names, class);
+                }
             }
+            // Width flag from attr block.
+            if let Some(w) = block.width {
+                params.insert("width", w);
+            }
+            // Pandoc `class="..."` longhand → split + same dispatch.
+            // Also consume it from the kv map so it does not flow into
+            // `extra_attrs`.
+            let mut consumed_class_kv = false;
+            for (k, v) in &block.kvs {
+                if k == "class" {
+                    consumed_class_kv = true;
+                    for c in v.split_whitespace() {
+                        if let Some(side) = crate::media::AlignSide::from_keyword(c) {
+                            params.insert("align", align_keyword(side));
+                        } else if let Some(f) = crate::media::Fit::from_keyword(c) {
+                            params.insert("fit", f.to_css_value());
+                        } else if let Some(p) = crate::media::Position::from_keyword(c) {
+                            params.insert("position", p.to_css_value());
+                        } else {
+                            add_class_dedup(&mut class_names, c);
+                        }
+                    }
+                }
+            }
+            // Remaining key=value pairs flow through as extra_attrs (and
+            // override pipe-alias extras on conflict — attribute block wins).
+            for (k, v) in &block.kvs {
+                if consumed_class_kv && k == "class" {
+                    continue;
+                }
+                extra_attrs.insert(k.clone(), v.clone());
+            }
+        }
+
+        if !class_names.is_empty() {
+            params.insert("classes", class_names.join(" "));
+        }
+        for (k, v) in &extra_attrs {
+            params.insert(k.clone(), v.clone());
         }
 
         let alt = caption_text.unwrap_or_default();
@@ -453,6 +525,66 @@ fn align_keyword(side: crate::media::AlignSide) -> &'static str {
     }
 }
 
+/// Push `class` into `acc` only if not already present. Used when merging
+/// pipe-alias passthrough classes with Pandoc attribute-block classes
+/// (Decision #11: class lists union and dedupe).
+fn add_class_dedup(acc: &mut Vec<String>, class: &str) {
+    if !acc.iter().any(|c| c == class) {
+        acc.push(class.to_string());
+    }
+}
+
+/// Shared attribute-block fold for non-image renderers (iframe, pdf, audio,
+/// video, 3D). Mirrors the ImageRenderer logic at a smaller scope: extract
+/// recognized vocabulary (align) into typed params; pass through everything
+/// else as `classes` + extra key=value attrs.
+///
+/// Lives here so all `render_link_markdown` consumers stay in lockstep when
+/// Decision #11 (attribute-block-wins, class lists union+dedupe) evolves.
+fn fold_attrs_into_params(
+    block: &crate::ast::attrs::AttrBlock,
+    params: &mut TitleParams,
+) {
+    let mut classes: Vec<String> = Vec::new();
+    let mut consumed_class_kv = false;
+
+    for class in &block.classes {
+        if let Some(side) = crate::media::AlignSide::from_keyword(class) {
+            params.insert("align", align_keyword(side));
+        } else {
+            add_class_dedup(&mut classes, class);
+        }
+    }
+
+    if let Some(w) = block.width {
+        // Non-image renderers expose width on the wrapper as `data-width`
+        // (see `render_link_markdown`), matching the pipe-alias path.
+        params.insert("data-width", w);
+    }
+
+    for (k, v) in &block.kvs {
+        if k == "class" {
+            consumed_class_kv = true;
+            for c in v.split_whitespace() {
+                if let Some(side) = crate::media::AlignSide::from_keyword(c) {
+                    params.insert("align", align_keyword(side));
+                } else {
+                    add_class_dedup(&mut classes, c);
+                }
+            }
+        }
+    }
+    if !classes.is_empty() {
+        params.insert("classes", classes.join(" "));
+    }
+    for (k, v) in &block.kvs {
+        if consumed_class_kv && k == "class" {
+            continue;
+        }
+        params.insert(k.clone(), v.clone());
+    }
+}
+
 /// Escape alt text for markdown `![...](url)` syntax.
 ///
 /// Brackets MUST be escaped; HTML entities are NOT needed (pulldown-cmark
@@ -496,6 +628,11 @@ fn render_link_markdown(
         params.insert("data-width", w);
     }
     extra(embed, &mut params);
+    // Fold the trailing Pandoc attribute block last so it wins on typed-field
+    // conflicts (Decision #11) — matches the ImageRenderer ordering.
+    if let Some(block) = &embed.attrs {
+        fold_attrs_into_params(block, &mut params);
+    }
     let title = emit_title(&params);
     let name = file_stem(embed.resolved_path);
     format!(
@@ -940,6 +1077,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -959,6 +1097,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -978,6 +1117,7 @@ mod tests {
             section: Some("Getting Started"),
             alias: None,
             width: None,
+            attrs: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -997,6 +1137,7 @@ mod tests {
             section: Some("^block-xyz"),
             alias: None,
             width: None,
+            attrs: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -1027,6 +1168,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -1046,6 +1188,7 @@ mod tests {
             section: None,
             alias: Some(""),
             width: None,
+            attrs: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -1064,6 +1207,7 @@ mod tests {
             section: None,
             alias: Some("A lovely cat"),
             width: None,
+            attrs: None,
         };
         assert_eq!(
             r.render(&embed),
@@ -1111,6 +1255,7 @@ mod tests {
             section: None,
             alias: alias_for_renderer,
             width,
+            attrs: None,
         };
         match r.render(&embed) {
             RenderedEmbed::Inline(s) => s,
@@ -1418,6 +1563,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         assert_eq!(out, r#"[widget](widget.html "moss:kind=iframe")"#);
     }
@@ -1433,6 +1579,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         assert!(out.contains(r#"kind=iframe"#), "got: {}", out);
         assert!(out.contains(r#"query="a=major,minor"#) || out.contains("query=a=major,minor"), "got: {}", out);
@@ -1447,6 +1594,7 @@ mod tests {
             section: None,
             alias: Some("100%x600"),
             width: None,
+            attrs: None,
         });
         assert!(out.contains("height=600px"), "got: {}", out);
         // 100% contains no whitespace, emitted unquoted.
@@ -1465,6 +1613,7 @@ mod tests {
             section: None,
             alias: Some("My cool widget"),
             width: None,
+            attrs: None,
         });
         // Whitespace forces quoting; emit_title wraps in `"..."`. Inside the
         // markdown title we then escape the inner quotes.
@@ -1482,6 +1631,7 @@ mod tests {
             section: Some("section2"),
             alias: None,
             width: None,
+            attrs: None,
         });
         assert!(out.contains("fragment=section2"), "got: {}", out);
         assert!(out.contains("query=x=1"), "got: {}", out);
@@ -1498,6 +1648,7 @@ mod tests {
             section: None,
             alias: None,
             width: Some("wide"),
+            attrs: None,
         });
         assert!(out.contains("data-width=wide"), "got: {}", out);
     }
@@ -1522,6 +1673,7 @@ mod tests {
             section: None,
             alias: Some("100xbad"),
             width: None,
+            attrs: None,
         });
         assert!(out.contains("title=100xbad"), "got: {}", out);
         assert!(!out.contains("height="), "got: {}", out);
@@ -1550,6 +1702,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         assert_eq!(out, r#"[report](report.pdf "moss:kind=pdf")"#);
     }
@@ -1564,6 +1717,7 @@ mod tests {
             section: Some("page=5"),
             alias: None,
             width: None,
+            attrs: None,
         });
         assert!(out.contains("fragment=page=5"), "got: {}", out);
         assert!(out.contains("kind=pdf"), "got: {}", out);
@@ -1578,6 +1732,7 @@ mod tests {
             section: None,
             alias: Some("100%x800"),
             width: None,
+            attrs: None,
         });
         assert!(out.contains("width=100%"), "got: {}", out);
         assert!(out.contains("height=800px"), "got: {}", out);
@@ -1610,6 +1765,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         // BTreeMap alphabetises params: ext < kind.
         assert_eq!(out, r#"[song](song.mp3 "moss:ext=mp3 kind=audio")"#);
@@ -1628,6 +1784,7 @@ mod tests {
                 section: None,
                 alias: None,
                 width: None,
+                attrs: None,
             });
             assert!(
                 out.contains(&format!("ext={}", ext)),
@@ -1666,6 +1823,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         assert_eq!(out, r#"[trailer](trailer.mp4 "moss:kind=video")"#);
     }
@@ -1684,6 +1842,7 @@ mod tests {
                 section: None,
                 alias: None,
                 width: None,
+                attrs: None,
             });
             assert!(
                 out.contains(&format!("({}.", "clip"))
@@ -1704,6 +1863,7 @@ mod tests {
             section: None,
             alias: Some("640x360"),
             width: None,
+            attrs: None,
         });
         assert!(out.contains("width=640px"), "got: {}", out);
         assert!(out.contains("height=360px"), "got: {}", out);
@@ -1725,6 +1885,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         };
         match NotebookRenderer.render(&embed) {
             RenderedEmbed::Deferred { marker } => assert_eq!(
@@ -1744,6 +1905,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         };
         match NotebookRenderer.render(&embed) {
             RenderedEmbed::Deferred { marker } => {
@@ -1784,6 +1946,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         assert_eq!(out, r#"[teapot](teapot.glb "moss:kind=3d")"#);
     }
@@ -1797,6 +1960,7 @@ mod tests {
             section: None,
             alias: Some("400x400"),
             width: None,
+            attrs: None,
         });
         assert!(out.contains("width=400px"), "got: {}", out);
         assert!(out.contains("height=400px"), "got: {}", out);
@@ -1837,6 +2001,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         };
         match TableRenderer.render(&embed) {
             RenderedEmbed::Deferred { marker } => {
@@ -1861,6 +2026,7 @@ mod tests {
             section: None,
             alias: None,
             width: Some(width),
+            attrs: None,
         }
     }
 
@@ -1880,6 +2046,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         assert!(!out.contains("data-width="), "got: {}", out);
     }
@@ -1917,6 +2084,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         assert!(!out.contains("data-width="), "got: {}", out);
     }

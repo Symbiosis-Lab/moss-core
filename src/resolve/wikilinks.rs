@@ -189,8 +189,18 @@ fn process_line(
         // --- Embed wikilink: ![[…]] ---
         if chars[i] == '!' && i + 3 < len && chars[i + 1] == '[' && chars[i + 2] == '[' {
             if let Some((end, inner)) = find_wikilink_close(&chars, i + 3) {
+                // Peek for a trailing Pandoc-style attribute block `{...}`
+                // immediately following `]]` (no whitespace allowed between
+                // per Pandoc spec). Pandoc attribute blocks do not nest, so
+                // we scan to the next `}`. If parsing fails or the block is
+                // missing, the original markdown position is preserved.
+                let (attrs, after_attrs) = match try_consume_attr_block(&chars, end) {
+                    Some((block, next_idx)) => (Some(block), next_idx),
+                    None => (None, end),
+                };
                 let replacement = resolve_embed(
                     &inner,
+                    attrs,
                     graph,
                     from_path,
                     outgoing_links,
@@ -198,7 +208,7 @@ fn process_line(
                     lookup,
                 );
                 result.push_str(&replacement);
-                i = end;
+                i = after_attrs;
                 continue;
             }
         }
@@ -244,6 +254,59 @@ fn find_wikilink_close(chars: &[char], start: usize) -> Option<(usize, String)> 
             return Some((j + 2, inner));
         }
         j += 1;
+    }
+    None
+}
+
+/// Try to consume a trailing Pandoc attribute block `{...}` starting at
+/// position `start` (which should be the index immediately after `]]` or
+/// after `)` for image syntax). Pandoc spec: no whitespace between the
+/// preceding token and the opening `{`, and attribute blocks do not nest.
+///
+/// Returns `Some((parsed_block, position_after_close_brace))` on success,
+/// or `None` if there is no `{` at `start`, no matching `}`, or the
+/// captured `{...}` text fails to parse via [`parse_attrs`]. On failure
+/// the caller leaves the source text untouched so the literal `{...}`
+/// flows through to pulldown-cmark as plain text.
+fn try_consume_attr_block(
+    chars: &[char],
+    start: usize,
+) -> Option<(crate::ast::attrs::AttrBlock, usize)> {
+    let len = chars.len();
+    if start >= len || chars[start] != '{' {
+        return None;
+    }
+    // Pandoc attribute blocks do not nest; scan to the first `}`. We also
+    // respect quoted strings so a `}` inside `key="..."` does not close
+    // the block prematurely.
+    let mut j = start + 1;
+    let mut in_quote = false;
+    while j < len {
+        let c = chars[j];
+        if in_quote {
+            if c == '\\' && j + 1 < len {
+                j += 2;
+                continue;
+            }
+            if c == '"' {
+                in_quote = false;
+            }
+            j += 1;
+            continue;
+        }
+        match c {
+            '"' => {
+                in_quote = true;
+                j += 1;
+            }
+            '}' => {
+                let raw: String = chars[start..=j].iter().collect();
+                return crate::ast::attrs::parse_attrs(&raw)
+                    .ok()
+                    .map(|block| (block, j + 1));
+            }
+            _ => j += 1,
+        }
     }
     None
 }
@@ -383,8 +446,14 @@ fn resolve_wikilink(
 /// Parsing produces a `ParsedEmbed`; a renderer is chosen by the resolved
 /// target's extension via the supplied `lookup` closure. Unknown extensions
 /// fall back to a plain markdown link (Obsidian parity).
+///
+/// `attrs` is the trailing Pandoc attribute block (e.g. `{.align-left}`)
+/// captured by the consumer when present. It is forwarded to the renderer
+/// via `ParsedEmbed::attrs` so renderers can fold it into their title-param
+/// emission with attribute-block-wins semantics (Decision #11).
 fn resolve_embed(
     inner: &str,
+    attrs: Option<crate::ast::attrs::AttrBlock>,
     graph: &ContentGraph,
     from_path: &str,
     outgoing_links: &mut Vec<OutgoingLink>,
@@ -461,6 +530,7 @@ fn resolve_embed(
                 section,
                 alias: alias_for_renderer,
                 width,
+                attrs: attrs.clone(),
             };
 
             match path_extension(&target_path).as_deref().and_then(lookup) {
@@ -1316,6 +1386,134 @@ mod tests {
             result.content
         );
         assert!(result.diagnostics.is_empty());
+    }
+
+    // -- Task E1: Pandoc-style trailing `{...}` attribute block --
+
+    /// `.align-left` shorthand → `moss:align=left` in title.
+    #[test]
+    fn test_wikilink_with_pandoc_attrs() {
+        let graph = test_graph();
+        let result =
+            resolve_wikilinks("![[photo.jpg]]{.align-left}", &graph, "posts/hello.md");
+        assert!(
+            result.content.contains("align=left"),
+            "got: {}",
+            result.content
+        );
+        // Render shape: standard CommonMark image with moss:title.
+        assert!(
+            result.content.starts_with("![]("),
+            "expected unchanged ![alt](url …) shape; got: {}",
+            result.content
+        );
+        // Trailing `{...}` was consumed (not present in output).
+        assert!(
+            !result.content.contains("{.align-left}"),
+            "attr block should be consumed; got: {}",
+            result.content
+        );
+    }
+
+    /// Pipe-keyword + attribute block compose. Class lists union+dedupe;
+    /// passthrough class lands in `moss:classes=…`.
+    #[test]
+    fn test_wikilink_with_attrs_and_pipe_compose() {
+        let graph = test_graph();
+        let result = resolve_wikilinks(
+            "![[photo.jpg|align-left]]{.theme-rounded}",
+            &graph,
+            "posts/hello.md",
+        );
+        // Pipe keyword extracted as typed field.
+        assert!(
+            result.content.contains("align=left"),
+            "got: {}",
+            result.content
+        );
+        // Attribute-block passthrough class appears in moss:classes.
+        assert!(
+            result.content.contains("classes=theme-rounded"),
+            "got: {}",
+            result.content
+        );
+    }
+
+    /// `{.align-right}` only (no pipe alias) → align=right in title.
+    #[test]
+    fn test_wikilink_attrs_only_align_via_pandoc() {
+        let graph = test_graph();
+        let result =
+            resolve_wikilinks("![[photo.jpg]]{.align-right}", &graph, "posts/hello.md");
+        assert!(
+            result.content.contains("align=right"),
+            "got: {}",
+            result.content
+        );
+    }
+
+    /// Wikilink with no attribute block — unchanged baseline.
+    #[test]
+    fn test_wikilink_no_attrs_unaffected() {
+        let graph = test_graph();
+        let result = resolve_wikilinks("![[photo.jpg]]", &graph, "posts/hello.md");
+        assert_eq!(result.content, "![](../assets/photo.jpg)");
+    }
+
+    /// Trailing `{...}` at the very end of input (no newline after).
+    #[test]
+    fn test_wikilink_attrs_block_at_eof() {
+        let graph = test_graph();
+        let result =
+            resolve_wikilinks("![[photo.jpg]]{.align-left}", &graph, "posts/hello.md");
+        assert!(result.content.contains("align=left"));
+        assert!(!result.content.contains("{.align-left}"));
+    }
+
+    /// Whitespace between `]]` and `{` breaks the attachment (Pandoc spec).
+    /// The `{.align-left}` flows through as literal text.
+    #[test]
+    fn test_wikilink_attrs_block_separated_by_whitespace_does_not_apply() {
+        let graph = test_graph();
+        let result =
+            resolve_wikilinks("![[photo.jpg]] {.align-left}", &graph, "posts/hello.md");
+        // Image renders without an align param.
+        assert!(
+            !result.content.contains("align="),
+            "got: {}",
+            result.content
+        );
+        // The `{.align-left}` literal is preserved untouched.
+        assert!(
+            result.content.contains("{.align-left}"),
+            "got: {}",
+            result.content
+        );
+    }
+
+    /// Pandoc `class="..."` longhand equivalence with `.class` shorthand.
+    /// `![alt](photo.jpg){class="moss-align-left theme-rounded"}` would
+    /// look the same as `{.align-left .theme-rounded}` — for the wikilink
+    /// variant we test the same union via `class=` longhand directly.
+    #[test]
+    fn test_wikilink_attrs_class_longhand_equivalent_to_shorthand() {
+        let graph = test_graph();
+        let shorthand = resolve_wikilinks(
+            "![[photo.jpg]]{.align-left .theme-rounded}",
+            &graph,
+            "posts/hello.md",
+        )
+        .content;
+        let longhand = resolve_wikilinks(
+            r#"![[photo.jpg]]{class="align-left theme-rounded"}"#,
+            &graph,
+            "posts/hello.md",
+        )
+        .content;
+        assert_eq!(shorthand, longhand, "longhand ≠ shorthand");
+        // And ensure the resulting `class=` doesn't leak into extras —
+        // we should see classes=… not class=… in the moss-title.
+        assert!(!shorthand.contains(" class="), "got: {}", shorthand);
     }
 
     #[test]

@@ -210,6 +210,7 @@ mod tests {
             section: None,
             alias: None,
             width: None,
+            attrs: None,
         });
         // Phase 0 Stage 1: built-in IframeRenderer emits CommonMark link
         // markdown carrying `moss:kind=iframe`, not literal `<iframe>` HTML.
