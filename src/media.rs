@@ -1066,6 +1066,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_media_attrs_align_last_wins() {
+        // Contradictory align keywords resolve last-wins (no error, no warning).
+        // Locked here so a future refactor can't silently flip to first-wins or
+        // None-on-conflict.
+        let attrs = parse_media_attrs("align-left align-right");
+        assert_eq!(attrs.align, Some(AlignSide::Right));
+
+        let attrs = parse_media_attrs("align-right align-left");
+        assert_eq!(attrs.align, Some(AlignSide::Left));
+    }
+
+    #[test]
     fn test_is_all_display_keywords_align() {
         assert!(is_all_display_keywords("align-left"));
         assert!(is_all_display_keywords("align-right"));
