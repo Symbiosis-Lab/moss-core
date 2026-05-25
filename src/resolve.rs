@@ -153,10 +153,21 @@ pub fn resolve_content_with_handlers_and_snapshot(
     // Step 1: Separate frontmatter from body.
     let (frontmatter, body) = split_frontmatter(raw_markdown);
 
+    // Step 1.5: Stage 1 native-markdown sweep (Phase 0 Task E2). Rewrites
+    // `![alt](file.X)` with non-image extension into
+    // `[alt](file.X "moss:kind=…")` so the Stage 2 link dispatcher routes
+    // by kind. Image extensions and the empty-title escape hatch pass
+    // through unchanged. Runs as a separate text pass before the wikilink
+    // pass — both are Stage 1 rewrites that don't overlap (wikilink and
+    // native image syntax differ at the `!` / `![[` prefix), so ordering
+    // is a stylistic choice. Sweeping first keeps the wikilink output the
+    // canonical input shape for every downstream pass.
+    let swept = wikilinks::stage1_sweep(body);
+
     // Step 2: First wikilink pass (uses custom registry so plugin renderers
     // participate in extension dispatch).
     let wikilink_pass1 =
-        wikilinks::resolve_wikilinks_with_registry(body, graph, source_path, registry);
+        wikilinks::resolve_wikilinks_with_registry(&swept, graph, source_path, registry);
     let mut outgoing_links = wikilink_pass1.outgoing_links;
     let mut diagnostics = wikilink_pass1.diagnostics;
 

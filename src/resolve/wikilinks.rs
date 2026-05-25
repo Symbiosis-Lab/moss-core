@@ -592,6 +592,473 @@ fn build_anchor(section: Option<&str>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 1 native-markdown sweep (Task E2)
+// ---------------------------------------------------------------------------
+//
+// Realises Decision #3 (uniform `![alt](file.X)` syntax across media kinds)
+// for the native-CommonMark input path. Before pulldown-cmark parses, we
+// rewrite `![alt](clip.mp4)` (image syntax pointing at a non-image extension)
+// into `[alt](clip.mp4 "moss:kind=video")` so the existing Stage 2 link
+// dispatcher (Phase 1) routes it to the video synthesizer.
+//
+// Architectural notes:
+// - Image extensions pass through unchanged (Tag::Image already routes them
+//   to the image synthesizer at Stage 2).
+// - Non-`moss:` titles are author-preserved native CommonMark — left alone.
+// - Empty title (`""`) is the explicit escape hatch (Decision #12).
+// - Code-block ranges are identified via pulldown-cmark and skipped, so
+//   `![alt](clip.mp4)` inside a fenced code block stays literal.
+
+/// Mapping of file extension → moss media kind. Mirrors the extension lists
+/// owned by each renderer in [`super::embed_renderer`]. Kept here as a
+/// flat dispatch table because the sweep is text-level (no `ParsedEmbed`
+/// machinery) and doesn't need a renderer instance.
+fn extension_to_kind(ext: &str) -> Option<&'static str> {
+    // Match the ext sets declared in embed_renderer.rs, case-insensitively.
+    let lower = ext.to_ascii_lowercase();
+    match lower.as_str() {
+        // image — handled by Tag::Image at Stage 2, NOT swept here.
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" => None,
+        // audio
+        "mp3" | "wav" | "ogg" | "flac" | "m4a" | "opus" => Some("audio"),
+        // video
+        "mp4" | "webm" | "mov" | "m4v" => Some("video"),
+        // pdf
+        "pdf" => Some("pdf"),
+        // iframe (local HTML)
+        "html" | "htm" => Some("iframe"),
+        // 3D
+        "glb" | "gltf" => Some("3d"),
+        // notebook
+        "ipynb" => Some("notebook"),
+        // tabular data
+        "csv" | "tsv" => Some("table"),
+        _ => None,
+    }
+}
+
+/// Stage 1 native-markdown sweep: rewrite `![alt](file.X)` (CommonMark image
+/// syntax pointing at a non-image extension) to `[alt](file.X "moss:kind=…")`.
+///
+/// Skips matches inside fenced/indented code blocks (identified via
+/// pulldown-cmark byte ranges). Image-extension URLs pass through unchanged.
+/// Non-`moss:` titles are preserved; empty titles (`""`) trigger the
+/// escape hatch (Decision #12).
+///
+/// A trailing Pandoc attribute block `{.class key=value}` immediately after
+/// the `)` is consumed and folded into the rewritten title params (when the
+/// extension swept).
+///
+/// Pure: zero I/O, single string allocation.
+pub fn stage1_sweep(content: &str) -> String {
+    let code_ranges = code_block_ranges(content);
+
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        // Skip code-block ranges wholesale — emit verbatim.
+        if let Some(end) = code_range_at(&code_ranges, i) {
+            // The range starts at-or-before i, ends at end. Append from i to end.
+            // char-aligned: code-block ranges from pulldown-cmark sit on UTF-8
+            // boundaries (the parser reports byte offsets at event-stream
+            // boundaries which are valid UTF-8 indices).
+            #[allow(clippy::string_slice)]
+            out.push_str(&content[i..end]);
+            i = end;
+            continue;
+        }
+
+        // Inline code spans on the current line — opaque to the sweep.
+        // pulldown-cmark's code-block ranges only cover fenced/indented code
+        // blocks, not inline `code` spans. For inline spans we do a quick
+        // backtick walk identical to the wikilink scanner's logic so a
+        // literal `` `![alt](clip.mp4)` `` in prose is preserved.
+        if bytes[i] == b'`' {
+            let run = count_byte_at(bytes, i, b'`');
+            // char-aligned: backticks are ASCII (single-byte) — boundary safe.
+            #[allow(clippy::string_slice)]
+            out.push_str(&content[i..i + run]);
+            i += run;
+            // Walk forward to a closing run of equal length.
+            while i < len {
+                if bytes[i] == b'`' {
+                    let close = count_byte_at(bytes, i, b'`');
+                    #[allow(clippy::string_slice)]
+                    out.push_str(&content[i..i + close]);
+                    i += close;
+                    if close == run {
+                        break;
+                    }
+                } else {
+                    let step = utf8_char_len(bytes[i]);
+                    #[allow(clippy::string_slice)]
+                    out.push_str(&content[i..i + step]);
+                    i += step;
+                }
+            }
+            continue;
+        }
+
+        // Image syntax: `![alt](url[ "title"])` possibly followed by `{attrs}`.
+        if bytes[i] == b'!' && i + 1 < len && bytes[i + 1] == b'[' {
+            #[allow(clippy::string_slice)]
+            if let Some(parsed) = parse_native_image(&content[i..]) {
+                let total = parsed.consumed;
+                // Optional trailing `{...}` directly after the closing `)`.
+                let chars_from_attr_start = &content[i + total..];
+                let attr_consumed = match try_consume_attr_block_str(chars_from_attr_start) {
+                    Some((_block, consumed)) => consumed,
+                    None => 0,
+                };
+                let attr_text = if attr_consumed > 0 {
+                    Some(&chars_from_attr_start[..attr_consumed])
+                } else {
+                    None
+                };
+
+                match sweep_decision(&parsed) {
+                    SweepDecision::Skip => {
+                        #[allow(clippy::string_slice)]
+                        out.push_str(&content[i..i + total]);
+                        i += total;
+                        // Leave the trailing `{...}` for the wikilink pass —
+                        // but the wikilink pass only fires on `]]` closes, so
+                        // for native-image syntax we leave `{...}` literal.
+                        continue;
+                    }
+                    SweepDecision::Rewrite(kind) => {
+                        let rewritten = rewrite_native_image(&parsed, kind, attr_text);
+                        out.push_str(&rewritten);
+                        i += total + attr_consumed;
+                        continue;
+                    }
+                }
+            }
+            // Not a well-formed image span — emit `!` and walk on.
+            out.push('!');
+            i += 1;
+            continue;
+        }
+
+        let step = utf8_char_len(bytes[i]);
+        // char-aligned: step matches the UTF-8 char length at bytes[i].
+        #[allow(clippy::string_slice)]
+        out.push_str(&content[i..i + step]);
+        i += step;
+    }
+
+    out
+}
+
+/// A single native CommonMark image match.
+struct NativeImage<'a> {
+    /// Alt text (between `[` and `]`).
+    alt: &'a str,
+    /// URL (between `(` and the title-or-`)`).
+    url: &'a str,
+    /// Optional title (between the quotes).
+    title: Option<&'a str>,
+    /// Whether the title attribute was present (even if empty).
+    title_present: bool,
+    /// Number of bytes consumed from the start of the slice.
+    consumed: usize,
+}
+
+/// Parse a single `![alt](url[ "title"])` starting at index 0. Returns None
+/// if the shape is not a well-formed CommonMark image span.
+///
+/// Mirrors the regex `!\[(?P<alt>[^\]]*)\]\((?P<url>[^\s)]+)(?:\s+"(?P<title>[^"]*)")?\)`
+/// from the plan, but hand-written so we don't take a regex dep.
+//
+// char-aligned: every byte index we slice into `s` corresponds to an ASCII
+// delimiter we matched (`!`, `[`, `]`, `(`, `)`, `"`, whitespace) or to the
+// position immediately after one. UTF-8 multi-byte content inside `alt`,
+// `url`, `title` is preserved by slicing between two such boundaries.
+#[allow(clippy::string_slice)]
+fn parse_native_image(s: &str) -> Option<NativeImage<'_>> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 5 || bytes[0] != b'!' || bytes[1] != b'[' {
+        return None;
+    }
+    // Find `]` — alt text may not contain unescaped `]`. We accept escaped
+    // `\]` for parity with CommonMark but the common case is no brackets.
+    let mut j = 2;
+    let alt_start = 2;
+    while j < bytes.len() {
+        if bytes[j] == b'\\' && j + 1 < bytes.len() {
+            j += 2;
+            continue;
+        }
+        if bytes[j] == b']' {
+            break;
+        }
+        j += 1;
+    }
+    if j >= bytes.len() || bytes[j] != b']' {
+        return None;
+    }
+    let alt = &s[alt_start..j];
+    // Must be immediately followed by `(`.
+    j += 1;
+    if j >= bytes.len() || bytes[j] != b'(' {
+        return None;
+    }
+    j += 1;
+    // URL: read until whitespace or `)`.
+    let url_start = j;
+    while j < bytes.len() && bytes[j] != b' ' && bytes[j] != b'\t' && bytes[j] != b')' {
+        j += 1;
+    }
+    if j >= bytes.len() {
+        return None;
+    }
+    let url = &s[url_start..j];
+
+    // Optional title: skip whitespace, then a quoted string.
+    let mut title: Option<&str> = None;
+    let mut title_present = false;
+    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+        j += 1;
+    }
+    if j < bytes.len() && bytes[j] == b'"' {
+        title_present = true;
+        j += 1;
+        let t_start = j;
+        while j < bytes.len() && bytes[j] != b'"' {
+            if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                j += 2;
+                continue;
+            }
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'"' {
+            return None;
+        }
+        title = Some(&s[t_start..j]);
+        j += 1;
+        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+            j += 1;
+        }
+    }
+    if j >= bytes.len() || bytes[j] != b')' {
+        return None;
+    }
+    j += 1;
+    Some(NativeImage {
+        alt,
+        url,
+        title,
+        title_present,
+        consumed: j,
+    })
+}
+
+enum SweepDecision {
+    Skip,
+    Rewrite(&'static str),
+}
+
+fn sweep_decision(img: &NativeImage<'_>) -> SweepDecision {
+    // Strip query/fragment from url before extracting extension.
+    let path = img.url.split(['?', '#']).next().unwrap_or(img.url);
+    let ext = path
+        .rsplit('.')
+        .next()
+        .filter(|e| !e.is_empty() && *e != path)
+        .map(str::to_ascii_lowercase);
+    let ext = match ext {
+        Some(e) => e,
+        None => return SweepDecision::Skip, // no extension to dispatch
+    };
+
+    // Image extensions: NEVER rewritten (Tag::Image at Stage 2 handles them).
+    if matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp"
+    ) {
+        return SweepDecision::Skip;
+    }
+
+    // Empty-title escape hatch (Decision #12).
+    if img.title_present && img.title.map(str::is_empty).unwrap_or(false) {
+        return SweepDecision::Skip;
+    }
+
+    // Non-empty native title that isn't `moss:` — author owns this title.
+    if let Some(t) = img.title {
+        if !t.is_empty() && !t.starts_with("moss:") {
+            return SweepDecision::Skip;
+        }
+    }
+
+    match extension_to_kind(&ext) {
+        Some(kind) => SweepDecision::Rewrite(kind),
+        None => SweepDecision::Skip,
+    }
+}
+
+/// Rewrite a native image to `[alt](url "moss:kind=<kind> …")`, folding
+/// any trailing `{...}` Pandoc attribute block into the title params.
+fn rewrite_native_image(
+    img: &NativeImage<'_>,
+    kind: &'static str,
+    attr_text: Option<&str>,
+) -> String {
+    use crate::resolve::title_params::{emit_title, TitleParams};
+
+    let mut params = TitleParams::default();
+    params.insert("kind", kind);
+
+    // If there's a pre-existing moss: title, fold its params first so the
+    // attribute block can still override on conflict.
+    if let Some(t) = img.title {
+        if let Some(existing) = crate::resolve::title_params::parse_title(t) {
+            for (k, v) in &existing.params {
+                if k == "kind" {
+                    continue;
+                }
+                params.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    if let Some(text) = attr_text {
+        if let Ok(block) = crate::ast::attrs::parse_attrs(text) {
+            // Fold classes / kvs into params — reuse the renderer-side fold
+            // policy via the public helper in embed_renderer.
+            super::embed_renderer::fold_attrs_into_params(&block, &mut params);
+        }
+    }
+
+    let title = emit_title(&params);
+    format!(
+        r#"[{}]({} "{}")"#,
+        markdown_escape_alt_safe(img.alt),
+        img.url,
+        markdown_escape_title_safe(&title),
+    )
+}
+
+fn markdown_escape_alt_safe(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
+fn markdown_escape_title_safe(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Length in bytes of the UTF-8 character whose leading byte is `b`.
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b < 0xC0 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
+fn count_byte_at(bytes: &[u8], start: usize, b: u8) -> usize {
+    bytes[start..].iter().take_while(|&&x| x == b).count()
+}
+
+/// Try to consume `{...}` at the start of `s`. Returns the parsed block and
+/// the number of bytes consumed. Pandoc attribute blocks do not nest; we
+/// scan to the first unquoted `}`.
+fn try_consume_attr_block_str(
+    s: &str,
+) -> Option<(crate::ast::attrs::AttrBlock, usize)> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes[0] != b'{' {
+        return None;
+    }
+    let mut j = 1;
+    let mut in_quote = false;
+    while j < bytes.len() {
+        let c = bytes[j];
+        if in_quote {
+            if c == b'\\' && j + 1 < bytes.len() {
+                j += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_quote = false;
+            }
+            j += 1;
+            continue;
+        }
+        if c == b'"' {
+            in_quote = true;
+            j += 1;
+            continue;
+        }
+        if c == b'}' {
+            // char-aligned: `{`, `}`, `"` are ASCII; j+1 is on a char boundary.
+            #[allow(clippy::string_slice)]
+            let raw = &s[..=j];
+            return crate::ast::attrs::parse_attrs(raw)
+                .ok()
+                .map(|block| (block, j + 1));
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Returns the closing offset of a code-block range that contains `offset`,
+/// or `None` if `offset` is outside all code-block ranges.
+///
+/// `ranges` is sorted by start offset (the producer always emits them in
+/// document order); we linearly scan, which is fine for the small N of
+/// code blocks per document.
+fn code_range_at(ranges: &[(usize, usize)], offset: usize) -> Option<usize> {
+    for &(start, end) in ranges {
+        if offset >= start && offset < end {
+            return Some(end);
+        }
+        if start > offset {
+            break;
+        }
+    }
+    None
+}
+
+/// Walk `content` via pulldown-cmark and collect byte ranges of code blocks
+/// (fenced + indented). Inline code spans are NOT included — those are
+/// handled by the backtick walker inside `stage1_sweep`.
+fn code_block_ranges(content: &str) -> Vec<(usize, usize)> {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut in_code_block: Option<usize> = None;
+
+    let parser = Parser::new_ext(content, Options::all()).into_offset_iter();
+    for (event, range) in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = Some(range.start);
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = in_code_block.take() {
+                    ranges.push((start, range.end));
+                }
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1514,6 +1981,143 @@ mod tests {
         // And ensure the resulting `class=` doesn't leak into extras —
         // we should see classes=… not class=… in the moss-title.
         assert!(!shorthand.contains(" class="), "got: {}", shorthand);
+    }
+
+    // -- Task E2: Stage 1 sweep over native ![alt](file.X) by extension --
+
+    #[test]
+    fn native_image_syntax_video_extension_translates_to_link() {
+        let input = "Some text.\n\n![alt](clip.mp4)\n\nMore.";
+        let out = stage1_sweep(input);
+        assert!(
+            out.contains(r#"[alt](clip.mp4 "moss:kind=video")"#),
+            "got: {}",
+            out
+        );
+        assert!(
+            !out.contains("![alt](clip.mp4)"),
+            "image syntax should be rewritten; got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn native_image_syntax_image_extension_unchanged() {
+        let input = "![alt](photo.jpg)";
+        let out = stage1_sweep(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn native_image_with_pandoc_attrs_video_extension() {
+        let input = "![alt](clip.mp4){.large}";
+        let out = stage1_sweep(input);
+        // Translates to link AND folds {.large} into title classes.
+        assert!(out.contains(r#"[alt](clip.mp4 ""#), "got: {}", out);
+        assert!(out.contains("kind=video"), "got: {}", out);
+        assert!(out.contains("classes=large"), "got: {}", out);
+        // Trailing `{...}` was consumed.
+        assert!(
+            !out.contains("{.large}"),
+            "attr block should be consumed; got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn native_image_empty_title_escape_hatch() {
+        // Decision #12: empty title means "native CommonMark, no moss processing".
+        let input = r#"![alt](clip.mp4 "")"#;
+        let out = stage1_sweep(input);
+        assert_eq!(out, input, "empty title is an explicit escape hatch");
+    }
+
+    #[test]
+    fn native_image_native_title_unchanged() {
+        let input = r#"![alt](clip.mp4 "Real title")"#;
+        let out = stage1_sweep(input);
+        assert_eq!(
+            out, input,
+            "non-moss: title means author owns the URL/title; got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn native_image_audio_extension_translates_to_link() {
+        let input = "![](song.mp3)";
+        let out = stage1_sweep(input);
+        assert!(out.contains(r#"moss:kind=audio"#), "got: {}", out);
+    }
+
+    #[test]
+    fn native_image_pdf_extension_translates_to_link() {
+        let input = "![](report.pdf)";
+        let out = stage1_sweep(input);
+        assert!(out.contains(r#"moss:kind=pdf"#), "got: {}", out);
+    }
+
+    #[test]
+    fn native_image_html_extension_translates_to_iframe() {
+        let input = "![](widget.html)";
+        let out = stage1_sweep(input);
+        assert!(out.contains(r#"moss:kind=iframe"#), "got: {}", out);
+    }
+
+    /// Stage 1 sweep must NOT touch `![alt](clip.mp4)` inside a fenced
+    /// code block — pulldown-cmark identifies the range and the sweep
+    /// skips it wholesale.
+    #[test]
+    fn native_image_inside_fenced_code_block_preserved() {
+        let input = "Before.\n\n```\n![alt](clip.mp4)\n```\n\nAfter.";
+        let out = stage1_sweep(input);
+        assert!(out.contains("![alt](clip.mp4)"), "got: {}", out);
+        assert!(!out.contains("moss:kind="), "got: {}", out);
+    }
+
+    /// Stage 1 sweep skips `![alt](...)` inside inline code spans.
+    #[test]
+    fn native_image_inside_inline_code_preserved() {
+        let input = "Use `![alt](clip.mp4)` literally.";
+        let out = stage1_sweep(input);
+        assert_eq!(out, input);
+    }
+
+    /// Existing `moss:` title param should be preserved/extended, not
+    /// dropped, when the sweep rewrites by extension. (Stage 0 idempotency.)
+    #[test]
+    fn native_image_existing_moss_title_preserved() {
+        let input = r#"![](clip.mp4 "moss:width=wide")"#;
+        let out = stage1_sweep(input);
+        // Both params should be present.
+        assert!(out.contains("kind=video"), "got: {}", out);
+        assert!(out.contains("width=wide"), "got: {}", out);
+        // And it now uses link syntax, not image syntax.
+        assert!(out.starts_with("[]("), "got: {}", out);
+    }
+
+    /// 3D / glb extension routes to "3d" kind.
+    #[test]
+    fn native_image_glb_extension_translates_to_3d() {
+        let input = "![](model.glb)";
+        let out = stage1_sweep(input);
+        assert!(out.contains(r#"moss:kind=3d"#), "got: {}", out);
+    }
+
+    /// Stage 1 sweep also handles `.ipynb` (notebook).
+    #[test]
+    fn native_image_ipynb_extension_translates_to_notebook() {
+        let input = "![](notes.ipynb)";
+        let out = stage1_sweep(input);
+        assert!(out.contains(r#"moss:kind=notebook"#), "got: {}", out);
+    }
+
+    /// Stage 1 sweep also handles `.csv` (table).
+    #[test]
+    fn native_image_csv_extension_translates_to_table() {
+        let input = "![](data.csv)";
+        let out = stage1_sweep(input);
+        assert!(out.contains(r#"moss:kind=table"#), "got: {}", out);
     }
 
     #[test]
