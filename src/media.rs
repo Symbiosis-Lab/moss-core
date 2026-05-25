@@ -105,6 +105,47 @@ impl Position {
 }
 
 // ---------------------------------------------------------------------------
+// AlignSide — editorial runaround alignment (text wraps around half-width image)
+// ---------------------------------------------------------------------------
+
+/// Image alignment for editorial runaround layout. Mirrors WordPress's
+/// `alignleft` / `alignright` block-editor convention; the moss CSS class
+/// is `moss-align-left` / `moss-align-right`. Float behavior plus mobile
+/// collapse (≤48rem) live in `src-tauri/src/assets/css/site.css`.
+///
+/// Hyphenated `align-left` is the canonical pipe keyword; unhyphenated
+/// `alignleft` (matching the WP class name) is a forgiveness alias.
+/// Bare `left` / `right` remain object-position keywords (see [`Position`]);
+/// the `align-` prefix disambiguates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignSide {
+    Left,
+    Right,
+}
+
+impl AlignSide {
+    /// Parse from a keyword string (case-insensitive). Accepts hyphenated
+    /// `align-left` and concatenated `alignleft` forms.
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "align-left" | "alignleft" => Some(AlignSide::Left),
+            "align-right" | "alignright" => Some(AlignSide::Right),
+            _ => None,
+        }
+    }
+
+    /// CSS class name emitted on the `<img>` (and escalated to the
+    /// wrapping `<figure>` via `:has()` in site.css). Kept in lockstep
+    /// with the entries in `crate::contract::components::COMPONENTS`.
+    pub fn css_class(self) -> &'static str {
+        match self {
+            AlignSide::Left => "moss-align-left",
+            AlignSide::Right => "moss-align-right",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MediaAttrs
 // ---------------------------------------------------------------------------
 
@@ -113,19 +154,21 @@ impl Position {
 pub struct MediaAttrs {
     pub fit: Option<Fit>,
     pub position: Option<Position>,
+    pub align: Option<AlignSide>,
 }
 
 impl MediaAttrs {
     /// True when no display attributes are set.
     pub fn is_empty(&self) -> bool {
-        self.fit.is_none() && self.position.is_none()
+        self.fit.is_none() && self.position.is_none() && self.align.is_none()
     }
 
     /// Build an inline CSS style string, or `None` if empty.
     ///
-    /// Example output: `"object-fit:contain;object-position:left"`
+    /// Example output: `"object-fit:contain;object-position:left"`.
+    /// `align` does NOT contribute — it emits as a class (see [`Self::css_class`]).
     pub fn to_inline_style(&self) -> Option<String> {
-        if self.is_empty() {
+        if self.fit.is_none() && self.position.is_none() {
             return None;
         }
 
@@ -137,6 +180,13 @@ impl MediaAttrs {
             parts.push(format!("object-position:{}", pos.to_css_value()));
         }
         Some(parts.join(";"))
+    }
+
+    /// CSS class name for the emitter, or `None` if no class-bearing
+    /// attribute is set. Today only `align` produces a class; future
+    /// class-bearing attributes can extend this method.
+    pub fn css_class(&self) -> Option<&'static str> {
+        self.align.map(AlignSide::css_class)
     }
 }
 
@@ -188,6 +238,7 @@ pub fn split_pipe(raw: &str) -> (&str, &str) {
 pub fn parse_media_attrs(raw: &str) -> MediaAttrs {
     let mut fit: Option<Fit> = None;
     let mut position: Option<Position> = None;
+    let mut align: Option<AlignSide> = None;
 
     let tokens: Vec<&str> = raw.split_whitespace().collect();
     let mut i = 0;
@@ -219,11 +270,18 @@ pub fn parse_media_attrs(raw: &str) -> MediaAttrs {
             continue;
         }
 
+        // Single-token align (editorial runaround: align-left / align-right).
+        if let Some(side) = AlignSide::from_keyword(token) {
+            align = Some(side);
+            i += 1;
+            continue;
+        }
+
         // Unknown token — skip.
         i += 1;
     }
 
-    MediaAttrs { fit, position }
+    MediaAttrs { fit, position, align }
 }
 
 /// Recognize the spec § P9 width tokens (`body | wide | page | screen | full`).
@@ -317,6 +375,11 @@ pub fn is_all_display_keywords(text: &str) -> bool {
             continue;
         }
 
+        if AlignSide::from_keyword(tokens[i]).is_some() {
+            i += 1;
+            continue;
+        }
+
         return false;
     }
 
@@ -341,19 +404,26 @@ pub fn html_escape(s: &str) -> String {
     out
 }
 
-/// Format an `<img>` tag with optional inline style from [`MediaAttrs`].
+/// Format an `<img>` tag with optional class + inline style from [`MediaAttrs`].
 ///
-/// All attribute values are HTML-escaped.
+/// All attribute values are HTML-escaped. Attribute order: `src`, `alt`,
+/// `class` (if any), `style` (if any), self-closing slash. The class+style
+/// pair is shape-locked by snapshot tests in `embed_renderer`.
 pub fn format_img_tag(src: &str, alt: &str, attrs: &MediaAttrs) -> String {
     let escaped_src = html_escape(src);
     let escaped_alt = html_escape(alt);
-    match attrs.to_inline_style() {
-        Some(style) => format!(
-            "<img src=\"{}\" alt=\"{}\" style=\"{}\" />",
-            escaped_src, escaped_alt, style
-        ),
-        None => format!("<img src=\"{}\" alt=\"{}\" />", escaped_src, escaped_alt),
-    }
+    let class_attr = attrs
+        .css_class()
+        .map(|c| format!(" class=\"{}\"", c))
+        .unwrap_or_default();
+    let style_attr = attrs
+        .to_inline_style()
+        .map(|s| format!(" style=\"{}\"", s))
+        .unwrap_or_default();
+    format!(
+        "<img src=\"{}\" alt=\"{}\"{}{} />",
+        escaped_src, escaped_alt, class_attr, style_attr
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +514,30 @@ mod tests {
         assert_eq!(Fit::from_keyword("cover "), None); // trailing space — not trimmed
     }
 
+    // -- AlignSide ----------------------------------------------------------
+
+    #[test]
+    fn test_align_side_from_keyword() {
+        assert_eq!(AlignSide::from_keyword("align-left"), Some(AlignSide::Left));
+        assert_eq!(AlignSide::from_keyword("align-right"), Some(AlignSide::Right));
+        // WordPress-style unhyphenated alias.
+        assert_eq!(AlignSide::from_keyword("alignleft"), Some(AlignSide::Left));
+        assert_eq!(AlignSide::from_keyword("alignright"), Some(AlignSide::Right));
+        // Case-insensitive.
+        assert_eq!(AlignSide::from_keyword("ALIGN-LEFT"), Some(AlignSide::Left));
+        assert_eq!(AlignSide::from_keyword("AlignRight"), Some(AlignSide::Right));
+        // Bare directional keywords remain Position, not AlignSide.
+        assert_eq!(AlignSide::from_keyword("left"), None);
+        assert_eq!(AlignSide::from_keyword("right"), None);
+        assert_eq!(AlignSide::from_keyword(""), None);
+    }
+
+    #[test]
+    fn test_align_side_css_class() {
+        assert_eq!(AlignSide::Left.css_class(), "moss-align-left");
+        assert_eq!(AlignSide::Right.css_class(), "moss-align-right");
+    }
+
     // -- Position -----------------------------------------------------------
 
     #[test]
@@ -505,18 +599,21 @@ mod tests {
         let empty = MediaAttrs {
             fit: None,
             position: None,
+            align: None,
         };
         assert!(empty.is_empty());
 
         let with_fit = MediaAttrs {
             fit: Some(Fit::Cover),
             position: None,
+            align: None,
         };
         assert!(!with_fit.is_empty());
 
         let with_pos = MediaAttrs {
             fit: None,
             position: Some(Position::Center),
+            align: None,
         };
         assert!(!with_pos.is_empty());
     }
@@ -526,6 +623,7 @@ mod tests {
         let attrs = MediaAttrs {
             fit: None,
             position: None,
+            align: None,
         };
         assert_eq!(attrs.to_inline_style(), None);
     }
@@ -535,6 +633,7 @@ mod tests {
         let attrs = MediaAttrs {
             fit: Some(Fit::Contain),
             position: None,
+            align: None,
         };
         assert_eq!(attrs.to_inline_style(), Some("object-fit:contain".into()));
     }
@@ -544,6 +643,7 @@ mod tests {
         let attrs = MediaAttrs {
             fit: None,
             position: Some(Position::Left),
+            align: None,
         };
         assert_eq!(
             attrs.to_inline_style(),
@@ -556,6 +656,7 @@ mod tests {
         let attrs = MediaAttrs {
             fit: Some(Fit::Cover),
             position: Some(Position::TopLeft),
+            align: None,
         };
         assert_eq!(
             attrs.to_inline_style(),
@@ -896,6 +997,7 @@ mod tests {
         let attrs = MediaAttrs {
             fit: Some(Fit::Contain),
             position: Some(Position::Left),
+            align: None,
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt text", &attrs),
@@ -908,6 +1010,7 @@ mod tests {
         let attrs = MediaAttrs {
             fit: None,
             position: None,
+            align: None,
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
@@ -916,10 +1019,68 @@ mod tests {
     }
 
     #[test]
+    fn test_format_img_tag_align_only() {
+        let attrs = MediaAttrs {
+            fit: None,
+            position: None,
+            align: Some(AlignSide::Left),
+        };
+        assert_eq!(
+            format_img_tag("photo.jpg", "alt", &attrs),
+            "<img src=\"photo.jpg\" alt=\"alt\" class=\"moss-align-left\" />"
+        );
+    }
+
+    #[test]
+    fn test_format_img_tag_align_plus_style() {
+        // Align (class) composes with fit/position (inline style); both attrs
+        // emit in canonical order: class before style.
+        let attrs = MediaAttrs {
+            fit: Some(Fit::Cover),
+            position: None,
+            align: Some(AlignSide::Right),
+        };
+        assert_eq!(
+            format_img_tag("photo.jpg", "alt", &attrs),
+            "<img src=\"photo.jpg\" alt=\"alt\" class=\"moss-align-right\" style=\"object-fit:cover\" />"
+        );
+    }
+
+    #[test]
+    fn test_parse_media_attrs_align_alone() {
+        let attrs = parse_media_attrs("align-left");
+        assert_eq!(attrs.align, Some(AlignSide::Left));
+        assert_eq!(attrs.fit, None);
+        assert_eq!(attrs.position, None);
+    }
+
+    #[test]
+    fn test_parse_media_attrs_align_with_cover() {
+        // Order-free composition with Fit.
+        let a = parse_media_attrs("cover align-right");
+        assert_eq!(a.fit, Some(Fit::Cover));
+        assert_eq!(a.align, Some(AlignSide::Right));
+
+        let b = parse_media_attrs("align-right cover");
+        assert_eq!(b, a);
+    }
+
+    #[test]
+    fn test_is_all_display_keywords_align() {
+        assert!(is_all_display_keywords("align-left"));
+        assert!(is_all_display_keywords("align-right"));
+        assert!(is_all_display_keywords("cover align-left"));
+        assert!(is_all_display_keywords("align-left cover"));
+        // Composes with Position too.
+        assert!(is_all_display_keywords("align-left top"));
+    }
+
+    #[test]
     fn test_format_img_tag_escapes_attributes() {
         let attrs = MediaAttrs {
             fit: None,
             position: Some(Position::Left),
+            align: None,
         };
         assert_eq!(
             format_img_tag("img\"bad.jpg", "a\"<b>", &attrs),

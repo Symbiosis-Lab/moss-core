@@ -332,22 +332,30 @@ impl EmbedRenderer for ImageRenderer {
                 w,
                 html_escape(&url),
             ),
-            // Width + display keywords (`![[photo.jpg|cover|full]]`) — the
-            // display keywords land on the inner img as inline style; the
-            // figure carries data-width. Filename stem becomes alt for
-            // assistive tech (matches the no-width display-keyword arm).
+            // Width + display keywords (`![[photo.jpg|cover|full]]` or
+            // `![[photo.jpg|align-left|wide]]`) — fit/position land on the
+            // inner img as inline style; align lands on the inner img as a
+            // class; the figure carries data-width. Filename stem becomes
+            // alt for assistive tech (matches the no-width display-keyword
+            // arm). Attribute order is locked by snapshot tests below:
+            // `src` → `alt` → `class` → `style`.
             (Some(w), Some(rest)) if is_all_display_keywords(rest) => {
                 let alt = file_stem(embed.resolved_path);
                 let attrs = parse_media_attrs(rest);
+                let class_attr = attrs
+                    .css_class()
+                    .map(|c| format!(" class=\"{}\"", c))
+                    .unwrap_or_default();
                 let style_attr = attrs
                     .to_inline_style()
                     .map(|s| format!(" style=\"{}\"", html_escape(&s)))
                     .unwrap_or_default();
                 format!(
-                    r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="{}"{} /></figure>"#,
+                    r#"<figure class="moss-image" data-width="{}"><img src="{}" alt="{}"{}{} /></figure>"#,
                     w,
                     html_escape(&url),
                     html_escape(&alt),
+                    class_attr,
                     style_attr,
                 )
             }
@@ -1099,6 +1107,43 @@ mod tests {
         assert!(out.contains(r#"alt="photo""#), "got: {}", out);
         // No figcaption — display keywords are layout, not caption text.
         assert!(!out.contains("<figcaption>"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_align_left_alone() {
+        // `align-left` is a display keyword recognized by parse_media_attrs;
+        // emits class="moss-align-left" on the inner img via format_img_tag.
+        let out = image_inline(Some("align-left"));
+        assert!(out.contains(r#"class="moss-align-left""#),
+                "expected align class, got: {}", out);
+        // No figure wrapper without width.
+        assert!(!out.starts_with("<figure"), "got: {}", out);
+        // No figcaption — align is layout, not caption.
+        assert!(!out.contains("<figcaption>"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_align_right_with_width() {
+        // `align-right|wide` composes: figure carries data-width, inner img
+        // carries the align class.
+        let out = image_inline(Some("align-right|wide"));
+        assert!(out.contains(r#"data-width="wide""#),
+                "expected data-width=wide on figure, got: {}", out);
+        assert!(out.contains(r#"class="moss-align-right""#),
+                "expected align class on inner img, got: {}", out);
+        assert!(out.starts_with(r#"<figure class="moss-image" data-width="wide">"#),
+                "got: {}", out);
+    }
+
+    #[test]
+    fn test_image_renderer_align_composes_with_cover_and_width() {
+        // `align-left cover|full` — cover stays inline-style, align is class.
+        let out = image_inline(Some("align-left cover|full"));
+        assert!(out.contains(r#"data-width="screen""#), "got: {}", out);
+        assert!(out.contains(r#"class="moss-align-left""#),
+                "expected align class, got: {}", out);
+        assert!(out.contains("object-fit:cover"),
+                "expected cover style, got: {}", out);
     }
 
     #[test]
