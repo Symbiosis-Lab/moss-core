@@ -8,6 +8,7 @@
 //! **Architectural boundary:** Downstream code (markdown.rs, render.rs) receives
 //! already-resolved paths. Do NOT add wikilink parsing or resolution elsewhere.
 
+use crate::asset_snapshot::AssetSnapshot;
 use crate::content_graph::ContentGraph;
 
 pub mod block_refs;
@@ -110,6 +111,44 @@ pub fn resolve_content_with_handlers(
     file_reader: &dyn Fn(&str) -> Option<String>,
     registry: &registry::RendererRegistry,
     handlers: &embeds::MarkerHandlers<'_>,
+) -> ResolveResult {
+    // Default-empty snapshot for callers that don't yet thread asset data.
+    // Phase 0 Task F1: the snapshot-aware variant exists below and is the
+    // entry point production code should migrate to as Phase 1 lights up
+    // consumption.
+    let empty_snapshot = AssetSnapshot::new();
+    resolve_content_with_handlers_and_snapshot(
+        source_path,
+        raw_markdown,
+        graph,
+        file_reader,
+        registry,
+        handlers,
+        &empty_snapshot,
+    )
+}
+
+/// Variant of [`resolve_content_with_handlers`] that additionally threads
+/// an [`AssetSnapshot`] through the resolve pipeline.
+///
+/// **Phase 0**: the snapshot is threaded but **not yet consumed** by any
+/// resolver — Stage 1 still emits markdown without reading variants/dims.
+/// Phase 1 wires the consumption side in moss-core's synthesizer. The
+/// signature exists now so src-tauri's build pipeline can populate the
+/// snapshot (from `MediaDimensionLookup` + `AssetRegistry`) and prove the
+/// threading path before consumers depend on it.
+///
+/// See `docs/plans/2026-05-25-phase0-asset-snapshot-and-translator.md`
+/// § Phase F for the thread-first / consume-later rationale.
+pub fn resolve_content_with_handlers_and_snapshot(
+    source_path: &str,
+    raw_markdown: &str,
+    graph: &ContentGraph,
+    file_reader: &dyn Fn(&str) -> Option<String>,
+    registry: &registry::RendererRegistry,
+    handlers: &embeds::MarkerHandlers<'_>,
+    // Phase 0: threaded but not yet consumed. Phase 1 wires up reads.
+    _assets: &AssetSnapshot,
 ) -> ResolveResult {
     // Step 1: Separate frontmatter from body.
     let (frontmatter, body) = split_frontmatter(raw_markdown);
