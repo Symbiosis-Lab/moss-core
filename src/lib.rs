@@ -29,6 +29,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod ast;
+pub mod asset_snapshot;
 pub mod content_graph;
 pub mod contract;
 pub mod csv_table;
