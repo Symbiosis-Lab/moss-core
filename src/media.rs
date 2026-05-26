@@ -115,10 +115,16 @@ impl Position {
 /// is `moss-align-left` / `moss-align-right`. Float behavior plus mobile
 /// collapse (≤48rem) live in `src-tauri/src/assets/css/site.css`.
 ///
-/// Hyphenated `align-left` is the canonical pipe keyword; unhyphenated
+/// Hyphenated `align-left` is the canonical pipe-keyword form; unhyphenated
 /// `alignleft` (matching the WP class name) is a forgiveness alias.
-/// Bare `left` / `right` remain object-position keywords (see [`Position`]);
-/// the `align-` prefix disambiguates.
+/// Bare `left` / `right` are also accepted, because Stage 1 emits them as
+/// the value of an explicit `align=` key in TitleParams (e.g. `align=left`),
+/// where ambiguity with [`Position`]'s `left` / `right` does not arise.
+///
+/// Note: in [`parse_media_attrs`]'s space-separated keyword parser, bare
+/// `left` / `right` still match [`Position::from_keyword`] FIRST and never
+/// reach this function, so the disambiguation rule for the pipe-keyword
+/// layer is preserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlignSide {
     Left,
@@ -126,12 +132,16 @@ pub enum AlignSide {
 }
 
 impl AlignSide {
-    /// Parse from a keyword string (case-insensitive). Accepts hyphenated
-    /// `align-left` and concatenated `alignleft` forms.
+    /// Parse from a keyword string (case-insensitive).
+    ///
+    /// Accepts:
+    /// - hyphenated `align-left` / `align-right` (canonical pipe keyword)
+    /// - concatenated `alignleft` / `alignright` (WordPress class alias)
+    /// - bare `left` / `right` (Stage 1 TitleParams `align=` value)
     pub fn from_keyword(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "align-left" | "alignleft" => Some(AlignSide::Left),
-            "align-right" | "alignright" => Some(AlignSide::Right),
+            "align-left" | "alignleft" | "left" => Some(AlignSide::Left),
+            "align-right" | "alignright" | "right" => Some(AlignSide::Right),
             _ => None,
         }
     }
@@ -593,10 +603,38 @@ mod tests {
         // Case-insensitive.
         assert_eq!(AlignSide::from_keyword("ALIGN-LEFT"), Some(AlignSide::Left));
         assert_eq!(AlignSide::from_keyword("AlignRight"), Some(AlignSide::Right));
-        // Bare directional keywords remain Position, not AlignSide.
-        assert_eq!(AlignSide::from_keyword("left"), None);
-        assert_eq!(AlignSide::from_keyword("right"), None);
+        // Empty input never matches.
         assert_eq!(AlignSide::from_keyword(""), None);
+    }
+
+    #[test]
+    fn test_align_side_from_keyword_bare_directional() {
+        // Bare `left` / `right` are accepted because Stage 1 emits them as
+        // the value of an explicit `align=` key (TitleParams), where the
+        // key disambiguates from Position context. The existing pipe-
+        // keyword space-separated parser (`parse_media_attrs`) still tries
+        // Position::from_keyword first and never reaches AlignSide for
+        // bare directionals — see test_parse_attrs_bare_left_is_position.
+        assert_eq!(AlignSide::from_keyword("left"), Some(AlignSide::Left));
+        assert_eq!(AlignSide::from_keyword("right"), Some(AlignSide::Right));
+        assert_eq!(AlignSide::from_keyword("LEFT"), Some(AlignSide::Left));
+        assert_eq!(AlignSide::from_keyword("Right"), Some(AlignSide::Right));
+    }
+
+    #[test]
+    fn test_parse_attrs_bare_left_is_position() {
+        // In the pipe-keyword (`![[img|cover left]]`) parser, bare `left`
+        // / `right` resolve as Position (object-position keyword), NOT as
+        // AlignSide. Position::from_keyword is tried first in
+        // `parse_media_attrs`; this test pins that ordering invariant so
+        // a future refactor that re-orders the matchers will fail loudly.
+        let attrs = parse_media_attrs("left");
+        assert_eq!(attrs.position, Some(Position::Left));
+        assert_eq!(attrs.align, None);
+
+        let attrs = parse_media_attrs("right");
+        assert_eq!(attrs.position, Some(Position::Right));
+        assert_eq!(attrs.align, None);
     }
 
     #[test]
