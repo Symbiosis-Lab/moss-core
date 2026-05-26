@@ -22,6 +22,17 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Width fallback when AssetSnapshot.dimensions has no entry for a source path.
+/// Returned by `MediaDimensionLookup::get` (in src-tauri) and consumed by
+/// image_render's render_img_tag. The 800x600 pair is the legacy aspect ratio
+/// from pre-Phase-2E days; semantically a layout-shift hint, not a real
+/// dimension. Synthesizer callers may choose to omit width/height entirely
+/// when the dimension lookup returns the fallback (honest-degradation path),
+/// but production keeps them today for byte-shape parity with the
+/// (since-retired) Stage 3 regex post-pass.
+pub const FALLBACK_WIDTH: u32 = 800;
+pub const FALLBACK_HEIGHT: u32 = 600;
+
 /// Pre-fetched asset metadata available to moss-core's synthesizer.
 /// Populated by src-tauri's asset pipeline before any markdown processing runs.
 #[derive(Debug, Default, Clone)]
