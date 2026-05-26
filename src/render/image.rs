@@ -1362,13 +1362,12 @@ mod tests {
 
     // --- regex-pass idempotency on synthesizer output ----------------------
     //
-    // The three idempotency tests that lived here through Phase 2E v5 PR2a
-    // were extracted to `src-tauri/tests/image_synth_regex_parity.rs` during
-    // PR2b's move of this file into moss-core: the tests import
-    // `add_image_placeholder_attributes` and `MediaDimensionLookup` from
-    // src-tauri's still-alive `build::media::placeholder`, which moss-core
-    // cannot reach. They will be deleted alongside the surviving regex in
-    // Phase 2E v5 PR5.
+    // Phase 2E v5 PR5 (2026-05-26) retired the Stage 3 regex post-pass; the
+    // image synthesizer in this module is now the sole emitter of width /
+    // height / loading / LQIP / dominant-color attributes for moss-emitted
+    // <img> tags. The three idempotency tests at
+    // `src-tauri/tests/image_synth_regex_parity.rs` that guarded the
+    // regex+synth byte-shape parity were deleted alongside the regex.
 
     // --- TrackingPixel (Phase 2C, 2026-05-25) ---
     //

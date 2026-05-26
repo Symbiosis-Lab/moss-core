@@ -386,12 +386,10 @@ mod tests {
         );
     }
 
-    // Two regex-parity tests (`synth_video_idempotent_under_regex` and
-    // `synth_video_multisource_no_placeholder_attrs`) were extracted to
-    // `src-tauri/tests/video_synth_regex_parity.rs` because they cross the
-    // moss-core / src-tauri boundary (they consume
-    // `moss::build::media::placeholder::add_video_placeholder_attributes`,
-    // which is the src-tauri-side post-pass). moss-core is pure Rust with
-    // zero src-tauri deps, so the boundary check lives on the other side.
-    // PR3 deletes the regex; remove that integration test file then.
+    // Phase 2E v5 PR5 (2026-05-26) retired the Stage 3 regex post-pass; the
+    // video synthesizer in this module is now the sole emitter of width /
+    // height / poster / data-thumb-src / .mov→.mp4 src rewriting for
+    // moss-emitted <video> tags. The two regex-parity tests at
+    // `src-tauri/tests/video_synth_regex_parity.rs` were deleted alongside
+    // the regex.
 }
