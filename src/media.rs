@@ -472,35 +472,82 @@ pub fn html_escape(s: &str) -> String {
     out
 }
 
-/// Format an `<img>` tag with optional class + inline style from [`MediaAttrs`].
+/// Emit a moss-canonical markdown image for the supplied [`MediaAttrs`].
 ///
-/// All attribute values are HTML-escaped. Attribute order: `src`, `alt`,
-/// `class` (if any), `style` (if any), then `extra_attrs` in deterministic
-/// alphabetical order (BTreeMap iteration), self-closing slash. The
-/// class+style pair is shape-locked by snapshot tests in `embed_renderer`.
+/// Phase 2E v5 PR5 follow-up (2026-05-26): retargeted from HTML to markdown
+/// so Stage 1 keeps the moss-image emission inside the markdown stream
+/// instead of injecting opaque `<img>` HTML that bypasses Stage 2 dispatch.
+/// pulldown-cmark parses the output as `Tag::Image { title: "moss:…", … }`
+/// and the synthesizer reads the title params via
+/// [`crate::resolve::title_params::parse_title`].
 ///
-/// The `class` value merges moss-vocabulary classes (e.g. `moss-align-left`)
-/// with author-provided `class_names` (e.g. `theme-rounded`) — see
-/// [`MediaAttrs::class_attr`].
+/// Output shapes:
+///
+/// - `attrs.is_empty()` → plain CommonMark: `![alt](src)` (no title, no
+///   moss-extension marker).
+/// - Otherwise: `![alt](src "moss:K=V K=V…")` where `KVPAIRS` encode the
+///   typed MediaAttrs:
+///   - `align` (`Left`/`Right`) → `align=left|right`
+///   - `fit` (`Cover`/…) → `fit=<css-value>`
+///   - `position` (`TopLeft`/…) → `position=<css-value>`
+///   - `class_names` → `classes="space joined list"` (omitted when empty)
+///   - `extra_attrs` (BTreeMap) → individual `k=v` params per entry
+///
+/// All values are emitted via [`crate::resolve::title_params::emit_title`],
+/// which quotes whitespace-bearing values and BTree-sorts keys for a stable
+/// byte shape. The `src` is NOT URL-escaped (markdown links carry path-like
+/// strings unchanged); callers that pass user input must already have
+/// resolved any wikilink/path-walk to a safe relative URL.
 pub fn format_img_tag(src: &str, alt: &str, attrs: &MediaAttrs) -> String {
-    let escaped_src = html_escape(src);
-    let escaped_alt = html_escape(alt);
-    let class_attr = attrs
-        .class_attr()
-        .map(|c| format!(" class=\"{}\"", html_escape(&c)))
-        .unwrap_or_default();
-    let style_attr = attrs
-        .to_inline_style()
-        .map(|s| format!(" style=\"{}\"", s))
-        .unwrap_or_default();
-    let mut extras = String::new();
-    for (k, v) in &attrs.extra_attrs {
-        extras.push_str(&format!(" {}=\"{}\"", html_escape(k), html_escape(v)));
+    use crate::resolve::title_params::{emit_title, TitleParams};
+
+    if attrs.is_empty() {
+        return format!("![{}]({})", alt, src);
     }
-    format!(
-        "<img src=\"{}\" alt=\"{}\"{}{}{} />",
-        escaped_src, escaped_alt, class_attr, style_attr, extras
-    )
+
+    let mut params = TitleParams::default();
+    if let Some(side) = attrs.align {
+        let kw = match side {
+            AlignSide::Left => "left",
+            AlignSide::Right => "right",
+        };
+        params.insert("align", kw);
+    }
+    if let Some(fit) = attrs.fit {
+        params.insert("fit", fit.to_css_value());
+    }
+    if let Some(pos) = attrs.position {
+        params.insert("position", pos.to_css_value());
+    }
+    if !attrs.class_names.is_empty() {
+        params.insert("classes", attrs.class_names.join(" "));
+    }
+    for (k, v) in &attrs.extra_attrs {
+        // Skip keys that would collide with reserved title-params slots so a
+        // malicious extra_attr can't pretend to be a typed field.
+        if matches!(
+            k.as_str(),
+            "align" | "fit" | "position" | "classes" | "kind" | "width" | "height"
+        ) {
+            continue;
+        }
+        params.insert(k.clone(), v.clone());
+    }
+
+    let title = emit_title(&params);
+    // Markdown image-title delimiter is `"..."`; bare `"` inside the title
+    // would terminate it. CommonMark title escapes consume exactly one char:
+    // `\\` → `\`, `\"` → `"`. So we must escape every `\` before every `"`,
+    // in that order, so the parser recovers the original byte sequence.
+    let mut escaped_title = String::with_capacity(title.len());
+    for ch in title.chars() {
+        match ch {
+            '\\' => escaped_title.push_str("\\\\"),
+            '"' => escaped_title.push_str("\\\""),
+            other => escaped_title.push(other),
+        }
+    }
+    format!("![{}]({} \"{}\")", alt, src, escaped_title)
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,6 +1160,10 @@ mod tests {
 
     #[test]
     fn test_format_img_tag_with_style() {
+        // Post-PR5 (2026-05-26): format_img_tag emits moss-canonical markdown,
+        // not raw HTML. fit/position lower to typed title params, which the
+        // Stage 2 synth dispatcher consumes via image_typed_fields_from_params.
+        // Title-params keys are alphabetised by `TitleParams`'s BTreeMap.
         let attrs = MediaAttrs {
             fit: Some(Fit::Contain),
             position: Some(Position::Left),
@@ -1122,12 +1173,14 @@ mod tests {
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt text", &attrs),
-            "<img src=\"photo.jpg\" alt=\"alt text\" style=\"object-fit:contain;object-position:left\" />"
+            "![alt text](photo.jpg \"moss:fit=contain position=left\")"
         );
     }
 
     #[test]
     fn test_format_img_tag_no_style() {
+        // No display attrs → plain CommonMark image, no title (no moss-extension
+        // marker so the Stage 2 dispatcher leaves the byte shape as-is).
         let attrs = MediaAttrs {
             fit: None,
             position: None,
@@ -1137,7 +1190,7 @@ mod tests {
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
-            "<img src=\"photo.jpg\" alt=\"alt\" />"
+            "![alt](photo.jpg)"
         );
     }
 
@@ -1152,14 +1205,15 @@ mod tests {
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
-            "<img src=\"photo.jpg\" alt=\"alt\" class=\"moss-align-left\" />"
+            "![alt](photo.jpg \"moss:align=left\")"
         );
     }
 
     #[test]
     fn test_format_img_tag_align_plus_style() {
-        // Align (class) composes with fit/position (inline style); both attrs
-        // emit in canonical order: class before style.
+        // Align (typed param) composes with fit/position (typed params). All
+        // three round-trip through TitleParams and reach the Stage 2 synth
+        // dispatcher with full semantics preserved.
         let attrs = MediaAttrs {
             fit: Some(Fit::Cover),
             position: None,
@@ -1169,7 +1223,7 @@ mod tests {
         };
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
-            "<img src=\"photo.jpg\" alt=\"alt\" class=\"moss-align-right\" style=\"object-fit:cover\" />"
+            "![alt](photo.jpg \"moss:align=right fit=cover\")"
         );
     }
 
@@ -1216,6 +1270,11 @@ mod tests {
 
     #[test]
     fn test_format_img_tag_escapes_attributes() {
+        // Post-PR5: format_img_tag no longer HTML-escapes inside Stage 1 — the
+        // values flow through the markdown stream, and pulldown-cmark will
+        // re-escape them when it serializes to HTML. The title-param emitter
+        // quotes whitespace-bearing values; quote chars inside them are
+        // backslash-escaped per the title-params grammar.
         let attrs = MediaAttrs {
             fit: None,
             position: Some(Position::Left),
@@ -1225,7 +1284,7 @@ mod tests {
         };
         assert_eq!(
             format_img_tag("img\"bad.jpg", "a\"<b>", &attrs),
-            "<img src=\"img&quot;bad.jpg\" alt=\"a&quot;&lt;b&gt;\" style=\"object-position:left\" />"
+            "![a\"<b>](img\"bad.jpg \"moss:position=left\")"
         );
     }
 
@@ -1320,7 +1379,8 @@ mod tests {
     #[test]
     fn test_media_attrs_class_names_preserved() {
         // Author-provided class names (not in moss vocabulary) survive on
-        // MediaAttrs and emit unprefixed via class_attr / format_img_tag.
+        // MediaAttrs and emit via `classes="..."` title params; the Stage 2
+        // dispatcher splits the value into the synthesizer's class_names slot.
         let attrs = MediaAttrs {
             fit: None,
             position: None,
@@ -1335,14 +1395,15 @@ mod tests {
         );
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
-            "<img src=\"photo.jpg\" alt=\"alt\" class=\"theme-rounded shadow-lg\" />"
+            "![alt](photo.jpg \"moss:classes=\\\"theme-rounded shadow-lg\\\"\")"
         );
     }
 
     #[test]
     fn test_media_attrs_class_names_compose_with_align() {
-        // moss-vocabulary class (from align) and author class_names compose:
-        // moss-prefixed class comes first, then author classes in order.
+        // align (typed) and class_names (passthrough) compose into the same
+        // moss-title-params payload; the Stage 2 dispatcher recomposes them
+        // into the final `class="moss-image moss-align-left theme-rounded"`.
         let attrs = MediaAttrs {
             fit: None,
             position: None,
@@ -1356,15 +1417,15 @@ mod tests {
         );
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
-            "<img src=\"photo.jpg\" alt=\"alt\" class=\"moss-align-left theme-rounded\" />"
+            "![alt](photo.jpg \"moss:align=left classes=theme-rounded\")"
         );
     }
 
     #[test]
     fn test_media_attrs_extra_attrs_emitted() {
-        // extra_attrs flow through to the emitted <img> in deterministic
-        // alphabetical order (BTreeMap iteration). They appear AFTER
-        // class/style and before the self-closing slash.
+        // extra_attrs flow through as individual moss-title-params in
+        // deterministic alphabetical order (BTreeMap iteration on both
+        // MediaAttrs.extra_attrs and TitleParams.params).
         let mut extras = BTreeMap::new();
         extras.insert("data-zoom".to_string(), "true".to_string());
         extras.insert("data-id".to_string(), "42".to_string());
@@ -1376,17 +1437,17 @@ mod tests {
             extra_attrs: extras,
         };
         assert!(!attrs.is_empty());
-        // data-id < data-zoom alphabetically — id appears first.
+        // data-id < data-zoom alphabetically.
         assert_eq!(
             format_img_tag("photo.jpg", "alt", &attrs),
-            "<img src=\"photo.jpg\" alt=\"alt\" data-id=\"42\" data-zoom=\"true\" />"
+            "![alt](photo.jpg \"moss:data-id=42 data-zoom=true\")"
         );
     }
 
     #[test]
     fn test_media_attrs_extra_attrs_escaped() {
-        // extra_attrs keys and values are HTML-escaped on emission so a
-        // hostile author can't break out of the attribute or inject tags.
+        // Values containing whitespace or quote chars are emitted via the
+        // title-params quoting grammar (double-quoted, backslash-escaped).
         let mut extras = BTreeMap::new();
         extras.insert("data-title".to_string(), r#"a "quoted" & <b>bold</b>"#.to_string());
         let attrs = MediaAttrs {
@@ -1396,9 +1457,32 @@ mod tests {
             class_names: vec![],
             extra_attrs: extras,
         };
+        // The title-params grammar emits the value as `data-title="…"`
+        // (whitespace-bearing → quoted), backslash-escaping `\` and `"`
+        // inside the value. The markdown image-title delimiter pass then
+        // backslash-escapes EVERY `"` (one layer only) so pulldown-cmark
+        // doesn't terminate the title on the inner quote. Backslashes
+        // already produced by the grammar pass through unchanged.
+        let out = format_img_tag("photo.jpg", "alt", &attrs);
+        // Pulldown-cmark round-trip: parse the output and confirm the
+        // recovered title matches the original grammar-level payload.
+        // This is the byte-shape the Stage 2 dispatcher actually consumes
+        // (via `Tag::Image { title, .. }`).
+        let parsed_title = {
+            let parser = pulldown_cmark::Parser::new(&out);
+            parser.filter_map(|ev| {
+                if let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image { title, .. }) = ev {
+                    Some(title.to_string())
+                } else {
+                    None
+                }
+            }).next()
+        };
         assert_eq!(
-            format_img_tag("photo.jpg", "alt", &attrs),
-            "<img src=\"photo.jpg\" alt=\"alt\" data-title=\"a &quot;quoted&quot; &amp; &lt;b&gt;bold&lt;/b&gt;\" />"
+            parsed_title.as_deref(),
+            Some(r#"moss:data-title="a \"quoted\" & <b>bold</b>""#),
+            "round-trip title mismatch: raw output = {:?}",
+            out,
         );
     }
 }

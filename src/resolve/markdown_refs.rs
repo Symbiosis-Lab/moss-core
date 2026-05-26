@@ -601,12 +601,16 @@ mod tests {
 
     #[test]
     fn test_bare_filename_with_contain_attr() {
+        // Post-PR5 (2026-05-26): pipe-attr markdown images lower to
+        // moss-canonical markdown with a `moss:` title rather than raw
+        // `<img>` HTML. pulldown-cmark parses the title and Stage 2's
+        // synth dispatcher consumes the params via image_typed_fields.
         let graph = test_graph();
         let input = "![](photo.jpg|contain)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
         assert_eq!(
             result.content,
-            "<img src=\"../assets/photo.jpg\" alt=\"\" style=\"object-fit:contain\" />"
+            "![](../assets/photo.jpg \"moss:fit=contain\")"
         );
     }
 
@@ -617,7 +621,7 @@ mod tests {
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
         assert_eq!(
             result.content,
-            "<img src=\"../assets/photo.jpg\" alt=\"My Photo\" style=\"object-position:left\" />"
+            "![My Photo](../assets/photo.jpg \"moss:position=left\")"
         );
     }
 
@@ -626,9 +630,10 @@ mod tests {
         let graph = test_graph();
         let input = "![](photo.jpg|contain left)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
+        // TitleParams alphabetises keys: fit < position.
         assert_eq!(
             result.content,
-            "<img src=\"../assets/photo.jpg\" alt=\"\" style=\"object-fit:contain;object-position:left\" />"
+            "![](../assets/photo.jpg \"moss:fit=contain position=left\")"
         );
     }
 
@@ -646,10 +651,10 @@ mod tests {
         let graph = test_graph();
         let input = "![](./photo.jpg|left)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        // Not bare filename, but has attrs — output HTML
+        // Not bare filename, but has attrs — output moss-canonical markdown.
         assert_eq!(
             result.content,
-            "<img src=\"./photo.jpg\" alt=\"\" style=\"object-position:left\" />"
+            "![](./photo.jpg \"moss:position=left\")"
         );
     }
 
@@ -660,7 +665,7 @@ mod tests {
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
         assert_eq!(
             result.content,
-            "<img src=\"assets/photo.jpg\" alt=\"\" style=\"object-fit:contain\" />"
+            "![](assets/photo.jpg \"moss:fit=contain\")"
         );
     }
 
@@ -669,10 +674,10 @@ mod tests {
         let graph = test_graph();
         let input = "![](https://example.com/photo.jpg|left)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        // External URL with pipe — apply attrs
+        // External URL with pipe — moss-canonical markdown.
         assert_eq!(
             result.content,
-            "<img src=\"https://example.com/photo.jpg\" alt=\"\" style=\"object-position:left\" />"
+            "![](https://example.com/photo.jpg \"moss:position=left\")"
         );
     }
 
@@ -683,7 +688,7 @@ mod tests {
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
         assert_eq!(
             result.content,
-            "<img src=\"nonexistent.jpg\" alt=\"\" style=\"object-position:left\" />"
+            "![](nonexistent.jpg \"moss:position=left\")"
         );
     }
 }
