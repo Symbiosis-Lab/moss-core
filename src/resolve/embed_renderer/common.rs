@@ -55,9 +55,11 @@ pub(super) fn dim_attrs(alias: Option<&str>) -> (String, String) {
 /// Minimal HTML attribute-value escaper for `src`, `title`, and similar.
 /// Escapes `& < > "`. Apostrophe is safe inside `"..."` attributes per HTML5.
 ///
-/// Retained for Phase 1's Stage 2 dispatcher (which still emits HTML).
-#[allow(dead_code)]
-pub(super) fn html_escape_attr(s: &str) -> String {
+/// Canonical 4-char attribute escaper for synthesizer output. Used by
+/// Phase 1's Stage 2 dispatcher (still emits HTML) and by the src-tauri
+/// typed-embed synthesizers (pdf / iframe / model / audio / video) which
+/// import this single source rather than each inlining a private copy.
+pub fn html_escape_attr(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -131,6 +133,18 @@ mod tests {
         assert_eq!(html_escape_attr("a&b"), "a&amp;b");
         assert_eq!(html_escape_attr("a<b>c"), "a&lt;b&gt;c");
         assert_eq!(html_escape_attr("say \"hi\""), "say &quot;hi&quot;");
+    }
+
+    #[test]
+    fn test_html_escape_attr_apostrophe_passthrough() {
+        // Apostrophe (`'`) is safe inside `"..."` attribute values per HTML5,
+        // so the canonical synthesizer escaper does NOT touch it. This
+        // distinguishes the synthesizer's 4-char escaper from media.rs's
+        // 5-char `html_escape` (which escapes `'` to `&#39;` for HTML-text
+        // contexts). The pdf / iframe / model / audio / video synthesizers
+        // all emit attribute values, so the 4-char form is correct.
+        assert_eq!(html_escape_attr("it's"), "it's");
+        assert_eq!(html_escape_attr("path/it's-here.mp3"), "path/it's-here.mp3");
     }
 
     #[test]
