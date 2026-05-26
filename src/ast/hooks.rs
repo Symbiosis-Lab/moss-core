@@ -62,6 +62,30 @@ pub trait RenderHooks {
         out.push_str(" />");
     }
 
+    /// Optional [`AssetSnapshot`] for the gallery synth path.
+    ///
+    /// Phase 2E v5 PR3 (2026-05-26): when the impl returns
+    /// `Some(snapshot)`, [`render_shortcode`]'s `Gallery` arm routes each
+    /// item through [`crate::render::image::synthesize_image_html`] with
+    /// [`ImageContext::GalleryThumb`], producing the canonical synth byte
+    /// shape (`<picture><source srcset=*.webp>`, dims, LQIP, lazy
+    /// loading). When the impl returns `None` (tests, fragment-render
+    /// paths, downstream consumers without a snapshot), the legacy
+    /// bare-`<img>` emission survives so the regex post-pass picks up
+    /// the attributes.
+    ///
+    /// Default impl: `None`. [`DefaultHooks::with_snapshot`] overrides
+    /// to expose the constructor-provided snapshot.
+    ///
+    /// The constructor-field pattern was chosen over extending
+    /// `render_shortcode`'s signature: a typed snapshot field on the
+    /// impl preserves the trait's public contract and keeps `RenderHooks`
+    /// focused on "what HTML to emit", not "what HTML to emit given
+    /// these inputs".
+    fn gallery_assets(&self) -> Option<&crate::asset_snapshot::AssetSnapshot> {
+        None
+    }
+
     /// Emit a shortcode block as HTML.
     ///
     /// The default impl produces a minimal HTML skeleton suitable for the
@@ -106,8 +130,20 @@ pub trait RenderHooks {
                     out.push('"');
                 }
                 out.push('>');
+                // Phase 2E v5 PR3 (2026-05-26): when the impl carries an
+                // `AssetSnapshot` (production path via
+                // `DefaultHooks::with_snapshot`), each gallery item routes
+                // through `render::image::synthesize_image_html` with
+                // `ImageContext::GalleryThumb` — producing the canonical
+                // synth byte shape (`<picture><source srcset=*.webp>`
+                // wrap, dims, LQIP, `loading="lazy"`). When `self.assets`
+                // is `None` (tests, fragment-render paths), graceful-
+                // degrade to the legacy bare-`<img>` emission so the
+                // surviving regex post-pass picks up the attributes.
+                // The legacy branch matches the pre-PR3 byte shape
+                // exactly (no escape on src; alt unescaped).
+                let assets_for_synth = self.gallery_assets();
                 for item in &args.items {
-                    out.push_str(r#"<div class="moss-gallery-item"><img src=""#);
                     let src_str = match &item.src {
                         crate::ast::url::Url::Resolved(r) => r.href.clone(),
                         crate::ast::url::Url::Unresolved(s) => {
@@ -119,20 +155,53 @@ pub trait RenderHooks {
                             s.clone()
                         }
                     };
-                    // Legacy gallery emits src verbatim (no escape) and no
-                    // src trim, mirroring shortcode.rs:1651-1653. Match
-                    // byte-for-byte.
-                    out.push_str(&src_str);
-                    out.push_str(r#"" alt=""#);
-                    out.push_str(&item.alt);
-                    out.push_str(r#"" loading="lazy""#);
-                    let style = crate::media::parse_media_attrs(&item.attrs);
-                    if let Some(s) = style.to_inline_style() {
-                        out.push_str(r#" style=""#);
-                        out.push_str(&s);
-                        out.push('"');
+                    out.push_str(r#"<div class="moss-gallery-item">"#);
+                    if let Some(assets) = assets_for_synth {
+                        // Synth path: full attribute set + optional
+                        // <picture> wrap. The per-item inline style from
+                        // MediaAttrs (e.g. object-position) flows through
+                        // ImageRenderOptions::extra_attrs so the
+                        // synthesizer's LQIP / dim emission joins it
+                        // correctly (the synth suppresses its own
+                        // style= when extra_attrs already carries one,
+                        // matching the legacy regex's has_style guard).
+                        let media_style = crate::media::parse_media_attrs(&item.attrs)
+                            .to_inline_style();
+                        let style_frag = media_style
+                            .map(|s| format!(r#"style="{}""#, s));
+                        let opts = crate::render::image::ImageRenderOptions {
+                            eager: false,
+                            extra_attrs: style_frag.as_deref(),
+                            ..Default::default()
+                        };
+                        let item_html = crate::render::image::synthesize_image_html(
+                            &src_str,
+                            &item.alt,
+                            assets,
+                            crate::render::image::ImageContext::GalleryThumb,
+                            &opts,
+                        );
+                        out.push_str(&item_html);
+                    } else {
+                        // Legacy bare-<img> path (no snapshot in scope).
+                        // The surviving regex pass injects dims / LQIP /
+                        // <picture> wrap downstream. Byte shape must match
+                        // pre-PR3 emission for test/fragment-render
+                        // parity.
+                        out.push_str(r#"<img src=""#);
+                        out.push_str(&src_str);
+                        out.push_str(r#"" alt=""#);
+                        out.push_str(&item.alt);
+                        out.push_str(r#"" loading="lazy""#);
+                        let style = crate::media::parse_media_attrs(&item.attrs);
+                        if let Some(s) = style.to_inline_style() {
+                            out.push_str(r#" style=""#);
+                            out.push_str(&s);
+                            out.push('"');
+                        }
+                        out.push('>');
                     }
-                    out.push_str("></div>");
+                    out.push_str("</div>");
                 }
                 out.push_str("</div>");
             }
@@ -327,10 +396,56 @@ pub trait RenderHooks {
 
 /// Default render hooks. moss-core ships this as the base implementation
 /// of [`RenderHooks`]; the methods are the trait's default impls.
+///
+/// Phase 2E v5 PR3 (2026-05-26): refactored from a unit struct to a
+/// lifetime-parameterized struct so callers can attach an
+/// [`AssetSnapshot`] for the gallery synth path. Use
+/// [`DefaultHooks::new`] / `Default::default()` for the no-snapshot
+/// behavior (legacy bare-`<img>` emission; surviving regex post-pass
+/// fills in attributes); use [`DefaultHooks::with_snapshot`] for the
+/// production path (full synth byte shape — `<picture><source srcset>`,
+/// dims, LQIP, lazy loading).
+///
+/// The constructor-field pattern was chosen over extending
+/// [`RenderHooks::render_shortcode`]'s signature with an
+/// `&AssetSnapshot` arg: a struct field is non-breaking for downstream
+/// `RenderHooks` impls and keeps the trait focused on "what HTML to
+/// emit" rather than "what HTML to emit given these inputs". See
+/// [`gallery_assets`](RenderHooks::gallery_assets) for the override
+/// hook the trait exposes.
 #[derive(Debug, Default)]
-pub struct DefaultHooks;
+pub struct DefaultHooks<'a> {
+    assets: Option<&'a crate::asset_snapshot::AssetSnapshot>,
+}
 
-impl RenderHooks for DefaultHooks {}
+impl<'a> DefaultHooks<'a> {
+    /// Construct a no-snapshot `DefaultHooks`. The `Gallery` arm of
+    /// [`RenderHooks::render_shortcode`] emits the legacy bare-`<img>`
+    /// byte shape so the regex post-pass can fill in attributes. Use
+    /// this for tests, fragment-render paths, and downstream consumers
+    /// without a primed `AssetSnapshot`.
+    pub fn new() -> Self {
+        Self { assets: None }
+    }
+
+    /// Construct a `DefaultHooks` carrying an [`AssetSnapshot`] for the
+    /// gallery synth path. The `Gallery` arm of
+    /// [`RenderHooks::render_shortcode`] routes each item through
+    /// [`crate::render::image::synthesize_image_html`] with
+    /// [`crate::render::image::ImageContext::GalleryThumb`], emitting
+    /// the canonical synth byte shape.
+    pub fn with_snapshot(assets: &'a crate::asset_snapshot::AssetSnapshot) -> Self {
+        Self {
+            assets: Some(assets),
+        }
+    }
+}
+
+impl<'a> RenderHooks for DefaultHooks<'a> {
+    fn gallery_assets(&self) -> Option<&crate::asset_snapshot::AssetSnapshot> {
+        self.assets
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Internal escape helpers used by both DefaultHooks and the renderer.
@@ -383,7 +498,7 @@ mod tests {
 
     #[test]
     fn default_hooks_render_heading_emits_id() {
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_heading(&mut out, 2, Some("setup"), "Setup");
         assert_eq!(out, r#"<h2 id="setup">Setup</h2>"#);
@@ -391,7 +506,7 @@ mod tests {
 
     #[test]
     fn default_hooks_render_heading_without_id() {
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_heading(&mut out, 3, None, "Sub");
         assert_eq!(out, "<h3>Sub</h3>");
@@ -399,7 +514,7 @@ mod tests {
 
     #[test]
     fn default_hooks_render_link_internal_default() {
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_link(
             &mut out,
@@ -411,7 +526,7 @@ mod tests {
 
     #[test]
     fn default_hooks_render_link_wikilink_kind_injects_class() {
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_link(
             &mut out,
@@ -423,7 +538,7 @@ mod tests {
 
     #[test]
     fn default_hooks_render_link_asset_newtab_injects_target() {
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_link(
             &mut out,
@@ -438,7 +553,7 @@ mod tests {
 
     #[test]
     fn default_hooks_render_image_with_alt() {
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_image(
             &mut out,
@@ -451,7 +566,7 @@ mod tests {
 
     #[test]
     fn default_hooks_render_image_with_title() {
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_image(
             &mut out,
@@ -467,7 +582,7 @@ mod tests {
 
     #[test]
     fn default_hooks_escape_link_href() {
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_link(
             &mut out,
@@ -499,7 +614,7 @@ mod tests {
 
     fn render_shortcode_html(sc: &Shortcode) -> String {
         let mut out = String::new();
-        DefaultHooks.render_shortcode(&mut out, sc);
+        DefaultHooks::new().render_shortcode(&mut out, sc);
         out
     }
 

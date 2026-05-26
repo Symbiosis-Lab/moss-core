@@ -194,6 +194,20 @@ pub enum ImageContext<'a> {
         height: Option<u32>,
     },
 
+    /// Phase 2E v5 PR3 (2026-05-26): `:::gallery` body image. Below-the-
+    /// fold thumbnail (`loading="lazy"`); same `<picture>`/dims/LQIP byte
+    /// shape as `MarkdownInline`. The outer `.moss-gallery-item` wrapper
+    /// is owned by the gallery shortcode's `DefaultHooks` impl in
+    /// `crates/moss-core/src/ast/hooks.rs`; this variant emits just the
+    /// inner `<picture><img></picture>` / `<img>` shape so the wrapper
+    /// can sit around it.
+    ///
+    /// Distinct from `MarkdownInline` so the gallery's per-item style
+    /// passthrough (object-position from `MediaAttrs`) has a typed home
+    /// to evolve into; today both contexts produce the same inner byte
+    /// shape via `synthesize_inner`.
+    GalleryThumb,
+
     /// Phase 2E PR2 (2026-05-26): bare `<img>` emission with no `<picture>`
     /// wrap, no `<source>`, no LQIP, no width/height, no `loading` attr.
     /// Used by the hero typed-renderer fallback path
@@ -1498,6 +1512,97 @@ mod tests {
         );
         assert!(html.contains("&amp;"), "& must be escaped");
         assert!(html.contains("&quot;"), "\" must be escaped");
+    }
+
+    // --- ImageContext::GalleryThumb (Phase 2E v5 PR3, 2026-05-26) ---------
+    //
+    // Gallery body images: below-the-fold thumbnail, same inner byte
+    // shape as MarkdownInline (`<picture><source srcset=*.webp><img
+    // loading="lazy" ...></picture>` for raster, bare `<img>` for
+    // non-raster). The outer `.moss-gallery-item` wrapper is owned by
+    // `DefaultHooks::render_shortcode`'s Gallery arm; this variant
+    // emits only the inner image. Distinguishing it from
+    // MarkdownInline at the type level keeps per-item passthrough
+    // attributes (object-position from MediaAttrs) typed for future
+    // evolution.
+
+    #[test]
+    fn synthesize_gallery_thumb_emits_picture_with_lazy() {
+        let p = ImageRenderOptions::default();
+        let mut snap = AssetSnapshot::new();
+        snap.dimensions
+            .insert(PathBuf::from("photo.jpg"), (1200, 800));
+        let out = synthesize_image_html(
+            "photo.jpg",
+            "alt",
+            &snap,
+            ImageContext::GalleryThumb,
+            &p,
+        );
+        assert!(out.contains("<picture"), "{out}");
+        assert!(out.contains(r#"srcset="photo.webp""#), "{out}");
+        assert!(out.contains(r#"loading="lazy""#), "{out}");
+        assert!(out.contains(r#"width="1200""#), "{out}");
+        assert!(out.contains(r#"height="800""#), "{out}");
+        assert!(out.contains(r#"alt="alt""#), "{out}");
+    }
+
+    #[test]
+    fn synthesize_gallery_thumb_non_raster_bare_img() {
+        // SVG / .webp originals don't trigger the <picture> wrap (no
+        // variant exists). Falls back to bare <img> with lazy loading +
+        // dims from the snapshot.
+        let p = ImageRenderOptions::default();
+        let mut snap = AssetSnapshot::new();
+        snap.dimensions
+            .insert(PathBuf::from("icon.svg"), (64, 64));
+        let out = synthesize_image_html(
+            "icon.svg",
+            "",
+            &snap,
+            ImageContext::GalleryThumb,
+            &p,
+        );
+        assert!(!out.contains("<picture"), "{out}");
+        assert!(!out.contains("<source"), "{out}");
+        assert!(out.contains(r#"loading="lazy""#), "{out}");
+        assert!(out.contains(r#"width="64""#), "{out}");
+    }
+
+    #[test]
+    fn synthesize_gallery_thumb_threads_extra_attrs() {
+        // The Gallery hook builds a `style="object-position:..."` fragment
+        // from MediaAttrs and passes it via extra_attrs. The synthesizer
+        // suppresses its own LQIP-derived style= when extra_attrs already
+        // carries one — verify that suppression engages here too
+        // (parity with Hero / MarkdownInline).
+        let snap = snapshot_with(
+            "photo.jpg",
+            Some((1200, 800)),
+            None,
+            Some("data:image/jpeg;base64,abc"),
+            false,
+        );
+        let opts = ImageRenderOptions {
+            extra_attrs: Some(r#"style="object-position:50% 50%""#),
+            ..Default::default()
+        };
+        let out = synthesize_image_html(
+            "photo.jpg",
+            "",
+            &snap,
+            ImageContext::GalleryThumb,
+            &opts,
+        );
+        assert_eq!(
+            out.matches("style=").count(),
+            1,
+            "expected exactly one style= attribute; got: {out}"
+        );
+        assert!(
+            out.contains(r#"style="object-position:50% 50%""#),
+            "caller-supplied style must survive; got: {out}"
+        );
     }
 
     // --- ImageContext::HeroBare (Phase 2E PR2, 2026-05-26) ----------------

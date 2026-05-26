@@ -209,7 +209,7 @@ mod tests {
 
     fn render(blocks: Vec<Block>) -> String {
         let doc = Document::from_blocks(blocks);
-        render_document(&doc, &DefaultHooks)
+        render_document(&doc, &DefaultHooks::new())
     }
 
     #[test]
@@ -374,7 +374,7 @@ mod tests {
             Url::Unresolved(s) => *u = Url::resolved(s.clone(), UrlKind::Internal),
             _ => {}
         });
-        let html = render_document(&doc, &DefaultHooks);
+        let html = render_document(&doc, &DefaultHooks::new());
         assert!(html.contains("<h1>Title</h1>"));
         assert!(html.contains(r#"<a href="docs/">link</a>"#));
         assert!(html.contains("<em>em</em>"));
