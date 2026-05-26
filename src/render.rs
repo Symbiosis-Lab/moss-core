@@ -7,6 +7,7 @@
 //! shortcode renderers (Phase 2E v5 PR3).
 pub mod audio;
 pub mod iframe;
+pub mod image;
 pub mod model;
 pub mod pdf;
 pub mod video;
