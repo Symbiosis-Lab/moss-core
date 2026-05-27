@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 
 mod common;
 pub mod folder_list;
-use common::{file_stem, path_extension_lower};
+use common::path_extension_lower;
 
 // Re-export the canonical 4-char attribute escaper so src-tauri synthesizers
 // (pdf / iframe / model / audio / video) can share one definition instead of
@@ -35,7 +35,7 @@ use common::{file_stem, path_extension_lower};
 // synthesizers via `moss_core::media::html_escape` was 5 chars including
 // `'` → `&#39;`). The 4-char form is correct per HTML5: apostrophe is safe
 // inside `"…"` attributes.
-pub use common::html_escape_attr;
+pub use common::{file_stem, html_escape_attr};
 
 // ---------------------------------------------------------------------------
 // Reserved classnames (HTML/CSS contract, per moss#508)

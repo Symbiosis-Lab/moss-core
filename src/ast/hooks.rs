@@ -709,4 +709,91 @@ mod tests {
             "default should omit data-width, got: {html}"
         );
     }
+
+    // ── DefaultHooks::with_snapshot — Gallery synth path ─────────────
+    //
+    // `DefaultHooks::new()` emits the legacy bare-`<img>` gallery item shape
+    // (the surviving regex post-pass fills in dims / LQIP / `<picture>` wrap
+    // downstream). `DefaultHooks::with_snapshot(snap)` routes each item
+    // through `synthesize_image_html` with `ImageContext::GalleryThumb` —
+    // producing the canonical synth byte shape directly from the snapshot.
+    //
+    // Pre-Phase-2E-v5-PR3 (2026-05-26) only the legacy fallback was tested
+    // (all 25 unit tests in this file use `DefaultHooks::new()`). The synth
+    // path was exercised exclusively through snapshot fixtures — fragile
+    // for byte-shape regressions. These tests pin the structural
+    // invariants directly.
+
+    use crate::asset_snapshot::{AssetSnapshot, VariantKindSet};
+    use std::path::PathBuf;
+
+    fn gallery_with_one_item(src: &str) -> Shortcode {
+        Shortcode::Gallery(GalleryShortcode {
+            items: vec![GalleryItem {
+                src: Url::resolved(src, UrlKind::Asset),
+                alt: "photo".to_string(),
+                attrs: String::new(),
+            }],
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn default_hooks_new_gallery_emits_bare_img() {
+        // Legacy fallback: no snapshot in scope. The surviving regex
+        // post-pass injects dims / LQIP / `<picture>` downstream. The byte
+        // shape here must match the pre-PR3 emission so fragment-render
+        // paths (tests, in-app preview) stay consistent.
+        let sc = gallery_with_one_item("photos/cat.jpg");
+        let mut out = String::new();
+        DefaultHooks::new().render_shortcode(&mut out, &sc);
+        assert!(
+            out.contains(r#"<img src="photos/cat.jpg""#),
+            "expected bare <img>, got: {out}",
+        );
+        assert!(out.contains(r#"alt="photo""#), "got: {out}");
+        assert!(out.contains(r#"loading="lazy""#), "got: {out}");
+        assert!(!out.contains("<picture"), "legacy path must NOT emit <picture>, got: {out}");
+    }
+
+    #[test]
+    fn default_hooks_with_snapshot_gallery_emits_picture_for_registered_webp() {
+        // Synth path: snapshot registers a WebP variant. The synthesizer
+        // wraps the `<img>` in `<picture><source srcset=*.webp>` (the
+        // canonical responsive-image shape for raster originals).
+        let src = "photos/cat.jpg";
+        let mut snap = AssetSnapshot::new();
+        snap.variants.insert(
+            PathBuf::from("photos/cat"),
+            VariantKindSet { webp: true, avif: false },
+        );
+
+        let sc = gallery_with_one_item(src);
+        let mut out = String::new();
+        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc);
+        assert!(out.contains("<picture"), "expected <picture> wrap, got: {out}");
+        assert!(
+            out.contains(r#"srcset="photos/cat.webp""#),
+            "expected webp srcset, got: {out}",
+        );
+        assert!(out.contains(r#"src="photos/cat.jpg""#), "got: {out}");
+    }
+
+    #[test]
+    fn default_hooks_with_snapshot_gallery_uses_snapshot_dims() {
+        // Synth path with known dims: `width=`/`height=` attrs come from
+        // the snapshot's `dimensions` map. Pin the values so a future
+        // regression that fails to read dimensions from the snapshot
+        // (e.g., a `dims_lookup` rewrite that forgets a path-mapping step)
+        // gets caught here, not via diff in a snapshot fixture.
+        let src = "photos/cat.jpg";
+        let mut snap = AssetSnapshot::new();
+        snap.dimensions.insert(PathBuf::from(src), (800, 600));
+
+        let sc = gallery_with_one_item(src);
+        let mut out = String::new();
+        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc);
+        assert!(out.contains(r#"width="800""#), "expected width=800, got: {out}");
+        assert!(out.contains(r#"height="600""#), "expected height=600, got: {out}");
+    }
 }

@@ -20,7 +20,7 @@
 //! fallback in browsers that can't render PDFs natively.
 
 use crate::asset_snapshot::AssetSnapshot;
-use crate::resolve::embed_renderer::html_escape_attr;
+use crate::resolve::embed_renderer::{file_stem, html_escape_attr};
 use crate::resolve::title_params::TitleParams;
 
 /// Synthesize PDF embed HTML for `Tag::Link` with `moss:kind=pdf` title.
@@ -83,17 +83,6 @@ pub fn synthesize_pdf_html(
         html_escape_attr(src),
         html_escape_attr(&name),
     )
-}
-
-/// Extract filename stem (no directory, no extension). Mirrors `file_stem` in
-/// `crates/moss-core/src/resolve/embed_renderer/common.rs`
-/// (which is `pub(super)` and therefore not reachable from here).
-fn file_stem(path: &str) -> String {
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    match filename.rsplit_once('.') {
-        Some((stem, _ext)) if !stem.is_empty() => stem.to_string(),
-        _ => filename.to_string(),
-    }
 }
 
 #[cfg(test)]
