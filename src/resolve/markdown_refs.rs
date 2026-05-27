@@ -12,7 +12,6 @@
 //! Content inside fenced code blocks and inline code spans is left untouched.
 
 use crate::content_graph::ContentGraph;
-use crate::media::{format_img_tag, parse_media_attrs};
 
 use super::fuzzy_path::{relative_asset_path, resolve_reference, ResolvedRef};
 use super::{Diagnostic, LinkType, OutgoingLink};
@@ -198,14 +197,28 @@ fn process_line(
         }
 
         // --- Markdown image: ![alt](url) ---
+        //
+        // Phase 3 PR3 (2026-05-27): pipe-attr syntax on standard markdown
+        // images (`![alt](photo.jpg|width=400)`) is retired. Pipe-bearing
+        // URLs are now passed through verbatim — the resulting URL 404s
+        // in the browser, signalling the author to migrate to the
+        // wikilink form `![[photo.jpg|width=400]]` (which pulldown-cmark's
+        // native wikilink dispatcher handles end-to-end). We can't fuzzy-
+        // resolve pipe-bearing URLs because the basename-stem matcher
+        // would otherwise silently strip the `|attrs` tail and rewrite
+        // the URL to the resolved path, dropping the author's intent.
         if chars[i] == '!' && i + 1 < len && chars[i + 1] == '[' {
             // Try to parse ![alt](url)
             if let Some((end, alt, url)) = parse_markdown_image(&chars, i) {
-                let (path_part, attrs_str) = crate::media::split_pipe(&url);
-                let attrs = parse_media_attrs(attrs_str);
-
-                if is_bare_filename(path_part) {
-                    match resolve_reference(path_part, graph, from_path) {
+                // Pipe-bearing URLs pass through unchanged so the browser
+                // 404 is visible (Phase 3 PR3 migration signal).
+                if url.contains('|') {
+                    result.push_str(&format!("![{}]({})", alt, url));
+                    i = end;
+                    continue;
+                }
+                if is_bare_filename(&url) {
+                    match resolve_reference(&url, graph, from_path) {
                         ResolvedRef::Found(target_path) => {
                             outgoing_links.push(OutgoingLink {
                                 target_path: target_path.clone(),
@@ -213,35 +226,21 @@ fn process_line(
                                 link_type: LinkType::Standard,
                             });
                             let resolved_url = relative_asset_path(from_path, &target_path);
-                            if !attrs.is_empty() {
-                                result.push_str(&format_img_tag(&resolved_url, &alt, &attrs));
-                            } else {
-                                result.push_str(&format!("![{}]({})", alt, resolved_url));
-                            }
+                            result.push_str(&format!("![{}]({})", alt, resolved_url));
                             i = end;
                             continue;
                         }
                         ResolvedRef::Unresolved => {
-                            // Leave unchanged — could be a same-directory file
-                            // But still apply attrs if present
-                            if !attrs.is_empty() {
-                                result.push_str(&format_img_tag(path_part, &alt, &attrs));
-                            } else {
-                                result.push_str(&format!("![{}]({})", alt, url));
-                            }
+                            // Leave unchanged — could be a same-directory file.
+                            result.push_str(&format!("![{}]({})", alt, url));
                             i = end;
                             continue;
                         }
                     }
                 } else {
-                    // Not a bare filename
-                    if !attrs.is_empty() {
-                        // Has pipe attrs — output HTML with style
-                        result.push_str(&format_img_tag(path_part, &alt, &attrs));
-                    } else {
-                        // No attrs — pass through unchanged (use original url to preserve any query/fragment)
-                        result.push_str(&format!("![{}]({})", alt, url));
-                    }
+                    // Not a bare filename — pass through unchanged (preserve
+                    // any query or fragment in the URL).
+                    result.push_str(&format!("![{}]({})", alt, url));
                     i = end;
                     continue;
                 }
@@ -597,98 +596,59 @@ mod tests {
         assert!(!is_bare_filename(".hidden")); // dot at position 0
     }
 
-    // --- Pipe attr tests ---
+    // --- Pipe-attr passthrough (Phase 3 PR3, 2026-05-27) ---
+    //
+    // The `![alt](url|param)` syntax was a moss-invented Stage 1 channel
+    // that pre-PR3 rewrote pipe-bearing URLs into moss-canonical title
+    // params. PR3 retires it: authors who want typed params use the
+    // wikilink form `![[url|param]]` (handled by pulldown-cmark's native
+    // wikilink dispatcher); pipe characters in standard-markdown URLs are
+    // now literal, and the resulting URL `photo.jpg|param` 404s — clear
+    // migration signal.
 
     #[test]
-    fn test_bare_filename_with_contain_attr() {
-        // Post-PR5 (2026-05-26): pipe-attr markdown images lower to
-        // moss-canonical markdown with a `moss:` title rather than raw
-        // `<img>` HTML. pulldown-cmark parses the title and Stage 2's
-        // synth dispatcher consumes the params via image_typed_fields.
+    fn test_bare_filename_with_pipe_passes_through() {
+        // The `|` is now part of the URL. `is_bare_filename` still returns
+        // true (no `/`, has extension), but the lookup misses the graph
+        // because the path table holds `assets/photo.jpg`, not the
+        // pipe-bearing string. Falls through to Unresolved → unchanged.
         let graph = test_graph();
         let input = "![](photo.jpg|contain)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        assert_eq!(
-            result.content,
-            "![](../assets/photo.jpg \"moss:fit=contain\")"
-        );
+        assert_eq!(result.content, "![](photo.jpg|contain)");
     }
 
     #[test]
-    fn test_bare_filename_with_position_attr() {
-        let graph = test_graph();
-        let input = "![My Photo](photo.jpg|left)";
-        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        assert_eq!(
-            result.content,
-            "![My Photo](../assets/photo.jpg \"moss:position=left\")"
-        );
-    }
-
-    #[test]
-    fn test_bare_filename_with_fit_and_position() {
-        let graph = test_graph();
-        let input = "![](photo.jpg|contain left)";
-        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        // TitleParams alphabetises keys: fit < position.
-        assert_eq!(
-            result.content,
-            "![](../assets/photo.jpg \"moss:fit=contain position=left\")"
-        );
-    }
-
-    #[test]
-    fn test_bare_filename_no_attrs_unchanged() {
-        let graph = test_graph();
-        let input = "![](photo.jpg)";
-        let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        // Same as before — no pipe, no change
-        assert_eq!(result.content, "![](../assets/photo.jpg)");
-    }
-
-    #[test]
-    fn test_relative_path_with_attrs() {
+    fn test_relative_path_with_pipe_unchanged() {
         let graph = test_graph();
         let input = "![](./photo.jpg|left)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        // Not bare filename, but has attrs — output moss-canonical markdown.
-        assert_eq!(
-            result.content,
-            "![](./photo.jpg \"moss:position=left\")"
-        );
+        assert_eq!(result.content, "![](./photo.jpg|left)");
     }
 
     #[test]
-    fn test_path_with_separator_and_attrs() {
+    fn test_path_with_separator_and_pipe_unchanged() {
         let graph = test_graph();
         let input = "![](assets/photo.jpg|contain)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        assert_eq!(
-            result.content,
-            "![](assets/photo.jpg \"moss:fit=contain\")"
-        );
+        assert_eq!(result.content, "![](assets/photo.jpg|contain)");
     }
 
     #[test]
-    fn test_external_url_with_attrs_unchanged() {
+    fn test_external_url_with_pipe_unchanged() {
         let graph = test_graph();
         let input = "![](https://example.com/photo.jpg|left)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        // External URL with pipe — moss-canonical markdown.
-        assert_eq!(
-            result.content,
-            "![](https://example.com/photo.jpg \"moss:position=left\")"
-        );
+        assert_eq!(result.content, "![](https://example.com/photo.jpg|left)");
     }
 
     #[test]
-    fn test_unresolved_bare_with_attrs() {
+    fn test_bare_filename_no_pipe_still_resolves() {
+        // Bare-filename resolution is the supported path; this PR only
+        // retires the pipe-attr branch.
         let graph = test_graph();
-        let input = "![](nonexistent.jpg|left)";
+        let input = "![](photo.jpg)";
         let result = resolve_markdown_refs(input, &graph, "articles/post.md");
-        assert_eq!(
-            result.content,
-            "![](nonexistent.jpg \"moss:position=left\")"
-        );
+        assert_eq!(result.content, "![](../assets/photo.jpg)");
     }
 }

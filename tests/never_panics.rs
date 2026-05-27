@@ -246,18 +246,6 @@ proptest! {
     }
 }
 
-// ── media: img tag formatting ───────────────────────────────────────────────
-
-proptest! {
-    #![proptest_config(cfg())]
-
-    #[test]
-    fn format_img_tag_never_panics(src in any_str(), alt in any_str(), raw_attrs in any_str()) {
-        let attrs = moss_core::media::parse_media_attrs(&raw_attrs);
-        let _ = moss_core::media::format_img_tag(&src, &alt, &attrs);
-    }
-}
-
 // ── heading: hero detection ─────────────────────────────────────────────────
 
 proptest! {
