@@ -215,14 +215,12 @@ mod tests {
             width: None,
             attrs: None,
         });
-        // Phase 0 Stage 1: built-in IframeRenderer emits CommonMark link
-        // markdown carrying `moss:kind=iframe`, not literal `<iframe>` HTML.
+        // Phase 3 PR4 (2026-05-27): built-in IframeRenderer emits bare
+        // CommonMark `[name](url)` markdown — the `moss:kind=iframe`
+        // title channel retired. Identity is established by the bare
+        // shape; the fake plugin's `<fake></fake>` raw HTML never appears.
         match out {
-            RenderedEmbed::Inline(s) => assert!(
-                s.contains("kind=iframe"),
-                "built-in iframe should win, got: {}",
-                s
-            ),
+            RenderedEmbed::Inline(s) => assert_eq!(s, "[x](x.html)"),
             _ => panic!("expected Inline (Stage 1 markdown) from built-in IframeRenderer"),
         }
     }

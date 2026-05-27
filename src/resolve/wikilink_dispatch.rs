@@ -830,16 +830,12 @@ mod tests {
     fn dispatch_video_extension_routes_to_video_renderer() {
         let graph = build_graph(&["clip.mp4"]);
         let emit = dispatch_wikilink_embed("clip.mp4", None, true, &graph, "index.md");
-        // VideoRenderer emits an Inline markdown link with
-        // `"moss:kind=video"` in the title attribute (the synthesizer in
-        // src-tauri's transform_events expands it to a <video> later).
-        // What this dispatcher proves: extension routing fired AND the
-        // video kind was selected (not image / pdf / etc.).
+        // Phase 3 PR4 (2026-05-27): per-kind Inline markdown is bare —
+        // `moss:kind=video` title channel retired. Identity is the
+        // file-stem alt + url shape; Stage 2 synth dispatch will move
+        // out of the markdown round-trip in a follow-up.
         match emit.output {
-            EmitKind::Inline(s) => {
-                assert!(s.contains("clip.mp4"), "expected resolved path, got: {}", s);
-                assert!(s.contains("kind=video"), "expected kind=video, got: {}", s);
-            }
+            EmitKind::Inline(s) => assert_eq!(s, "[clip](clip.mp4)"),
             other => panic!("expected Inline markdown link, got: {:?}", other),
         }
     }
@@ -848,14 +844,9 @@ mod tests {
     fn dispatch_pdf_extension_routes_to_pdf_renderer() {
         let graph = build_graph(&["report.pdf"]);
         let emit = dispatch_wikilink_embed("report.pdf", None, true, &graph, "index.md");
-        // PdfRenderer also emits Inline markdown with `"moss:kind=pdf"`
-        // title; the Stage 2 synthesizer in src-tauri produces the
-        // final <iframe>. Assert extension routed correctly.
+        // Phase 3 PR4: bare-markdown emission (see video test above).
         match emit.output {
-            EmitKind::Inline(s) => {
-                assert!(s.contains("report.pdf"), "expected resolved path, got: {}", s);
-                assert!(s.contains("kind=pdf"), "expected kind=pdf, got: {}", s);
-            }
+            EmitKind::Inline(s) => assert_eq!(s, "[report](report.pdf)"),
             other => panic!("expected Inline markdown link, got: {:?}", other),
         }
     }
@@ -865,9 +856,11 @@ mod tests {
         // `![[photo.jpg|wide]]` should propagate `wide` to the renderer.
         // The pothole parses as a WidthToken and the dispatcher hands
         // ParsedEmbed { width: Some("wide"), .. } to the ImageRenderer.
-        // ImageRenderer emits Inline markdown with `moss:width=wide` in
-        // the title attribute — Stage 2 (in src-tauri) synthesizes the
-        // final <figure>/<img>.
+        // Phase 3 PR4 (2026-05-27): ImageRenderer now emits bare
+        // markdown — width is no longer round-tripped through a title
+        // attribute. The pothole-classifier still surfaces the canonical
+        // width to typed consumers downstream (the dispatcher's
+        // `WidthToken` variant — see `parse_pothole_params` test above).
         assert_eq!(
             parse_pothole_params("wide"),
             PotholeContent::WidthToken {
@@ -884,10 +877,7 @@ mod tests {
             "index.md",
         );
         match emit.output {
-            EmitKind::Inline(s) => {
-                assert!(s.contains("photo.jpg"), "got: {}", s);
-                assert!(s.contains("width=wide"), "expected width=wide title, got: {}", s);
-            }
+            EmitKind::Inline(s) => assert_eq!(s, "![](photo.jpg)"),
             other => panic!("expected Inline markdown, got {:?}", other),
         }
     }
