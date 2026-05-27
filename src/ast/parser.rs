@@ -39,6 +39,11 @@ pub fn parse(markdown: &str) -> Document {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
+    // Phase 3 PR2: pulldown-cmark emits `LinkType::WikiLink` events for
+    // `[[…]]` / `![[…]]` natively. The typed-AST parser preserves them as
+    // `Inline::Link`/`Inline::Image` with `Url::Unresolved`; resolution
+    // happens in the later `visit_urls_mut` pass.
+    options.insert(Options::ENABLE_WIKILINKS);
 
     let parser = Parser::new_ext(&extraction.markdown_with_placeholders, options);
     let events: Vec<Event<'_>> = parser.collect();

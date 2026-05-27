@@ -4,7 +4,10 @@
 //! [`RendererRegistryBuilder::with_boxed`]. The default lookup in
 //! [`super::embed_renderer::lookup_renderer`] uses the built-in-only
 //! registry; pipelines with plugin renderers build their own registry and
-//! thread it through [`super::wikilinks::resolve_wikilinks_with_registry`].
+//! thread it through
+//! [`super::wikilink_dispatch::dispatch_wikilink_embed_with_registry`]
+//! (Phase 3 PR2 retired the older Stage 1 `resolve_wikilinks_with_registry`
+//! string-rewriter that consumed this registry).
 //!
 //! # Two-pass dispatch (plugin renderers)
 //!
@@ -42,8 +45,8 @@
 //!
 //! | Pipeline type | Function | Registry used |
 //! |---|---|---|
-//! | No plugins | [`super::wikilinks::resolve_wikilinks`] | built-in only (via `lookup_renderer`) |
-//! | With plugins | [`super::wikilinks::resolve_wikilinks_with_registry`] | custom registry built at init |
+//! | No plugins | [`super::wikilink_dispatch::dispatch_wikilink_embed`] | built-in only (via `lookup_renderer`) |
+//! | With plugins | [`super::wikilink_dispatch::dispatch_wikilink_embed_with_registry`] | custom registry built at init |
 
 use super::embed_renderer::{
     EmbedRenderer, ImageRenderer, IframeRenderer, MarkdownEmbedRenderer,

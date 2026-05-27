@@ -550,9 +550,11 @@ fn add_class_dedup(acc: &mut Vec<String>, class: &str) {
 /// Lives here so all `render_link_markdown` consumers stay in lockstep when
 /// Decision #11 (attribute-block-wins, class lists union+dedupe) evolves.
 ///
-/// `pub(super)` so the Stage 1 native-markdown sweep in `wikilinks::stage1_sweep`
-/// can fold trailing `{...}` attribute blocks into native-image rewrites
-/// using the same policy.
+/// `pub(super)` for sibling-module use within `resolve/`. Originally exposed
+/// so the Stage 1 native-markdown sweep (`wikilinks::stage1_sweep`) could
+/// fold trailing `{...}` attribute blocks into native-image rewrites;
+/// that sweep retired in Phase 3 PR2, but the visibility stays the same
+/// shape so plugin-side callers can still reach it.
 pub(super) fn fold_attrs_into_params(
     block: &crate::ast::attrs::AttrBlock,
     params: &mut TitleParams,

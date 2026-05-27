@@ -1,24 +1,30 @@
-//! Phase 3 PR1: Stage 2 entry point for wikilink embed dispatch.
+//! Phase 3: Stage 2 entry point for wikilink embed dispatch.
 //!
-//! This module exposes the extension-routing logic of the existing Stage 1
-//! [`super::wikilinks::resolve_wikilinks`] resolver, but in a form callable
-//! from src-tauri's pulldown-cmark event stream once
-//! [`pulldown_cmark::Options::ENABLE_WIKILINKS`] is enabled (PR2).
+//! This module is the sole dispatcher for `[[…]]` / `![[…]]` events
+//! emitted by pulldown-cmark with `Options::ENABLE_WIKILINKS`. The
+//! src-tauri pipeline's `transform_events` (in
+//! `src-tauri/src/build/markdown/pipeline.rs`) calls
+//! [`dispatch_wikilink_embed_with_registry`] once per WikiLink-typed
+//! event, swallows the event range, and substitutes the renderer-
+//! produced HTML.
 //!
-//! # Status (Phase 3 PR1, dormant)
+//! # History
 //!
-//! PR1 lands this code as a public API that compiles and has tests on its
-//! own logic, but pulldown-cmark does NOT yet emit `LinkType::WikiLink`
-//! events at runtime (the option is not yet flipped). PR2 flips the flag
-//! and starts routing through this entry point; PR2 also deletes the
-//! Stage 1 string-rewriter (`wikilinks::resolve_wikilinks`).
+//! - **PR1 (`c2fbdd593`)**: this module landed as a dormant API alongside
+//!   the dispatch arm shape in `transform_events` (also dormant — gated
+//!   by the absence of `ENABLE_WIKILINKS`).
+//! - **PR2 (this change)**: enabled `ENABLE_WIKILINKS` at every
+//!   `Parser::new_ext` site, wired the dispatcher closure into
+//!   `transform_events`, and deleted the prior Stage 1 string-rewriter
+//!   (`crates/moss-core/src/resolve/wikilinks.rs`, ~2155 LOC).
 //!
 //! # What this reuses
 //!
 //! - Extension routing goes through [`super::embed_renderer::lookup_renderer`]
-//!   (the same registry Stage 1 uses today). No parallel dispatcher.
-//! - Anchor / query splitting on `dest_url` matches
-//!   [`super::wikilinks::parse_wikilink_inner`]'s `#` / `?` priority logic.
+//!   (the same registry the pre-PR2 Stage 1 resolver used). No parallel
+//!   dispatcher.
+//! - Anchor / query splitting on `dest_url` mirrors the pre-PR2
+//!   `wikilinks::parse_wikilink_inner`'s `#` / `?` priority logic.
 //! - Width-token extraction uses [`crate::media::extract_width_from_alias`].
 //!
 //! # What's new
@@ -182,9 +188,9 @@ fn is_kv_token(token: &str) -> bool {
 
 /// Split a pulldown-cmark wikilink `dest_url` into `file`, `section`, `query`.
 ///
-/// Ported from [`super::wikilinks::parse_wikilink_inner`] (the `before-pipe`
-/// half — the `|alias` part is handled by pulldown-cmark via pothole events,
-/// so it doesn't appear in `dest_url`).
+/// Ported from the pre-Phase-3 `wikilinks::parse_wikilink_inner` (the
+/// `before-pipe` half — the `|alias` part is handled by pulldown-cmark
+/// via pothole events, so it doesn't appear in `dest_url`).
 ///
 /// Whichever of `#` or `?` appears first in `dest_url` owns its tail; the
 /// other is split out of that tail. Matches Obsidian's heading-ref priority
@@ -330,13 +336,44 @@ fn dispatch_embed_form(
     from_path: &str,
     lookup: &dyn Fn(&str) -> Option<&dyn EmbedRenderer>,
 ) -> WikilinkEmit {
-    let mut diagnostics = Vec::new();
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Phase 3 PR2: trailing-slash dispatch is the folder-list embed
+    // (`![[/journal/]]`). We must check this BEFORE `resolve_reference`
+    // because ContentGraph::resolve_path normalizes trailing slashes
+    // away — running it first would always discard the folder-embed
+    // signal. The actual listing is rendered by the src-tauri marker
+    // resolver (Task 16) which has `all_docs` available; here we just
+    // emit a marker carrying the user-written path + the source file
+    // path (for relative resolution).
+    //
+    // Pothole text after `|` becomes the folder-list params string
+    // (e.g. `limit:5,more,sort:date`). We parse it back from whatever
+    // pothole shape pulldown-cmark gave us.
+    if !split.file.is_empty() && split.file.ends_with('/') {
+        let pothole_raw = match &pothole {
+            PotholeContent::Empty => String::new(),
+            PotholeContent::WidthToken { rest_alias, .. } => rest_alias.clone(),
+            PotholeContent::Params(_) => String::new(),
+            PotholeContent::Alias(s) => s.clone(),
+        };
+        let params = super::embed_renderer::folder_list::parse_params(&pothole_raw);
+        let marker = super::embed_renderer::folder_list::emit_marker(
+            split.file, from_path, &params,
+        );
+        return WikilinkEmit {
+            output: EmitKind::Html(marker),
+            outgoing_link: Some(OutgoingLink {
+                target_path: split.file.to_string(),
+                display_text: split.file.to_string(),
+                link_type: LinkType::Embed,
+            }),
+            diagnostics,
+        };
+    }
 
     // Resolve. Same logic as resolve_embed: empty file → same file;
-    // non-empty → fuzzy resolve. (Folder-list trailing-slash dispatch is
-    // omitted here for PR1: pulldown-cmark will not emit a wikilink with
-    // a trailing slash in dest_url today; this code path stays dormant
-    // until PR2 inventories that case.)
+    // non-empty → fuzzy resolve.
     let resolved = if split.file.is_empty() {
         ResolvedRef::Found(from_path.to_string())
     } else {
