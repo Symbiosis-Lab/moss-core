@@ -475,6 +475,17 @@ fn dispatch_embed_form(
             // `![alt](url)`, the outer pipeline re-parses and lets
             // `emit_standalone_figure_image` decide on the figure wrap from
             // the surrounding paragraph shape.
+            //
+            // TODO Phase 4: collapse this branch into `SynthKind::Image`
+            // alongside the video/pdf/audio/iframe/model dispatch above, with
+            // `build_synth_params` learning to project `MediaAttrs` into
+            // `TitleParams` and the caller passing the right `ImageContext`
+            // (MarkdownInline vs. MarkdownStandalone) based on paragraph
+            // shape. That refactor also restores width/align/class_names
+            // threading to the figure wrapper — currently dropped here
+            // because `MarkdownInline` has no figure-level slots. See the
+            // polish-pass plan's Item B for the discussion + the
+            // architecture review of this commit for the recommended seam.
             if matches!(ext.as_deref(), Some(e) if IMAGE_EXTENSIONS.iter().any(|x| *x == e)) {
                 let media = build_image_media_attrs(&pothole, parsed.attrs.as_ref());
                 if media.fit.is_some() || media.position.is_some() {
@@ -626,10 +637,9 @@ fn dispatch_wikilink_form(
     }
 }
 
-/// Build [`MediaAttrs`] from a pothole's alias / params plus any Pandoc
-/// `{.class key=value}` attribute block trailing the wikilink.
+/// Build [`MediaAttrs`] from a pothole's alias / params.
 ///
-/// Three concurrent sources of display vocabulary for image embeds:
+/// Two active sources of display vocabulary for image embeds:
 ///
 /// - Alias form (`![[hero.jpg|cover left]]`) — whitespace-separated
 ///   display keywords. The pothole arrives as
@@ -641,19 +651,16 @@ fn dispatch_wikilink_form(
 ///   [`PotholeContent::Params`] carrying a `TitleParams` bag; we look up
 ///   `fit` / `position` / `align` by name and convert their values via the
 ///   per-enum `from_keyword`. Unknown keys flow through as `extra_attrs`.
-/// - Pandoc attribute block (`![[hero.jpg|cover]]{.theme-rounded x="y"}`) —
-///   appears in `ParsedEmbed::attrs`. Classes are first checked against
-///   the fit/position/align vocabulary (per [`super::embed_renderer`]'s
-///   ImageRenderer fold) before falling through to `class_names`; `kvs`
-///   flow through as `extra_attrs` (except `class=` which is a fallthrough
-///   classlist).
 ///
-/// Conflict resolution mirrors the ImageRenderer pre-discard logic in
-/// `embed_renderer.rs`: attribute block wins on typed-field conflicts,
-/// `class_names` union (dedup happens at HTML emission time).
+/// Pandoc attribute blocks (`![[hero.jpg|cover]]{.theme-rounded x="y"}`) are
+/// a third potential source, but [`ParsedEmbed::attrs`] is currently
+/// hard-coded to `None` at the dispatcher's image branch (see
+/// `dispatch_embed_form`). The `attrs` parameter is plumbed through for
+/// future wiring; today the function ignores it. Don't grow the merge
+/// logic here until a caller actually populates `parsed.attrs`.
 fn build_image_media_attrs(
     pothole: &PotholeContent,
-    attrs: Option<&crate::ast::attrs::AttrBlock>,
+    _attrs: Option<&crate::ast::attrs::AttrBlock>,
 ) -> MediaAttrs {
     let mut media = MediaAttrs::default();
 
@@ -687,6 +694,10 @@ fn build_image_media_attrs(
             media.fit = parsed.fit;
             media.position = parsed.position;
             media.align = parsed.align;
+            // `parse_media_attrs` doesn't populate `class_names` or
+            // `extra_attrs` today (those come from Pandoc blocks, which
+            // aren't wired). The extends here are forward-looking scaffolding
+            // — harmless no-ops on current `MediaAttrs` shape.
             media.class_names.extend(parsed.class_names);
             for (k, v) in parsed.extra_attrs {
                 media.extra_attrs.insert(k, v);
@@ -696,6 +707,12 @@ fn build_image_media_attrs(
 
     // Source 2: Params form (K=V pothole). Recognized keys override; the
     // rest flow through as `extra_attrs`.
+    //
+    // `style` is filtered OUT here because `synthesize_image_with_media_attrs`
+    // builds the `style="…"` attribute from `MediaAttrs::to_inline_style()`;
+    // letting an author-typed `style=foo` ALSO flow into `extra_attrs` would
+    // emit two `style=` attributes on the same `<img>` and the browser would
+    // honor the last one, silently dropping moss's object-fit / object-position.
     if let PotholeContent::Params(params) = pothole {
         for (k, v) in &params.params {
             match k.as_str() {
@@ -719,52 +736,18 @@ fn build_image_media_attrs(
                 "width" | "data-width" => {}
                 "classes" => {
                     for c in v.split_whitespace() {
-                        media.class_names.push(c.to_string());
+                        if !media.class_names.iter().any(|x| x == c) {
+                            media.class_names.push(c.to_string());
+                        }
                     }
                 }
+                // Drop `style=` to avoid duplicate-attribute emission;
+                // see function-level note above.
+                "style" => {}
                 _ => {
                     media.extra_attrs.insert(k.clone(), v.clone());
                 }
             }
-        }
-    }
-
-    // Source 3: Pandoc attribute block (Decision #11: block wins on typed
-    // conflicts; class lists union).
-    if let Some(block) = attrs {
-        for class in &block.classes {
-            if let Some(side) = AlignSide::from_keyword(class) {
-                media.align = Some(side);
-            } else if let Some(f) = Fit::from_keyword(class) {
-                media.fit = Some(f);
-            } else if let Some(p) = Position::from_keyword(class) {
-                media.position = Some(p);
-            } else if !media.class_names.iter().any(|c| c == class) {
-                media.class_names.push(class.clone());
-            }
-        }
-        let mut consumed_class_kv = false;
-        for (k, v) in &block.kvs {
-            if k == "class" {
-                consumed_class_kv = true;
-                for c in v.split_whitespace() {
-                    if let Some(side) = AlignSide::from_keyword(c) {
-                        media.align = Some(side);
-                    } else if let Some(f) = Fit::from_keyword(c) {
-                        media.fit = Some(f);
-                    } else if let Some(p) = Position::from_keyword(c) {
-                        media.position = Some(p);
-                    } else if !media.class_names.iter().any(|x| x == c) {
-                        media.class_names.push(c.to_string());
-                    }
-                }
-            }
-        }
-        for (k, v) in &block.kvs {
-            if consumed_class_kv && k == "class" {
-                continue;
-            }
-            media.extra_attrs.insert(k.clone(), v.clone());
         }
     }
 
@@ -1483,6 +1466,13 @@ mod tests {
                     "expected object-fit:cover, got: {}",
                     s,
                 );
+                // Structural alias must not leak into accessible name:
+                // `cover` is a display keyword, not caption text.
+                assert!(
+                    s.contains(r#"alt="""#),
+                    "expected empty alt, got: {}",
+                    s,
+                );
             }
             other => panic!("expected Html, got: {:?}", other),
         }
@@ -1635,12 +1625,62 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_image_with_width_and_fit_emits_fit_style() {
-        // `![[hero.jpg|wide cover]]` — width AND fit. The width token is
-        // peeled off into `embed.width`; the remaining `cover` is what the
-        // new dispatcher branch sees. Today the figure-wrapper width is NOT
-        // threaded through this branch (it lives on the figure, not the
-        // img), but fit MUST still emit.
+    fn dispatch_image_params_style_does_not_duplicate_style_attribute() {
+        // Regression test: an author-typed `style=foo` in the K=V pothole
+        // used to land in `MediaAttrs::extra_attrs` and emit a second
+        // `style="foo"` attribute after the synth's `style="object-fit:…"`.
+        // The browser would honor the last `style=` and drop moss's
+        // object-fit silently. `build_image_media_attrs` now filters
+        // `style` out of `extra_attrs` since the synth owns inline-style
+        // emission.
+        let graph = build_graph(&["hero.jpg"]);
+        let emit = dispatch_wikilink_embed(
+            "hero.jpg",
+            Some("fit=cover style=bar"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                let style_count = s.matches("style=").count();
+                assert_eq!(
+                    style_count, 1,
+                    "expected exactly one style= attribute, got {} in: {}",
+                    style_count, s,
+                );
+                assert!(s.contains("object-fit:cover"), "got: {}", s);
+                // The author's `style=bar` is silently dropped — better
+                // than two style= attrs. Document the trade-off via
+                // assertion.
+                assert!(!s.contains(r#"style="bar""#), "got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_image_with_width_and_fit_emits_fit_but_drops_width() {
+        // `![[hero.jpg|wide cover]]` — width AND fit in one space-separated
+        // alias. The width token gets stripped from the alias-cleaning step
+        // (so fit still parses cleanly through `parse_media_attrs`), but
+        // the dispatcher's image branch hard-codes `ImageContext::MarkdownInline`
+        // — there is no `data-width=` slot on the inner `<img>`. Width
+        // belongs on the `<figure>` wrapper, which this branch doesn't emit.
+        //
+        // **Known limitation, not a regression**: the pre-fix path through
+        // `ImageRenderer::render_to_markdown` ALSO dropped width here (the
+        // `let _ = params;` line discarded it along with fit/position). The
+        // legacy figure-wrap path via Phase 3 PR4's retired `parse_title`
+        // would have surfaced it, but that's gone. Restoring it is Phase 4
+        // territory (TODO: collapse this branch into `SynthKind::Image` with
+        // context-aware emission — see the polish-pass plan's Item B
+        // discussion and the architecture review of this commit).
+        //
+        // The test pins the CURRENT behavior so a future refactor that
+        // accidentally re-surfaces width has to update this assertion
+        // intentionally.
         let graph = build_graph(&["hero.jpg"]);
         let emit = dispatch_wikilink_embed(
             "hero.jpg",
@@ -1651,11 +1691,18 @@ mod tests {
             &empty_snapshot(),
         );
         match emit.output {
-            EmitKind::Html(s) => assert!(
-                s.contains("object-fit:cover"),
-                "expected object-fit:cover, got: {}",
-                s,
-            ),
+            EmitKind::Html(s) => {
+                assert!(
+                    s.contains("object-fit:cover"),
+                    "expected object-fit:cover, got: {}",
+                    s,
+                );
+                assert!(
+                    !s.contains(r#"data-width="#),
+                    "current branch does not thread width to figure wrap, got: {}",
+                    s,
+                );
+            }
             other => panic!("expected Html, got: {:?}", other),
         }
     }
