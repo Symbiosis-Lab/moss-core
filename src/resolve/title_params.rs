@@ -19,9 +19,11 @@
 //! - `parse_title` (deserialized `moss:K=V K=V` from a markdown title) —
 //!   no consumer remains. Wikilink potholes are parsed by
 //!   [`super::wikilink_dispatch::parse_pothole_params`] instead.
-//! - `emit_title` is being retired in PR3 alongside `format_img_tag`
-//!   (the last remaining producer). Until then it lives below as a
-//!   transitional helper; once PR3 lands it goes with `format_img_tag`.
+//! - `emit_title` — Phase 3 PR4.5 (2026-05-27): retired with no
+//!   surviving caller. PR3 removed `format_img_tag` (the last producer);
+//!   PR4 dropped `parse_title` (the last consumer); PR4.5 routes
+//!   non-image wikilink embeds directly to synth, removing the final
+//!   transitional hold on the `moss:` markdown round-trip.
 
 use std::collections::BTreeMap;
 
@@ -41,72 +43,5 @@ impl TitleParams {
 
     pub fn insert(&mut self, k: impl Into<String>, v: impl Into<String>) {
         self.params.insert(k.into(), v.into());
-    }
-}
-
-const MOSS_PREFIX: &str = "moss:";
-
-/// Emit a title-attribute string. Always includes the `moss:` prefix.
-/// Empty params produce `"moss:"` (still recognized as moss-extension marker
-/// — useful for "this is moss but no params" sentinel).
-///
-/// **Pending retirement in PR3** alongside `crate::media::format_img_tag`
-/// (the only remaining production caller). The output of this function is
-/// emitted into the markdown stream but no consumer reads the `moss:` prefix
-/// back — `parse_title` retired in PR4. Until PR3 lands, this stays as a
-/// dead-write helper to keep `format_img_tag`'s test pinning intact.
-pub fn emit_title(params: &TitleParams) -> String {
-    let mut out = String::from(MOSS_PREFIX);
-    let mut first = true;
-    for (k, v) in &params.params {
-        if !first {
-            out.push(' ');
-        } else {
-            first = false;
-        }
-        out.push_str(k);
-        out.push('=');
-        if v.contains(|c: char| c.is_whitespace() || c == '"') {
-            out.push('"');
-            for c in v.chars() {
-                if c == '"' || c == '\\' {
-                    out.push('\\');
-                }
-                out.push(c);
-            }
-            out.push('"');
-        } else {
-            out.push_str(v);
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn empty_params_emit_just_prefix() {
-        let p = TitleParams::default();
-        assert_eq!(emit_title(&p), "moss:");
-    }
-
-    #[test]
-    fn emit_round_trip_shape() {
-        let mut p = TitleParams::default();
-        p.insert("width", "wide");
-        p.insert("align", "left");
-        let s = emit_title(&p);
-        // BTreeMap → alphabetical order
-        assert_eq!(s, "moss:align=left width=wide");
-    }
-
-    #[test]
-    fn emit_quotes_when_value_has_whitespace() {
-        let mut p = TitleParams::default();
-        p.insert("caption", "A nice photo");
-        let s = emit_title(&p);
-        assert_eq!(s, r#"moss:caption="A nice photo""#);
     }
 }

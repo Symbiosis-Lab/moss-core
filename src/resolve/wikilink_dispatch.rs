@@ -39,11 +39,12 @@
 //!   The every-token-K=V rule (locked by arch review) prevents free-text
 //!   captions like `alt text=cover` from being mis-parsed as `text=cover`.
 
+use crate::asset_snapshot::AssetSnapshot;
 use crate::content_graph::ContentGraph;
 use crate::media::extract_width_from_alias;
 
 use super::embed_renderer::{
-    lookup_renderer, EmbedRenderer, ParsedEmbed, RenderedEmbed,
+    lookup_renderer, EmbedRenderer, ParsedEmbed, RenderedEmbed, Sizing,
 };
 use super::fuzzy_path::{relative_asset_path, resolve_reference, ResolvedRef};
 use super::title_params::TitleParams;
@@ -276,6 +277,7 @@ pub fn dispatch_wikilink_embed(
     is_embed: bool,
     graph: &ContentGraph,
     from_path: &str,
+    assets: &AssetSnapshot,
 ) -> WikilinkEmit {
     dispatch_wikilink_embed_with_lookup(
         dest_url,
@@ -283,6 +285,7 @@ pub fn dispatch_wikilink_embed(
         is_embed,
         graph,
         from_path,
+        assets,
         &|ext| lookup_renderer(ext).map(|r| r as &dyn EmbedRenderer),
     )
 }
@@ -295,6 +298,7 @@ pub fn dispatch_wikilink_embed_with_registry(
     is_embed: bool,
     graph: &ContentGraph,
     from_path: &str,
+    assets: &AssetSnapshot,
     registry: &super::registry::RendererRegistry,
 ) -> WikilinkEmit {
     dispatch_wikilink_embed_with_lookup(
@@ -303,6 +307,7 @@ pub fn dispatch_wikilink_embed_with_registry(
         is_embed,
         graph,
         from_path,
+        assets,
         &|ext| registry.lookup(ext).map(|r| r as &dyn EmbedRenderer),
     )
 }
@@ -313,6 +318,7 @@ fn dispatch_wikilink_embed_with_lookup(
     is_embed: bool,
     graph: &ContentGraph,
     from_path: &str,
+    assets: &AssetSnapshot,
     lookup: &dyn Fn(&str) -> Option<&dyn EmbedRenderer>,
 ) -> WikilinkEmit {
     let split = split_dest_url(dest_url);
@@ -322,7 +328,7 @@ fn dispatch_wikilink_embed_with_lookup(
     };
 
     if is_embed {
-        dispatch_embed_form(&split, pothole_content, graph, from_path, lookup)
+        dispatch_embed_form(&split, pothole_content, graph, from_path, assets, lookup)
     } else {
         dispatch_wikilink_form(&split, pothole_content, graph, from_path)
     }
@@ -334,6 +340,7 @@ fn dispatch_embed_form(
     pothole: PotholeContent,
     graph: &ContentGraph,
     from_path: &str,
+    assets: &AssetSnapshot,
     lookup: &dyn Fn(&str) -> Option<&dyn EmbedRenderer>,
 ) -> WikilinkEmit {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -419,7 +426,39 @@ fn dispatch_embed_form(
                 attrs: None,
             };
 
-            let emit = match path_extension(&target_path).as_deref().and_then(lookup) {
+            // Phase 3 PR4.5 (2026-05-27): non-image wikilink embeds
+            // (video / pdf / audio / iframe / 3D) route DIRECTLY to the
+            // typed-HTML synthesizer here. Previously they emitted
+            // `EmitKind::Inline(markdown_link)` with a `moss:kind=…`
+            // title that Stage 2 was supposed to read back via
+            // `parse_title` — but PR4 deleted `parse_title`, and PR2's
+            // markdown round-trip had already been dropping the title.
+            // The result was non-image embeds rendering as plain
+            // `<a href>` links. The fix is to skip the round-trip
+            // entirely: derive `TitleParams` from the pothole content
+            // and the resolved URL, then hand them straight to the
+            // per-kind synthesizer. Image embeds keep their inline-
+            // markdown emission so `<picture>` / `<figure>` wrap stays
+            // in the markdown round-trip path that already worked.
+            let ext = path_extension(&target_path).map(|s| s.to_ascii_lowercase());
+            let url = relative_asset_path(from_path, &target_path);
+            if let Some(synth_kind) = ext.as_deref().and_then(synth_kind_for_ext) {
+                let params = build_synth_params(synth_kind, &parsed, &pothole);
+                let html = match synth_kind {
+                    SynthKind::Video => crate::render::video::synthesize_video_html(&params, &url, assets),
+                    SynthKind::Pdf => crate::render::pdf::synthesize_pdf_html(&params, &url, assets),
+                    SynthKind::Audio => crate::render::audio::synthesize_audio_html(&params, &url, assets),
+                    SynthKind::Iframe => crate::render::iframe::synthesize_iframe_html(&params, &url, assets),
+                    SynthKind::Model => crate::render::model::synthesize_model_html(&params, &url, assets),
+                };
+                return WikilinkEmit {
+                    output: EmitKind::Html(html),
+                    outgoing_link: Some(outgoing),
+                    diagnostics,
+                };
+            }
+
+            let emit = match ext.as_deref().and_then(lookup) {
                 Some(r) => match r.render(&parsed) {
                     RenderedEmbed::Inline(s) => EmitKind::Inline(s),
                     RenderedEmbed::Html(s) => EmitKind::Html(s),
@@ -428,7 +467,6 @@ fn dispatch_embed_form(
                 None => {
                     // Fallback: plain file link (Obsidian parity for
                     // unknown extensions).
-                    let url = relative_asset_path(from_path, &target_path);
                     EmitKind::Inline(format!("[{}]({})", split.file, url))
                 }
             };
@@ -552,6 +590,128 @@ fn path_extension(path: &str) -> Option<String> {
     let pos = filename.rfind('.')?;
     #[allow(clippy::string_slice)]
     Some(filename[pos + 1..].to_string())
+}
+
+/// Discriminant for the per-kind HTML synthesizer the dispatcher routes to
+/// directly (Phase 3 PR4.5). Non-image / non-deferred extensions skip the
+/// markdown round-trip and emit `EmitKind::Html` straight from the synth
+/// function — see the dispatcher branch in `dispatch_embed_form`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SynthKind {
+    Video,
+    Pdf,
+    Audio,
+    Iframe,
+    Model,
+}
+
+/// Classify a file extension into a [`SynthKind`] when the dispatcher should
+/// emit final HTML directly. Returns `None` for image (`png`/`jpg`/...) —
+/// which keeps its inline-markdown round-trip — and for deferred kinds
+/// (`md`/`ipynb`/`csv`/`tsv`) which still need src-tauri post-passes.
+///
+/// Extension tables MUST stay in sync with the corresponding `EmbedRenderer`
+/// `extensions()` slices in `embed_renderer.rs`. A future refactor that
+/// surfaces the kind on the renderer trait could remove this duplication.
+fn synth_kind_for_ext(ext: &str) -> Option<SynthKind> {
+    let lower = ext.to_ascii_lowercase();
+    match lower.as_str() {
+        "mp4" | "webm" | "mov" | "m4v" => Some(SynthKind::Video),
+        "pdf" => Some(SynthKind::Pdf),
+        "mp3" | "wav" | "ogg" | "flac" | "m4a" | "opus" => Some(SynthKind::Audio),
+        "html" | "htm" => Some(SynthKind::Iframe),
+        "glb" | "gltf" => Some(SynthKind::Model),
+        _ => None,
+    }
+}
+
+/// Build the [`TitleParams`] handed to a per-kind synthesizer.
+///
+/// Mirrors the `*_extra_params` helpers in `embed_renderer.rs` (which fed
+/// the legacy `moss:title` round-trip) — they are the canonical reference
+/// for which params each synth function reads. Notable shape:
+///
+/// - **`data-width`** carries the canonical wrapper width (`body | wide |
+///   page | screen`) when the pothole was an Obsidian width-token. Synth
+///   functions emit it as the `data-width=` attribute on the wrapping
+///   element.
+/// - **`width` / `height`** come from `|WxH` sizing aliases parsed via
+///   [`Sizing`]. Pixel/percent/vh values are CSS-formatted.
+/// - **`title`** (iframe only) carries non-sizing alias text as the
+///   iframe's accessible name (legacy behaviour: `[[widget.html|My Widget]]`).
+/// - **`query` / `fragment`** (iframe/pdf only) reconstruct the served URL
+///   from the split dest-url — pulldown-cmark percent-encodes `?` and `#`
+///   if they stay in the URL slot, so the dispatcher hands them out-of-band.
+/// - **Pothole `Params`** are folded last so author-typed `width=400` etc.
+///   override the alias-derived values (every-token-K=V rule wins).
+fn build_synth_params(
+    kind: SynthKind,
+    embed: &ParsedEmbed<'_>,
+    pothole: &PotholeContent,
+) -> TitleParams {
+    let mut params = TitleParams::default();
+    if let Some(w) = embed.width {
+        params.insert("data-width", w);
+    }
+
+    // iframe / pdf carry ?query and #fragment out-of-band on the synth side.
+    if matches!(kind, SynthKind::Iframe | SynthKind::Pdf) {
+        if let Some(q) = embed.query {
+            params.insert("query", q);
+        }
+        if let Some(f) = embed.section {
+            params.insert("fragment", f);
+        }
+    }
+
+    // Per-kind alias handling. `embed.alias` is the pothole's alias-shaped
+    // remainder (already excludes width tokens) — for non-image kinds it
+    // overwhelmingly looks like a `|WxH` sizing hint, but iframe also
+    // supports free-text titles.
+    if let Some(alias) = embed.alias {
+        match kind {
+            SynthKind::Video | SynthKind::Pdf | SynthKind::Model => {
+                match Sizing::parse(alias) {
+                    Some(Sizing::Width(w)) => {
+                        params.insert("width", w.to_css());
+                    }
+                    Some(Sizing::Box(w, h)) => {
+                        params.insert("width", w.to_css());
+                        params.insert("height", h.to_css());
+                    }
+                    None => {}
+                }
+            }
+            SynthKind::Iframe => match Sizing::parse(alias) {
+                Some(Sizing::Width(w)) => {
+                    params.insert("width", w.to_css());
+                }
+                Some(Sizing::Box(w, h)) => {
+                    params.insert("width", w.to_css());
+                    params.insert("height", h.to_css());
+                }
+                None => {
+                    // Non-sizing alias text → iframe accessible name.
+                    params.insert("title", alias);
+                }
+            },
+            SynthKind::Audio => {
+                // Audio synthesizer reads no alias-derived params today
+                // (controls / preload defaults are unconditional). Leave
+                // params untouched.
+            }
+        }
+    }
+
+    // Author-typed K=V params win over alias-derived values (every-token
+    // rule already validated by `parse_pothole_params`).
+    if let PotholeContent::Params(p) = pothole {
+        for (k, v) in &p.params {
+            params.insert(k.clone(), v.clone());
+        }
+    }
+
+    params
 }
 
 // ---------------------------------------------------------------------------
@@ -747,10 +907,24 @@ mod tests {
         b.build()
     }
 
+    /// Helper: empty AssetSnapshot. Phase 3 PR4.5 (2026-05-27) added the
+    /// `assets` parameter to dispatch_wikilink_embed so non-image embed
+    /// kinds can route directly to their HTML synthesizers.
+    fn empty_snapshot() -> AssetSnapshot {
+        AssetSnapshot::new()
+    }
+
     #[test]
     fn dispatch_bare_wikilink_is_link() {
         let graph = build_graph(&["notes.md"]);
-        let emit = dispatch_wikilink_embed("notes", None, /* is_embed */ false, &graph, "index.md");
+        let emit = dispatch_wikilink_embed(
+            "notes",
+            None,
+            /* is_embed */ false,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
         match emit.output {
             EmitKind::Link(link) => {
                 assert!(link.contains("notes"));
@@ -771,6 +945,7 @@ mod tests {
             false,
             &graph,
             "index.md",
+            &empty_snapshot(),
         );
         match emit.output {
             EmitKind::Link(link) => {
@@ -783,7 +958,14 @@ mod tests {
     #[test]
     fn dispatch_unresolved_wikilink_emits_diagnostic() {
         let graph = build_graph(&[]);
-        let emit = dispatch_wikilink_embed("missing", None, false, &graph, "index.md");
+        let emit = dispatch_wikilink_embed(
+            "missing",
+            None,
+            false,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
         assert_eq!(emit.diagnostics.len(), 1);
         match emit.output {
             EmitKind::Link(link) => assert!(link.contains("moss-unresolved:")),
@@ -800,6 +982,7 @@ mod tests {
             false,
             &graph,
             "index.md",
+            &empty_snapshot(),
         );
         match emit.output {
             EmitKind::Link(link) => {
@@ -814,7 +997,14 @@ mod tests {
     #[test]
     fn dispatch_image_embed_uses_image_renderer() {
         let graph = build_graph(&["photo.jpg"]);
-        let emit = dispatch_wikilink_embed("photo.jpg", None, /* is_embed */ true, &graph, "index.md");
+        let emit = dispatch_wikilink_embed(
+            "photo.jpg",
+            None,
+            /* is_embed */ true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
         match emit.output {
             EmitKind::Inline(s) => {
                 // ImageRenderer emits Inline markdown `![alt](url)` for the
@@ -827,27 +1017,159 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_video_extension_routes_to_video_renderer() {
+    fn dispatch_video_extension_routes_to_synth() {
+        // Phase 3 PR4.5 (2026-05-27): non-image wikilinks now route
+        // DIRECTLY to the per-kind synthesizer — the markdown round-trip
+        // is gone (it was dropping the `moss:kind=…` title since PR2 and
+        // entirely silent after PR4 deleted `parse_title`). The dispatcher
+        // returns `EmitKind::Html` carrying the `<video>` byte shape; we
+        // pin only the structural identity (element + src) so byte-shape
+        // changes are owned by the synth tests in `render/video.rs`.
         let graph = build_graph(&["clip.mp4"]);
-        let emit = dispatch_wikilink_embed("clip.mp4", None, true, &graph, "index.md");
-        // Phase 3 PR4 (2026-05-27): per-kind Inline markdown is bare —
-        // `moss:kind=video` title channel retired. Identity is the
-        // file-stem alt + url shape; Stage 2 synth dispatch will move
-        // out of the markdown round-trip in a follow-up.
+        let emit = dispatch_wikilink_embed(
+            "clip.mp4",
+            None,
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
         match emit.output {
-            EmitKind::Inline(s) => assert_eq!(s, "[clip](clip.mp4)"),
-            other => panic!("expected Inline markdown link, got: {:?}", other),
+            EmitKind::Html(s) => {
+                assert!(s.contains("<video"), "expected <video>, got: {}", s);
+                assert!(s.contains(r#"src="clip.mp4""#), "expected src=, got: {}", s);
+                assert!(s.contains("moss-embed-video"), "expected class, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
         }
     }
 
     #[test]
-    fn dispatch_pdf_extension_routes_to_pdf_renderer() {
+    fn dispatch_pdf_extension_routes_to_synth() {
+        // See `dispatch_video_extension_routes_to_synth` for the PR4.5
+        // routing rationale. PdfRenderer emits an `<object type="application/pdf">`.
         let graph = build_graph(&["report.pdf"]);
-        let emit = dispatch_wikilink_embed("report.pdf", None, true, &graph, "index.md");
-        // Phase 3 PR4: bare-markdown emission (see video test above).
+        let emit = dispatch_wikilink_embed(
+            "report.pdf",
+            None,
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
         match emit.output {
-            EmitKind::Inline(s) => assert_eq!(s, "[report](report.pdf)"),
-            other => panic!("expected Inline markdown link, got: {:?}", other),
+            EmitKind::Html(s) => {
+                assert!(s.contains("<object"), "expected <object>, got: {}", s);
+                assert!(s.contains(r#"data="report.pdf""#), "expected data=, got: {}", s);
+                assert!(s.contains(r#"type="application/pdf""#), "expected type=, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_audio_extension_routes_to_synth() {
+        let graph = build_graph(&["song.mp3"]);
+        let emit = dispatch_wikilink_embed(
+            "song.mp3",
+            None,
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains("<audio"), "expected <audio>, got: {}", s);
+                assert!(s.contains(r#"src="song.mp3""#), "expected src=, got: {}", s);
+                assert!(s.contains(r#"type="audio/mpeg""#), "expected MIME, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_iframe_extension_routes_to_synth() {
+        let graph = build_graph(&["widget.html"]);
+        let emit = dispatch_wikilink_embed(
+            "widget.html",
+            None,
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains("<iframe"), "expected <iframe>, got: {}", s);
+                assert!(s.contains(r#"src="widget.html""#), "expected src=, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_model_extension_routes_to_synth() {
+        let graph = build_graph(&["scene.glb"]);
+        let emit = dispatch_wikilink_embed(
+            "scene.glb",
+            None,
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains("<model-viewer"), "expected <model-viewer>, got: {}", s);
+                assert!(s.contains(r#"src="scene.glb""#), "expected src=, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_iframe_alias_carries_title() {
+        // `![[widget.html|Embedded Widget]]` — non-sizing alias text
+        // surfaces on the iframe as the `title=` accessible name. The
+        // synth function reads `params.get("title")`; `build_synth_params`
+        // routes the alias there for iframe-kind.
+        let graph = build_graph(&["widget.html"]);
+        let emit = dispatch_wikilink_embed(
+            "widget.html",
+            Some("Embedded Widget"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains(r#"title="Embedded Widget""#), "got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_video_sizing_alias_propagates_dims() {
+        // `![[clip.mp4|640x360]]` — sizing alias becomes width/height
+        // CSS-formatted on the <video>.
+        let graph = build_graph(&["clip.mp4"]);
+        let emit = dispatch_wikilink_embed(
+            "clip.mp4",
+            Some("640x360"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains(r#"width="640px""#), "got: {}", s);
+                assert!(s.contains(r#"height="360px""#), "got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
         }
     }
 
@@ -875,6 +1197,7 @@ mod tests {
             true,
             &graph,
             "index.md",
+            &empty_snapshot(),
         );
         match emit.output {
             EmitKind::Inline(s) => assert_eq!(s, "![](photo.jpg)"),
