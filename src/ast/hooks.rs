@@ -165,19 +165,23 @@ pub trait RenderHooks {
                     out.push('"');
                 }
                 out.push('>');
-                // Phase 2E v5 PR3 (2026-05-26): when the impl carries an
-                // `AssetSnapshot` (production path via
-                // `DefaultHooks::with_snapshot`), each gallery item routes
+                // Phase 4 PR1 (2026-05-27): every gallery item routes
                 // through `render::image::synthesize_image_html` with
-                // `ImageContext::GalleryThumb` — producing the canonical
-                // synth byte shape (`<picture><source srcset=*.webp>`
-                // wrap, dims, LQIP, `loading="lazy"`). When `self.assets`
-                // is `None` (tests, fragment-render paths), graceful-
-                // degrade to the legacy bare-`<img>` emission so the
-                // surviving regex post-pass picks up the attributes.
-                // The legacy branch matches the pre-PR3 byte shape
-                // exactly (no escape on src; alt unescaped).
-                let assets_for_synth = self.gallery_assets();
+                // `ImageContext::GalleryThumb`. When the impl carries an
+                // `AssetSnapshot` (production path via
+                // `DefaultHooks::with_snapshot`), the synth emits the
+                // canonical byte shape — `<picture><source srcset=*.webp>`
+                // wrap, dims from the snapshot, LQIP, `loading="lazy"`.
+                // When the impl carries no snapshot (test / fragment-render
+                // paths), an empty `AssetSnapshot` is threaded through:
+                // synth still emits `<picture>` for raster originals but
+                // with fallback dims (800×600) and no LQIP/color style.
+                // The legacy bare-`<img>` fallback was retired in Phase 4
+                // PR1 — every `<img>` must be synth-emitted (or a
+                // documented carve-out) per the `img_contract_test`
+                // invariant.
+                let empty_snapshot = crate::asset_snapshot::AssetSnapshot::new();
+                let assets_for_synth = self.gallery_assets().unwrap_or(&empty_snapshot);
                 for item in &args.items {
                     let src_str = match &item.src {
                         crate::ast::url::Url::Resolved(r) => r.href.clone(),
@@ -191,51 +195,30 @@ pub trait RenderHooks {
                         }
                     };
                     out.push_str(r#"<div class="moss-gallery-item">"#);
-                    if let Some(assets) = assets_for_synth {
-                        // Synth path: full attribute set + optional
-                        // <picture> wrap. The per-item inline style from
-                        // MediaAttrs (e.g. object-position) flows through
-                        // ImageRenderOptions::extra_attrs so the
-                        // synthesizer's LQIP / dim emission joins it
-                        // correctly (the synth suppresses its own
-                        // style= when extra_attrs already carries one,
-                        // matching the legacy regex's has_style guard).
-                        let media_style = crate::media::parse_media_attrs(&item.attrs)
-                            .to_inline_style();
-                        let style_frag = media_style
-                            .map(|s| format!(r#"style="{}""#, s));
-                        let opts = crate::render::image::ImageRenderOptions {
-                            eager: false,
-                            extra_attrs: style_frag.as_deref(),
-                            ..Default::default()
-                        };
-                        let item_html = crate::render::image::synthesize_image_html(
-                            &src_str,
-                            &item.alt,
-                            assets,
-                            crate::render::image::ImageContext::GalleryThumb,
-                            &opts,
-                        );
-                        out.push_str(&item_html);
-                    } else {
-                        // Legacy bare-<img> path (no snapshot in scope).
-                        // The surviving regex pass injects dims / LQIP /
-                        // <picture> wrap downstream. Byte shape must match
-                        // pre-PR3 emission for test/fragment-render
-                        // parity.
-                        out.push_str(r#"<img src=""#);
-                        out.push_str(&src_str);
-                        out.push_str(r#"" alt=""#);
-                        out.push_str(&item.alt);
-                        out.push_str(r#"" loading="lazy""#);
-                        let style = crate::media::parse_media_attrs(&item.attrs);
-                        if let Some(s) = style.to_inline_style() {
-                            out.push_str(r#" style=""#);
-                            out.push_str(&s);
-                            out.push('"');
-                        }
-                        out.push('>');
-                    }
+                    // Synth path: full attribute set + optional <picture>
+                    // wrap. The per-item inline style from MediaAttrs
+                    // (e.g. object-position) flows through
+                    // ImageRenderOptions::extra_attrs so the synthesizer's
+                    // LQIP / dim emission joins it correctly (the synth
+                    // suppresses its own style= when extra_attrs already
+                    // carries one, matching the legacy regex's has_style
+                    // guard).
+                    let media_style =
+                        crate::media::parse_media_attrs(&item.attrs).to_inline_style();
+                    let style_frag = media_style.map(|s| format!(r#"style="{}""#, s));
+                    let opts = crate::render::image::ImageRenderOptions {
+                        eager: false,
+                        extra_attrs: style_frag.as_deref(),
+                        ..Default::default()
+                    };
+                    let item_html = crate::render::image::synthesize_image_html(
+                        &src_str,
+                        &item.alt,
+                        assets_for_synth,
+                        crate::render::image::ImageContext::GalleryThumb,
+                        &opts,
+                    );
+                    out.push_str(&item_html);
                     out.push_str("</div>");
                 }
                 out.push_str("</div>");
@@ -326,6 +309,19 @@ pub trait RenderHooks {
                 // emits a minimal `<section class="moss-hero">` so unit
                 // tests can pattern-match on the wrapper without
                 // depending on the full pipeline.
+                //
+                // Phase 4 PR1 (2026-05-27): the inner `<img>` is now
+                // emitted via [`crate::render::image::synthesize_image_html`]
+                // instead of a bare `<img>` literal so the `img_contract_test`
+                // invariant ("every <img> is synth-emitted or a documented
+                // carve-out") holds when `render_document` runs through
+                // `DefaultHooks`. When the impl carries a snapshot
+                // (`gallery_assets()` is `Some`) the synth uses
+                // `ImageContext::Hero` (full `<picture>`/dims/LQIP byte
+                // shape); without a snapshot it falls back to the
+                // `ImageContext::HeroBare` carve-out per ADR-013 — the
+                // legitimate "before set_pending" path where no variant
+                // can be promised.
                 let mut class_attr = String::from("moss-hero");
                 if !args.classes.is_empty() {
                     class_attr.push(' ');
@@ -352,9 +348,15 @@ pub trait RenderHooks {
                             s.clone()
                         }
                     };
-                    out.push_str(r#"<img src=""#);
-                    out.push_str(&escape_attr(&src));
-                    out.push_str(r#"" alt="" />"#);
+                    let empty_snapshot = crate::asset_snapshot::AssetSnapshot::new();
+                    let (snap, ctx) = match self.gallery_assets() {
+                        Some(s) => (s, crate::render::image::ImageContext::Hero),
+                        None => (&empty_snapshot, crate::render::image::ImageContext::HeroBare),
+                    };
+                    let opts = crate::render::image::ImageRenderOptions::default();
+                    let img_html =
+                        crate::render::image::synthesize_image_html(&src, "", snap, ctx, &opts);
+                    out.push_str(&img_html);
                 }
                 if !args.overlay_markdown.is_empty() {
                     out.push_str(r#"<div class="moss-hero-content">"#);
@@ -479,6 +481,73 @@ impl<'a> DefaultHooks<'a> {
 impl<'a> RenderHooks for DefaultHooks<'a> {
     fn gallery_assets(&self) -> Option<&crate::asset_snapshot::AssetSnapshot> {
         self.assets
+    }
+
+    /// Phase 4 PR1 (2026-05-27): when the impl carries an `AssetSnapshot`
+    /// (production path via [`DefaultHooks::with_snapshot`]), route the
+    /// inline `Inline::Image` emission through
+    /// [`crate::render::image::synthesize_image_html`] with
+    /// [`crate::render::image::ImageContext::MarkdownStandalone`] — the
+    /// canonical synth byte shape (`<figure class="moss-image">` wrap
+    /// when caption is present, `<picture>` for raster originals, dims,
+    /// LQIP, `loading="lazy"`). Without a snapshot, fall back to the
+    /// trait's default bare-`<img>` emission (test / fragment-render
+    /// paths). The fallback is the only documented bare-`<img>` exit
+    /// from the renderer after Phase 4 — production consumers
+    /// (`PipelineHooks`) always provide a populated snapshot.
+    ///
+    /// `title` becomes the `<figcaption>` when present (captions in
+    /// markdown images today flow through the title field via the
+    /// post-PR4 `moss:`-channel-retired pipeline). When `title` is
+    /// `None`, the synth emits `<figure>` with no caption — matching
+    /// today's image-only paragraph emission shape.
+    fn render_image(
+        &self,
+        out: &mut String,
+        src: &ResolvedUrl,
+        alt: &str,
+        title: Option<&str>,
+    ) {
+        let assets = match self.assets {
+            Some(a) => a,
+            None => {
+                // No snapshot in scope — fall back to the trait's
+                // bare-`<img>` default. This is the test-only path; the
+                // production path always provides a snapshot via
+                // `PipelineHooks::render_image`.
+                out.push_str(r#"<img src=""#);
+                out.push_str(&escape_attr(&src.href));
+                out.push_str(r#"" alt=""#);
+                out.push_str(&escape_attr(alt));
+                out.push('"');
+                if let Some(t) = title {
+                    out.push_str(r#" title=""#);
+                    out.push_str(&escape_attr(t));
+                    out.push('"');
+                }
+                out.push_str(" />");
+                return;
+            }
+        };
+        let class_names: &[String] = &[];
+        let extra_attrs: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let ctx = crate::render::image::ImageContext::MarkdownStandalone {
+            caption: title,
+            width: None,
+            align: None,
+            class_names,
+            extra_attrs: &extra_attrs,
+        };
+        let opts = crate::render::image::ImageRenderOptions::default();
+        let html = crate::render::image::synthesize_image_html(
+            &src.href,
+            alt,
+            assets,
+            ctx,
+            &opts,
+        );
+        out.push_str(&html);
     }
 }
 
@@ -745,19 +814,24 @@ mod tests {
         );
     }
 
-    // ── DefaultHooks::with_snapshot — Gallery synth path ─────────────
+    // ── DefaultHooks Gallery synth path (Phase 4 PR1) ────────────────
     //
-    // `DefaultHooks::new()` emits the legacy bare-`<img>` gallery item shape
-    // (the surviving regex post-pass fills in dims / LQIP / `<picture>` wrap
-    // downstream). `DefaultHooks::with_snapshot(snap)` routes each item
-    // through `synthesize_image_html` with `ImageContext::GalleryThumb` —
-    // producing the canonical synth byte shape directly from the snapshot.
+    // Pre-Phase-4-PR1, `DefaultHooks::new()` (no snapshot) emitted a
+    // legacy bare-`<img>` gallery-item shape and relied on a surviving
+    // regex post-pass to inject dims / LQIP / `<picture>` downstream.
+    // Phase 4 PR1 (2026-05-27) deleted that bare-`<img>` fallback: every
+    // gallery item now routes through
+    // `synthesize_image_html(..., GalleryThumb, ...)`, threading an empty
+    // `AssetSnapshot` through when no snapshot is in scope. Synth emits
+    // `<picture>` for raster originals in both cases (snapshot-present
+    // uses real dims/LQIP; snapshot-absent uses fallback dims, no LQIP).
     //
-    // Pre-Phase-2E-v5-PR3 (2026-05-26) only the legacy fallback was tested
-    // (all 25 unit tests in this file use `DefaultHooks::new()`). The synth
-    // path was exercised exclusively through snapshot fixtures — fragile
-    // for byte-shape regressions. These tests pin the structural
-    // invariants directly.
+    // Rationale: the `img_contract_test` invariant requires every `<img>`
+    // in moss output to be synth-emitted or a documented carve-out. The
+    // legacy bare-img fallback was unreachable from production code paths
+    // (PipelineHooks always provides a snapshot) but became reachable the
+    // moment `render_document` is wired into production — closing the
+    // gap preemptively in PR1.
 
     use crate::asset_snapshot::{AssetSnapshot, VariantKindSet};
     use std::path::PathBuf;
@@ -774,21 +848,24 @@ mod tests {
     }
 
     #[test]
-    fn default_hooks_new_gallery_emits_bare_img() {
-        // Legacy fallback: no snapshot in scope. The surviving regex
-        // post-pass injects dims / LQIP / `<picture>` downstream. The byte
-        // shape here must match the pre-PR3 emission so fragment-render
-        // paths (tests, in-app preview) stay consistent.
+    fn default_hooks_new_gallery_routes_through_synth_with_empty_snapshot() {
+        // Phase 4 PR1 (2026-05-27): the legacy bare-`<img>` fallback for
+        // the no-snapshot Gallery path is deleted; an empty
+        // `AssetSnapshot` is threaded through synth instead. For raster
+        // originals (.jpg/.jpeg/.png), synth still emits `<picture>` —
+        // with fallback dims (800×600) and no LQIP/color style — so the
+        // byte shape is identical between snapshot-present and snapshot-
+        // absent paths modulo the dim/style attribute values.
         let sc = gallery_with_one_item("photos/cat.jpg");
         let mut out = String::new();
         DefaultHooks::new().render_shortcode(&mut out, &sc);
         assert!(
-            out.contains(r#"<img src="photos/cat.jpg""#),
-            "expected bare <img>, got: {out}",
+            out.contains("<picture"),
+            "expected <picture> wrap even without snapshot (PR1: every <img> is synth), got: {out}",
         );
+        assert!(out.contains(r#"src="photos/cat.jpg""#), "got: {out}");
         assert!(out.contains(r#"alt="photo""#), "got: {out}");
         assert!(out.contains(r#"loading="lazy""#), "got: {out}");
-        assert!(!out.contains("<picture"), "legacy path must NOT emit <picture>, got: {out}");
     }
 
     #[test]
@@ -830,5 +907,155 @@ mod tests {
         DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc);
         assert!(out.contains(r#"width="800""#), "expected width=800, got: {out}");
         assert!(out.contains(r#"height="600""#), "expected height=600, got: {out}");
+    }
+
+    // ── DefaultHooks Hero synth path (Phase 4 PR1) ───────────────────
+    //
+    // Phase 4 PR1 (2026-05-27): the Hero arm of `render_shortcode` no
+    // longer emits a raw `<img src="…" alt="" />` — it routes through
+    // `synthesize_image_html` with `ImageContext::Hero` (snapshot
+    // present) or `ImageContext::HeroBare` (no snapshot — the legitimate
+    // ADR-013 carve-out). Both shapes satisfy `img_contract_test`'s
+    // invariant: `<picture>`-wrapped synth in the first case,
+    // `<section class="moss-hero">`-scoped bare-img in the second
+    // (HeroBare). The test below pins both paths so a future regression
+    // that drops the wrap, or drops the HeroBare invocation back to a
+    // direct literal `<img>` push, gets caught here.
+
+    fn hero_with_image(src: &str) -> Shortcode {
+        Shortcode::Hero(HeroShortcode {
+            image: Some(Url::resolved(src, UrlKind::Asset)),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn hero_default_routes_through_synth_with_hero_bare() {
+        // No snapshot: HeroBare carve-out — bare `<img>` shape inside
+        // `<section class="moss-hero">`. No `<picture>` wrap; no
+        // `loading=`. The carve-out is what `img_contract_test`'s
+        // `matches_carveout` detects via the enclosing
+        // `<section class="moss-hero"` parent + absent `loading=`.
+        let sc = hero_with_image("hero.jpg");
+        let mut out = String::new();
+        DefaultHooks::new().render_shortcode(&mut out, &sc);
+        assert!(
+            out.contains(r#"<section class="moss-hero""#),
+            "expected hero section wrap, got: {out}",
+        );
+        assert!(out.contains(r#"src="hero.jpg""#), "got: {out}");
+        // HeroBare carve-out: no `<picture>` (ADR-013 — no variant
+        // promised before set_pending), no `loading=` (CSS owns priority).
+        assert!(
+            !out.contains("<picture"),
+            "HeroBare must NOT emit <picture>, got: {out}",
+        );
+        assert!(
+            !out.contains("loading="),
+            "HeroBare must NOT emit loading attr, got: {out}",
+        );
+    }
+
+    #[test]
+    fn hero_with_snapshot_routes_through_synth_picture_wrap() {
+        // Snapshot present: full Hero synth — `<picture><source srcset=…>`
+        // for raster originals + dims from the snapshot.
+        let src = "hero.jpg";
+        let mut snap = AssetSnapshot::new();
+        snap.dimensions.insert(PathBuf::from(src), (1920, 1080));
+        snap.variants.insert(
+            PathBuf::from("hero"),
+            VariantKindSet { webp: true, avif: false },
+        );
+
+        let sc = hero_with_image(src);
+        let mut out = String::new();
+        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc);
+        assert!(
+            out.contains(r#"<section class="moss-hero""#),
+            "expected hero section wrap, got: {out}",
+        );
+        assert!(out.contains("<picture"), "expected <picture> wrap, got: {out}");
+        assert!(
+            out.contains(r#"srcset="hero.webp""#),
+            "expected webp srcset, got: {out}",
+        );
+        assert!(out.contains(r#"width="1920""#), "got: {out}");
+        assert!(out.contains(r#"height="1080""#), "got: {out}");
+    }
+
+    // ── DefaultHooks::render_image synth path (Phase 4 PR1) ──────────
+    //
+    // The `RenderHooks::render_image` default emits a bare `<img>`. The
+    // `DefaultHooks` impl overrides this to route through synth when a
+    // snapshot is in scope; without a snapshot it falls back to the
+    // trait default (test-only path). Both behaviors are pinned below.
+
+    #[test]
+    fn default_hooks_with_snapshot_render_image_emits_figure_wrap() {
+        // Snapshot present: `Inline::Image` rendering goes through synth
+        // with `MarkdownStandalone`. `title=None` here → no `<figcaption>`,
+        // but the `<figure class="moss-image">` wrapper IS emitted.
+        let src = "photos/cat.jpg";
+        let mut snap = AssetSnapshot::new();
+        snap.dimensions.insert(PathBuf::from(src), (800, 600));
+        snap.variants.insert(
+            PathBuf::from("photos/cat"),
+            VariantKindSet { webp: true, avif: false },
+        );
+
+        let hooks = DefaultHooks::with_snapshot(&snap);
+        let mut out = String::new();
+        hooks.render_image(
+            &mut out,
+            &ResolvedUrl::new(src, UrlKind::Asset),
+            "A cat",
+            None,
+        );
+        assert!(
+            out.contains(r#"<figure class="moss-image""#),
+            "expected <figure class=\"moss-image\"> wrap, got: {out}",
+        );
+        assert!(out.contains("<picture"), "expected <picture>, got: {out}");
+        assert!(out.contains(r#"loading="lazy""#), "got: {out}");
+        assert!(out.contains(r#"alt="A cat""#), "got: {out}");
+    }
+
+    #[test]
+    fn default_hooks_with_snapshot_render_image_emits_figcaption_when_title_present() {
+        // Snapshot + title: synth emits `<figcaption>title</figcaption>`
+        // inside the `<figure>` wrap.
+        let src = "photos/cat.jpg";
+        let mut snap = AssetSnapshot::new();
+        snap.dimensions.insert(PathBuf::from(src), (800, 600));
+
+        let hooks = DefaultHooks::with_snapshot(&snap);
+        let mut out = String::new();
+        hooks.render_image(
+            &mut out,
+            &ResolvedUrl::new(src, UrlKind::Asset),
+            "alt-text",
+            Some("Photo caption"),
+        );
+        assert!(
+            out.contains(r#"<figcaption>Photo caption</figcaption>"#),
+            "expected figcaption, got: {out}",
+        );
+    }
+
+    #[test]
+    fn default_hooks_new_render_image_falls_back_to_bare_img() {
+        // No snapshot: render_image falls back to the bare-`<img>` default
+        // (test-only path). Production routes through PipelineHooks's
+        // snapshot-aware override.
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_image(
+            &mut out,
+            &ResolvedUrl::new("cat.jpg", UrlKind::Asset),
+            "A cat",
+            None,
+        );
+        assert_eq!(out, r#"<img src="cat.jpg" alt="A cat" />"#);
     }
 }
