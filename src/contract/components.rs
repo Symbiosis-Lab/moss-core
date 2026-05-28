@@ -602,6 +602,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Description paragraph of a folder entry in minimal listings.",
     },
     ComponentEntry {
+        class: "moss-folder-empty-body",
+        kind: "standalone",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<p class="moss-folder-empty-body">(no posts yet)</p>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Placeholder body paragraph rendered on the synthetic empty-folder homepage (the user opens a folder containing no markdown). The folder name renders as `<h1 class=\"moss-folder-title\">` above it; this paragraph is the honest \"no posts yet\" body so the page is a real moss-rendered site, not a 404.",
+    },
+    ComponentEntry {
         class: "moss-folder-link",
         kind: "instance",
         parent: "moss-folder-item",
