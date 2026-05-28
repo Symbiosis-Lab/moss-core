@@ -284,11 +284,38 @@ pub enum Inline {
         #[serde(default)]
         is_wikilink: bool,
     },
-    /// `![alt](src "title")`
+    /// `![alt](src "title")` or `![[wikilink]]`.
+    ///
+    /// `is_wikilink` + `wikilink_pothole` (Phase 4 PR7a-flip-core-B,
+    /// 2026-05-28) preserve pulldown-cmark's `LinkType::WikiLink`
+    /// discriminator and the original pothole text so the
+    /// `dispatch_wikilink_embeds` visitor can route `![[v.mp4|width=400]]`
+    /// → per-extension renderer (video / pdf / audio / iframe / 3D /
+    /// notebook / etc) with the typed params intact. The parser's
+    /// `Tag::Image` arm captures the raw pothole BEFORE PR3.5's
+    /// wikilink-alt classification consumes it into the `alt` field;
+    /// without preservation, the `width=400` token is erased after
+    /// alt-classification.
+    ///
+    /// `is_wikilink: false` and `wikilink_pothole: None` for standard
+    /// `![alt](src)` markdown images.
     Image {
         src: Url,
         alt: String,
         title: Option<String>,
+        /// True when pulldown-cmark emitted `Tag::Image { link_type:
+        /// LinkType::WikiLink, .. }` (i.e. the markdown source was
+        /// `![[target]]` / `![[target|pothole]]`). Mirrors
+        /// `Inline::Link.is_wikilink`.
+        #[serde(default)]
+        is_wikilink: bool,
+        /// Original pothole text (after `|`) preserved verbatim from the
+        /// pulldown-cmark text events for wikilink images. `None` for
+        /// non-wikilink images and for wikilinks without a pothole
+        /// (pulldown-cmark synthesizes the dest as text when no pothole
+        /// is present).
+        #[serde(default)]
+        wikilink_pothole: Option<String>,
     },
     /// `*emphasis*`
     Emphasis(Vec<Inline>),
@@ -399,6 +426,8 @@ mod tests {
             src: Url::resolved("photo.jpg", UrlKind::Asset),
             alt: "A photo".to_string(),
             title: None,
+            is_wikilink: false,
+            wikilink_pothole: None,
         };
         let b = Block::Figure {
             image: image.clone(),
@@ -422,6 +451,8 @@ mod tests {
                 src: Url::resolved("x.jpg", UrlKind::Asset),
                 alt: String::new(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             },
             caption: None,
         };
@@ -457,9 +488,11 @@ mod tests {
             src: Url::resolved("img/cat.jpg", UrlKind::Asset),
             alt: "Cat".to_string(),
             title: None,
+            is_wikilink: false,
+            wikilink_pothole: None,
         };
         match i {
-            Inline::Image { src, alt, title: _ } => {
+            Inline::Image { src, alt, title: _, is_wikilink: _, wikilink_pothole: _ } => {
                 let r = src.as_resolved();
                 assert_eq!(r.kind, UrlKind::Asset);
                 assert_eq!(alt, "Cat");

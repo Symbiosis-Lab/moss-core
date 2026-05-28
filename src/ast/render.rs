@@ -231,7 +231,7 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
             // any other inline falls back to the standard inline path so
             // the renderer never panics on a malformed Figure.
             match image {
-                Inline::Image { src, alt, title } => {
+                Inline::Image { src, alt, title, .. } => {
                     match src {
                         Url::Resolved(r) => {
                             hooks.render_image(out, r, alt, title.as_deref());
@@ -356,7 +356,7 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
             // new signature carries both concerns orthogonally.
             hooks.render_link(out, resolved, *is_wikilink, &content);
         }
-        Inline::Image { src, alt, title } => {
+        Inline::Image { src, alt, title, .. } => {
             let resolved = match src {
                 Url::Resolved(r) => r,
                 Url::Unresolved(s) => {
@@ -474,6 +474,8 @@ mod tests {
             src: Url::resolved("cat.jpg", UrlKind::Asset),
             alt: "Cat".into(),
             title: None,
+            is_wikilink: false,
+            wikilink_pothole: None,
         }])]);
         assert_eq!(html, "<p><img src=\"cat.jpg\" alt=\"Cat\" /></p>\n");
     }
@@ -720,6 +722,8 @@ mod tests {
                 src: Url::resolved("logo.png", UrlKind::Asset),
                 alt: "A logo".into(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             },
             caption: Some(vec![Inline::Text("A logo".into())]),
         }]);
@@ -744,6 +748,8 @@ mod tests {
                 src: Url::resolved("x.png", UrlKind::Asset),
                 alt: String::new(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             },
             caption: None,
         }]);
@@ -763,6 +769,8 @@ mod tests {
                 src: Url::resolved("x.png", UrlKind::Asset),
                 alt: "x".into(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             },
             caption: Some(vec![]),
         }]);
@@ -779,6 +787,8 @@ mod tests {
                 src: Url::resolved("p.jpg", UrlKind::Asset),
                 alt: "a<b>c".into(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             },
             caption: Some(vec![Inline::Text("a<b>c".into())]),
         }]);

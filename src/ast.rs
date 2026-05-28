@@ -32,6 +32,7 @@
 
 pub mod attrs;
 pub mod cells;
+pub mod dispatch_wikilink_embeds;
 pub mod document;
 pub mod editor_scan;
 pub mod extract_hero;
@@ -46,6 +47,7 @@ pub mod shortcode_extract;
 pub mod url;
 pub mod visit;
 
+pub use dispatch_wikilink_embeds::{dispatch_wikilink_embeds, WikilinkDispatchResult};
 pub use document::Document;
 pub use extract_hero::{extract_hero, HeroExtraction};
 pub use hooks::{DefaultHooks, RenderHooks};

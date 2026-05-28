@@ -307,6 +307,8 @@ mod tests {
             src: Url::unresolved("img.png"),
             alt: "x".into(),
             title: None,
+            is_wikilink: false,
+            wikilink_pothole: None,
         }])]);
         let mut seen: Vec<String> = Vec::new();
         visit_urls_mut(&mut doc, |u| match u {
@@ -379,6 +381,8 @@ mod tests {
                 src: Url::unresolved("inner.png"),
                 alt: "".into(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             }],
             is_wikilink: false,
         }])]);
@@ -541,6 +545,8 @@ mod tests {
                 src: Url::unresolved("fig.png"),
                 alt: "f".into(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             },
             caption: Some(vec![Inline::Text("f".into())]),
         }]);
@@ -562,6 +568,8 @@ mod tests {
                 src: Url::unresolved("p.jpg"),
                 alt: "".into(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             },
             caption: None,
         }]);
@@ -587,6 +595,8 @@ mod tests {
                 src: Url::unresolved("fig.png"),
                 alt: "".into(),
                 title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
             },
             caption: Some(vec![Inline::Link {
                 url: Url::unresolved("credit"),

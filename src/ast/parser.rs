@@ -498,7 +498,31 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                 // production's transform_events wikilink-dispatch by
                 // running the same classifiers (`is_all_display_keywords`
                 // + `parse_pothole_params`) here.
-                if matches!(link_type, pulldown_cmark::LinkType::WikiLink { .. }) {
+                //
+                // PR7a-flip-core-B (2026-05-28): preserve the ORIGINAL
+                // pothole text on `Inline::Image.wikilink_pothole`
+                // BEFORE alt-classification consumes it.
+                // `dispatch_wikilink_embeds` needs the raw pothole to
+                // route `![[v.mp4|width=400]]` → typed video synth with
+                // the `width=400` param intact (alt-classification would
+                // erase it). The pothole is the substring after `|`;
+                // pulldown-cmark gives us the synthesized text, so we
+                // strip the dest synth case (text == dest_url ⇒ no
+                // pothole) and otherwise carry the trimmed alt.
+                let is_wikilink_image =
+                    matches!(link_type, pulldown_cmark::LinkType::WikiLink { .. });
+                let wikilink_pothole: Option<String> = if is_wikilink_image {
+                    let dest_str: &str = dest_url;
+                    let trimmed = alt.trim();
+                    if trimmed.is_empty() || trimmed == dest_str {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                } else {
+                    None
+                };
+                if is_wikilink_image {
                     let dest_str: &str = dest_url;
                     let trimmed = alt.trim().to_string();
                     if trimmed.is_empty() || trimmed == dest_str {
@@ -536,6 +560,8 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                         src: Url::unresolved(dest_url.to_string()),
                         alt,
                         title: title_opt,
+                        is_wikilink: is_wikilink_image,
+                        wikilink_pothole,
                     }),
                     i - start + 1,
                 )
@@ -1376,7 +1402,7 @@ mod tests {
         match first_block("![cat photo](cat.jpg)\n") {
             Block::Figure { image, caption } => {
                 match image {
-                    Inline::Image { src, alt, title } => {
+                    Inline::Image { src, alt, title, .. } => {
                         assert!(src.is_unresolved());
                         assert_eq!(alt, "cat photo");
                         assert!(title.is_none());

@@ -175,6 +175,8 @@ mod tests {
             src: Url::resolved(src, UrlKind::Asset),
             alt: String::new(),
             title: None,
+            is_wikilink: false,
+            wikilink_pothole: None,
         }
     }
 
