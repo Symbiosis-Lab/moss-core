@@ -286,6 +286,7 @@ mod tests {
             url: Url::unresolved(url),
             title: None,
             children: vec![Inline::Text("t".into())],
+            is_wikilink: false,
         }])
     }
 
@@ -343,6 +344,7 @@ mod tests {
                 url: Url::unresolved("x"),
                 title: None,
                 children: vec![Inline::Text("t".into())],
+                is_wikilink: false,
             }],
             id: None,
         }]);
@@ -358,6 +360,7 @@ mod tests {
                 url: Url::unresolved("nested"),
                 title: None,
                 children: vec![],
+                is_wikilink: false,
             }]),
         ])])]);
         let mut count = 0;
@@ -377,6 +380,7 @@ mod tests {
                 alt: "".into(),
                 title: None,
             }],
+            is_wikilink: false,
         }])]);
         let mut seen: Vec<String> = Vec::new();
         visit_urls_mut(&mut doc, |u| match u {
@@ -418,11 +422,13 @@ mod tests {
                 url: Url::unresolved("h"),
                 title: None,
                 children: vec![],
+                is_wikilink: false,
             }]],
             rows: vec![vec![vec![Inline::Link {
                 url: Url::unresolved("r"),
                 title: None,
                 children: vec![],
+                is_wikilink: false,
             }]]],
         }]);
         let mut seen: Vec<String> = Vec::new();
@@ -586,6 +592,7 @@ mod tests {
                 url: Url::unresolved("credit"),
                 title: None,
                 children: vec![Inline::Text("credit".into())],
+                is_wikilink: false,
             }]),
         }]);
         let mut seen: Vec<String> = Vec::new();

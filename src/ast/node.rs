@@ -264,11 +264,25 @@ pub enum Block {
 #[serde(rename_all = "snake_case")]
 pub enum Inline {
     Text(String),
-    /// `[content](url "title")`
+    /// `[content](url "title")` or `[[wikilink]]`.
+    ///
+    /// `is_wikilink` preserves pulldown-cmark's `LinkType::WikiLink`
+    /// discriminator at parse time so the renderer can emit
+    /// `class="wikilink"` on the `<a>` tag and downstream consumers
+    /// (graph builder, link-resolver) can distinguish wikilink targets
+    /// from standard markdown links. Added Phase 4 PR7a (2026-05-28) as
+    /// the smallest AST change matching mdast convention (Link node +
+    /// extension flag, mirroring `LinkType::WikiLink` as a tag).
     Link {
         url: Url,
         title: Option<String>,
         children: Vec<Inline>,
+        /// True when pulldown-cmark emitted `Tag::Link { link_type:
+        /// LinkType::WikiLink, .. }` (i.e. the markdown source was
+        /// `[[target]]` or `[[target|alias]]`, post-Stage-1 rewrite).
+        /// Renderer adds `class="wikilink"` for true.
+        #[serde(default)]
+        is_wikilink: bool,
     },
     /// `![alt](src "title")`
     Image {
@@ -422,12 +436,14 @@ mod tests {
             url: Url::unresolved("docs/"),
             title: None,
             children: vec![text("Documentation")],
+            is_wikilink: false,
         };
         match i {
-            Inline::Link { url, title, children } => {
+            Inline::Link { url, title, children, is_wikilink } => {
                 assert!(url.is_unresolved());
                 assert!(title.is_none());
                 assert_eq!(children.len(), 1);
+                assert!(!is_wikilink);
             }
             _ => panic!("expected Link"),
         }
@@ -566,9 +582,23 @@ mod tests {
             url: Url::resolved("../docs/", UrlKind::Wikilink),
             title: Some("Docs".to_string()),
             children: vec![Inline::Text("see".to_string())],
+            is_wikilink: true,
         };
         let s = serde_json::to_string(&original).expect("serialize");
         let back: Inline = serde_json::from_str(&s).expect("deserialize");
         assert_eq!(original, back);
+    }
+
+    #[test]
+    fn inline_link_is_wikilink_serde_defaults_to_false() {
+        // When deserializing AST JSON authored before PR7a, missing
+        // `is_wikilink` field must default to `false` (back-compat for
+        // any serialized snapshots that pre-date the wikilink AST work).
+        let json = r#"{"link":{"url":{"unresolved":"docs/"},"title":null,"children":[{"text":"Docs"}]}}"#;
+        let back: Inline = serde_json::from_str(json).expect("deserialize");
+        match back {
+            Inline::Link { is_wikilink, .. } => assert!(!is_wikilink),
+            _ => panic!("expected Link"),
+        }
     }
 }

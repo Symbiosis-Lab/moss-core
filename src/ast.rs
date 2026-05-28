@@ -34,9 +34,11 @@ pub mod attrs;
 pub mod cells;
 pub mod document;
 pub mod editor_scan;
+pub mod extract_hero;
 pub mod hooks;
 pub mod node;
 pub mod parser;
+pub mod query;
 pub mod render;
 pub mod resolve_urls;
 pub mod shortcode;
@@ -45,9 +47,11 @@ pub mod url;
 pub mod visit;
 
 pub use document::Document;
+pub use extract_hero::{extract_hero, HeroExtraction};
 pub use hooks::{DefaultHooks, RenderHooks};
 pub use node::{Block, CalloutKind, Fold, Inline};
 pub use parser::parse;
+pub use query::find_first_block_image;
 pub use render::render_document;
 pub use resolve_urls::{classify_remaining_urls, resolve_urls};
 pub use shortcode::{

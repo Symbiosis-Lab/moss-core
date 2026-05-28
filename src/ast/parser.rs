@@ -431,7 +431,10 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                 (Some(Inline::Strong(children)), end - start + 1)
             }
             Tag::Link {
-                dest_url, title, ..
+                link_type,
+                dest_url,
+                title,
+                ..
             } => {
                 let (children, end) = collect_inlines_until(events, start + 1, |e| {
                     matches!(e, Event::End(TagEnd::Link))
@@ -441,11 +444,18 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                 } else {
                     Some(title.to_string())
                 };
+                // Phase 4 PR7a (2026-05-28): preserve pulldown-cmark's
+                // `LinkType::WikiLink` discriminator on the typed AST so
+                // the renderer can emit `class="wikilink"` and graph
+                // builders can identify wikilink targets.
+                let is_wikilink =
+                    matches!(*link_type, pulldown_cmark::LinkType::WikiLink { .. });
                 (
                     Some(Inline::Link {
                         url: Url::unresolved(dest_url.to_string()),
                         title: title_opt,
                         children,
+                        is_wikilink,
                     }),
                     end - start + 1,
                 )
@@ -1274,13 +1284,14 @@ mod tests {
         // Critical contract: every URL starts as Unresolved.
         match first_block("[Docs](docs/)\n") {
             Block::Paragraph(children) => match &children[0] {
-                Inline::Link { url, title, children } => {
+                Inline::Link { url, title, children, is_wikilink } => {
                     assert!(url.is_unresolved());
                     match url {
                         Url::Unresolved(s) => assert_eq!(s, "docs/"),
                         _ => unreachable!(),
                     }
                     assert!(title.is_none());
+                    assert!(!is_wikilink, "standard markdown link is not a wikilink");
                     assert!(matches!(&children[0], Inline::Text(t) if t == "Docs"));
                 }
                 other => panic!("expected Link, got {other:?}"),
@@ -1302,6 +1313,45 @@ mod tests {
                 other => panic!("expected unresolved Link, got {other:?}"),
             },
             other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_link_inherits_wikilink_from_pulldown_cmark() {
+        // PR7a Decision 2: pulldown-cmark with ENABLE_WIKILINKS emits
+        // `Tag::Link { link_type: LinkType::WikiLink, .. }` for `[[target]]`
+        // syntax. The typed AST must preserve that discriminator via
+        // `Inline::Link::is_wikilink`. After PR7a flips render_document
+        // to production, this flag drives the `class="wikilink"` emission
+        // on the <a> tag.
+        match first_block("[[wikilink-target]]\n") {
+            Block::Paragraph(children) => {
+                let link = children
+                    .iter()
+                    .find(|i| matches!(i, Inline::Link { .. }))
+                    .expect("expected an Inline::Link from [[…]]");
+                match link {
+                    Inline::Link { is_wikilink, .. } => {
+                        assert!(
+                            *is_wikilink,
+                            "[[…]] must set is_wikilink: true on the typed AST"
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+
+        // Negative case: a standard markdown link is NOT a wikilink.
+        match first_block("[text](href)\n") {
+            Block::Paragraph(children) => match &children[0] {
+                Inline::Link { is_wikilink, .. } => {
+                    assert!(!is_wikilink, "[](…) must set is_wikilink: false");
+                }
+                _ => panic!("expected Link"),
+            },
+            _ => panic!("expected Paragraph"),
         }
     }
 

@@ -47,7 +47,7 @@
 use super::document::Document;
 use super::hooks::{escape_attr, escape_text, RenderHooks};
 use super::node::{Block, Fold, Inline};
-use super::url::Url;
+use super::url::{ResolvedUrl, Url, UrlKind};
 
 /// Render a [`Document`] to an HTML string using the given hooks.
 ///
@@ -326,6 +326,7 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
             url,
             title: _title,
             children,
+            is_wikilink,
         } => {
             let resolved = match url {
                 Url::Resolved(r) => r,
@@ -346,7 +347,23 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
             };
             let mut content = String::new();
             render_inlines(hooks, &mut content, children);
-            hooks.render_link(out, resolved, &content);
+            // Phase 4 PR7a (2026-05-28): is_wikilink flag carries
+            // pulldown-cmark's `LinkType::WikiLink` discriminator into
+            // the renderer; legacy production resolved-URL kind also
+            // produces the wikilink class via `UrlKind::Wikilink`.
+            if *is_wikilink && !matches!(resolved.kind, UrlKind::Wikilink) {
+                // Synthesize a wikilink-kind ResolvedUrl by piggy-backing
+                // the render_link hook's wikilink branch. We construct a
+                // local view by re-routing through the hook with a
+                // wikilink-kinded url.
+                let wiki = ResolvedUrl {
+                    href: resolved.href.clone(),
+                    kind: UrlKind::Wikilink,
+                };
+                hooks.render_link(out, &wiki, &content);
+            } else {
+                hooks.render_link(out, resolved, &content);
+            }
         }
         Inline::Image { src, alt, title } => {
             let resolved = match src {
@@ -425,18 +442,39 @@ mod tests {
             url: Url::resolved("docs/", UrlKind::Internal),
             title: None,
             children: vec![Inline::Text("Docs".into())],
+            is_wikilink: false,
         }])]);
         assert_eq!(html, "<p><a href=\"docs/\">Docs</a></p>\n");
     }
 
     #[test]
     fn renders_resolved_link_wikilink_carries_class() {
+        // PR7a: wikilink class can come from either the resolved URL kind
+        // (legacy production path) OR the new is_wikilink AST flag.
         let html = render(vec![Block::Paragraph(vec![Inline::Link {
             url: Url::resolved("../docs/", UrlKind::Wikilink),
             title: None,
             children: vec![Inline::Text("Docs".into())],
+            is_wikilink: false,
         }])]);
         assert!(html.contains(r#"class="wikilink""#), "got: {html}");
+    }
+
+    #[test]
+    fn renders_link_with_is_wikilink_flag_emits_class() {
+        // PR7a: is_wikilink: true on a non-wikilink-kind URL still
+        // produces the wikilink class. Parser sets this for any
+        // pulldown-cmark Tag::Link { link_type: LinkType::WikiLink, .. }.
+        let html = render(vec![Block::Paragraph(vec![Inline::Link {
+            url: Url::resolved("../docs/", UrlKind::Internal),
+            title: None,
+            children: vec![Inline::Text("Docs".into())],
+            is_wikilink: true,
+        }])]);
+        assert!(
+            html.contains(r#"class="wikilink""#),
+            "is_wikilink: true should produce class=\"wikilink\"; got: {html}"
+        );
     }
 
     #[test]
@@ -805,6 +843,7 @@ mod tests {
             url: Url::unresolved("docs/"),
             title: None,
             children: vec![],
+            is_wikilink: false,
         }])]);
     }
 }
