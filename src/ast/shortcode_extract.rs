@@ -121,7 +121,7 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> (Option<Shortcod
 /// `since` and `last` are passed through as raw strings — the rendering
 /// layer parses them into a `DateTime` / `Duration` so this stays I/O-free
 /// and chrono-free (moss-core invariant: pure data in / data out).
-fn parse_recent_args(args: &str, body: &str) -> RecentShortcode {
+pub fn parse_recent_args(args: &str, body: &str) -> RecentShortcode {
     let attrs = super::attrs::parse_attrs(args).unwrap_or_default();
     RecentShortcode {
         since: attrs.get("since").map(str::to_string),
