@@ -77,6 +77,14 @@ pub struct HeadingInputs<'a> {
     /// `translationKey: home` (issue #587). Pipeline-only input; editor
     /// passes `false`.
     pub is_translation_home: bool,
+    /// `true` iff the file is a layout-slot source (e.g. root `footer.md`)
+    /// rather than an article. Slot files are embedded as fragments into a
+    /// surrounding layout; the auto-injected `<h1 class="moss-article-title">`
+    /// would render as an unwanted heading inside that fragment. PR7b
+    /// (moss#599) replaces the pre-2026-05-28 frontmatter-synthesis hack
+    /// (`title: ""` injected at the call site to drive `empty_title=true`)
+    /// with this structural input. Editor passes `false`.
+    pub slot_only: bool,
 }
 
 /// Compute just the visible heading text for a file path. Used by callers
@@ -159,7 +167,8 @@ pub fn compute(input: HeadingInputs<'_>) -> HeadingState {
     let empty_title = source == HeadingSource::Title && text.is_empty();
     let hero_at_top = body_starts_with_hero(input.body_markdown);
 
-    let visible = is_markdown && !is_index_file && !empty_title && !hero_at_top;
+    let visible =
+        is_markdown && !is_index_file && !empty_title && !hero_at_top && !input.slot_only;
 
     HeadingState { visible, text, source }
 }
@@ -175,6 +184,7 @@ mod tests {
             body_markdown: "",
             root_folder_name: None,
             is_translation_home: false,
+            slot_only: false,
         }
     }
 
@@ -263,6 +273,7 @@ mod tests {
             body_markdown: "",
             root_folder_name: Some("刘果"),
             is_translation_home: false,
+            slot_only: false,
         });
         assert!(!s.visible, "root-level self-named home file must hide H1");
     }
@@ -278,6 +289,7 @@ mod tests {
             body_markdown: "",
             root_folder_name: None,
             is_translation_home: false,
+            slot_only: false,
         });
         assert!(!s.visible);
     }
@@ -375,6 +387,7 @@ mod tests {
             body_markdown: ":::hero\nimage: x.jpg\n:::\n\nBody.",
             root_folder_name: None,
             is_translation_home: false,
+            slot_only: false,
         });
         assert!(!s.visible);
         assert_eq!(s.text, "article");
@@ -388,6 +401,7 @@ mod tests {
             body_markdown: ":::hero\n:::\n\nBody.",
             root_folder_name: None,
             is_translation_home: false,
+            slot_only: false,
         });
         assert!(!s.visible, "hero ownership trumps title presence");
         assert_eq!(s.text, "Custom");
@@ -401,6 +415,7 @@ mod tests {
             body_markdown: "Some intro paragraph.\n\n:::hero\n:::",
             root_folder_name: None,
             is_translation_home: false,
+            slot_only: false,
         });
         assert!(s.visible, "hero anywhere but at top does not own heading");
     }
@@ -413,6 +428,7 @@ mod tests {
             body_markdown: "\n\n\n:::hero\n:::",
             root_folder_name: None,
             is_translation_home: false,
+            slot_only: false,
         });
         assert!(!s.visible, "leading blanks before :::hero still count as 'at top'");
     }
@@ -427,6 +443,45 @@ mod tests {
             body_markdown: "",
             root_folder_name: None,
             is_translation_home: true,
+            slot_only: false,
+        });
+        assert!(!s.visible);
+    }
+
+    // ── compute: slot_only override ──────────────────────────────────
+
+    #[test]
+    fn slot_only_hides_heading_regardless_of_title() {
+        // PR7b (moss#599): `footer.md` flows through the normal pipeline
+        // with `slot_only = true`. The auto-injected H1 must be suppressed
+        // even when the author writes `title: "Custom"` in the
+        // frontmatter — the rendered HTML lands inside a `<footer>` slot,
+        // and an article-level heading there is structurally wrong.
+        let s = compute(HeadingInputs {
+            file_path: "footer.md",
+            frontmatter_title: Some("Custom"),
+            body_markdown: "[link](https://example.com)",
+            root_folder_name: None,
+            is_translation_home: false,
+            slot_only: true,
+        });
+        assert!(
+            !s.visible,
+            "slot_only must suppress the auto-injected H1 even when title: is set"
+        );
+        // The text is preserved (chrome label / RSS still reads it).
+        assert_eq!(s.text, "Custom");
+    }
+
+    #[test]
+    fn slot_only_hides_heading_when_title_absent() {
+        let s = compute(HeadingInputs {
+            file_path: "footer.md",
+            frontmatter_title: None,
+            body_markdown: "Studio · 2026",
+            root_folder_name: None,
+            is_translation_home: false,
+            slot_only: true,
         });
         assert!(!s.visible);
     }
