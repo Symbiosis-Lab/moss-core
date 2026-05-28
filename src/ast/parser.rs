@@ -92,10 +92,16 @@ fn substitute_shortcode_placeholders(
 fn parse_block(events: &[Event<'_>], start: usize) -> (Option<Block>, usize) {
     match &events[start] {
         Event::Start(tag) => parse_block_with_tag(events, start, tag),
-        // Stray Text/Code/etc at top level: wrap in a paragraph.
         Event::Text(_) | Event::Code(_) | Event::Html(_) | Event::SoftBreak | Event::HardBreak => {
-            // pulldown-cmark wraps these inside paragraphs already, so this
-            // branch is rare. Skip rather than synthesize a paragraph.
+            // Top-level stray inlines: pulldown-cmark always wraps these in
+            // `Tag::Paragraph` at top level, so this branch is dead in practice.
+            //
+            // The tight-list-item case where the inlines are emitted directly
+            // (no Tag::Paragraph wrap) was the load-bearing reason this branch
+            // looked relevant; PR0.6 moved that responsibility into
+            // `collect_item_blocks`, which synthesizes a Block::Paragraph for
+            // stray inlines inside Tag::Item. See parser.rs's collect_item_blocks
+            // helper.
             (None, 1)
         }
         Event::End(_) => (None, 1),
