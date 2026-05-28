@@ -190,19 +190,54 @@ pub enum Block {
     },
     /// `- item` / `1. item`. Each item is a list of blocks (so list items
     /// can carry paragraphs, sub-lists, etc).
+    ///
+    /// `item_source_lines` is a parallel-to-`items` vec of 1-based source
+    /// line numbers, populated by the parser only when
+    /// [`crate::ast::ParseConfig::emit_source_lines`] is true. When tracking
+    /// is off (production publish builds, the ~40 in-crate `parse()` callers
+    /// that use the default config), the vec is empty (`vec![]`) and the
+    /// renderer treats every item as `None` — no `data-source-line` on the
+    /// emitted `<li>`. When tracking is on, length matches `items.len()`
+    /// exactly; individual entries may still be `None` for synthesized
+    /// items that have no faithful source position (none today, but kept
+    /// for symmetry with [`crate::ast::document::BlockMeta::source_line`]).
+    ///
+    /// Phase 4 source-lines followup (2026-05-28): added because the
+    /// preview's scroll-sync (cm-scroll-sync via
+    /// `frontend/bridge/iframe-bridge.ts`) interpolates editor positions
+    /// proportionally between annotated DOM elements. A 30-item list
+    /// spanning 50 source lines without per-`<li>` annotations forces
+    /// interpolation between the outer `<ul>` and the next top-level
+    /// block — potentially 100 lines away. Legacy `transform_events`
+    /// (commit f91aca8fa, 2026-04-01) emitted on `<li>` and `<tr>` for
+    /// this reason; the typed-AST renderer now matches.
     List {
         ordered: bool,
         items: Vec<Vec<Block>>,
+        #[serde(default)]
+        item_source_lines: Vec<Option<usize>>,
     },
     /// A fenced code block.
-    CodeBlock {
-        lang: Option<String>,
-        value: String,
-    },
+    CodeBlock { lang: Option<String>, value: String },
     /// Markdown table.
+    ///
+    /// `header_source_line` and `row_source_lines` are populated by the
+    /// parser only when [`crate::ast::ParseConfig::emit_source_lines`] is
+    /// true. When tracking is off, `header_source_line` is `None` and
+    /// `row_source_lines` is empty (`vec![]`); the renderer emits no
+    /// `data-source-line` attributes. When tracking is on,
+    /// `row_source_lines.len() == rows.len()`.
+    ///
+    /// Phase 4 source-lines followup (2026-05-28): see the corresponding
+    /// doc comment on `Block::List` for the scroll-sync interpolation
+    /// rationale.
     Table {
         header: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
+        #[serde(default)]
+        header_source_line: Option<usize>,
+        #[serde(default)]
+        row_source_lines: Vec<Option<usize>>,
     },
     /// `> blockquote`
     BlockQuote(Vec<Block>),
@@ -249,10 +284,7 @@ pub enum Block {
     /// shape):
     /// - External URL (`http(s)://...`): `<a href=URL class="moss-grid-card link-preview" target="_blank" rel="noopener">children</a>`.
     /// - Internal URL: `<a href=URL class="moss-grid-card" data-kind="link">children</a>`.
-    LinkCard {
-        url: Url,
-        children: Vec<Block>,
-    },
+    LinkCard { url: Url, children: Vec<Block> },
     /// Escape hatch: anything pulldown-cmark emits that the AST hasn't
     /// modeled. Carries the raw HTML so the renderer passes it through
     /// unchanged.
@@ -346,7 +378,11 @@ mod tests {
             id: Some("hello".to_string()),
         };
         match b {
-            Block::Heading { level, children, id } => {
+            Block::Heading {
+                level,
+                children,
+                id,
+            } => {
                 assert_eq!(level, 1);
                 assert_eq!(children.len(), 1);
                 assert_eq!(id.as_deref(), Some("hello"));
@@ -372,9 +408,10 @@ mod tests {
                 vec![Block::Paragraph(vec![text("first")])],
                 vec![Block::Paragraph(vec![text("second")])],
             ],
+            item_source_lines: vec![],
         };
         match b {
-            Block::List { ordered, items } => {
+            Block::List { ordered, items, .. } => {
                 assert!(!ordered);
                 assert_eq!(items.len(), 2);
             }
@@ -390,9 +427,11 @@ mod tests {
                 vec![vec![text("1")], vec![text("2")]],
                 vec![vec![text("3")], vec![text("4")]],
             ],
+            header_source_line: None,
+            row_source_lines: vec![],
         };
         match b {
-            Block::Table { header, rows } => {
+            Block::Table { header, rows, .. } => {
                 assert_eq!(header.len(), 2);
                 assert_eq!(rows.len(), 2);
                 assert_eq!(rows[0].len(), 2);
@@ -434,7 +473,10 @@ mod tests {
             caption: Some(vec![text("A photo")]),
         };
         match b {
-            Block::Figure { image: img, caption } => {
+            Block::Figure {
+                image: img,
+                caption,
+            } => {
                 assert!(matches!(img, Inline::Image { .. }));
                 let cap = caption.expect("caption present");
                 assert_eq!(cap.len(), 1);
@@ -470,7 +512,12 @@ mod tests {
             is_wikilink: false,
         };
         match i {
-            Inline::Link { url, title, children, is_wikilink } => {
+            Inline::Link {
+                url,
+                title,
+                children,
+                is_wikilink,
+            } => {
                 assert!(url.is_unresolved());
                 assert!(title.is_none());
                 assert_eq!(children.len(), 1);
@@ -492,7 +539,13 @@ mod tests {
             wikilink_pothole: None,
         };
         match i {
-            Inline::Image { src, alt, title: _, is_wikilink: _, wikilink_pothole: _ } => {
+            Inline::Image {
+                src,
+                alt,
+                title: _,
+                is_wikilink: _,
+                wikilink_pothole: _,
+            } => {
                 let r = src.as_resolved();
                 assert_eq!(r.kind, UrlKind::Asset);
                 assert_eq!(alt, "Cat");
@@ -538,19 +591,28 @@ mod tests {
         assert_eq!(CalloutKind::from_raw("info"), Some(CalloutKind::Info));
         assert_eq!(CalloutKind::from_raw("todo"), Some(CalloutKind::Todo));
         assert_eq!(CalloutKind::from_raw("success"), Some(CalloutKind::Success));
-        assert_eq!(CalloutKind::from_raw("question"), Some(CalloutKind::Question));
+        assert_eq!(
+            CalloutKind::from_raw("question"),
+            Some(CalloutKind::Question)
+        );
         assert_eq!(CalloutKind::from_raw("failure"), Some(CalloutKind::Failure));
         assert_eq!(CalloutKind::from_raw("bug"), Some(CalloutKind::Bug));
         assert_eq!(CalloutKind::from_raw("example"), Some(CalloutKind::Example));
         assert_eq!(CalloutKind::from_raw("quote"), Some(CalloutKind::Quote));
-        assert_eq!(CalloutKind::from_raw("abstract"), Some(CalloutKind::Abstract));
+        assert_eq!(
+            CalloutKind::from_raw("abstract"),
+            Some(CalloutKind::Abstract)
+        );
     }
 
     #[test]
     fn callout_kind_canonicalizes_all_obsidian_aliases() {
         // The 8 alias mappings from shape-spec § 1.
         assert_eq!(CalloutKind::from_raw("tldr"), Some(CalloutKind::Abstract));
-        assert_eq!(CalloutKind::from_raw("summary"), Some(CalloutKind::Abstract));
+        assert_eq!(
+            CalloutKind::from_raw("summary"),
+            Some(CalloutKind::Abstract)
+        );
         assert_eq!(CalloutKind::from_raw("hint"), Some(CalloutKind::Tip));
         assert_eq!(CalloutKind::from_raw("important"), Some(CalloutKind::Tip));
         assert_eq!(CalloutKind::from_raw("check"), Some(CalloutKind::Success));
@@ -558,7 +620,10 @@ mod tests {
         assert_eq!(CalloutKind::from_raw("help"), Some(CalloutKind::Question));
         assert_eq!(CalloutKind::from_raw("faq"), Some(CalloutKind::Question));
         assert_eq!(CalloutKind::from_raw("caution"), Some(CalloutKind::Warning));
-        assert_eq!(CalloutKind::from_raw("attention"), Some(CalloutKind::Warning));
+        assert_eq!(
+            CalloutKind::from_raw("attention"),
+            Some(CalloutKind::Warning)
+        );
         assert_eq!(CalloutKind::from_raw("fail"), Some(CalloutKind::Failure));
         assert_eq!(CalloutKind::from_raw("missing"), Some(CalloutKind::Failure));
         assert_eq!(CalloutKind::from_raw("error"), Some(CalloutKind::Danger));
@@ -627,7 +692,8 @@ mod tests {
         // When deserializing AST JSON authored before PR7a, missing
         // `is_wikilink` field must default to `false` (back-compat for
         // any serialized snapshots that pre-date the wikilink AST work).
-        let json = r#"{"link":{"url":{"unresolved":"docs/"},"title":null,"children":[{"text":"Docs"}]}}"#;
+        let json =
+            r#"{"link":{"url":{"unresolved":"docs/"},"title":null,"children":[{"text":"Docs"}]}}"#;
         let back: Inline = serde_json::from_str(json).expect("deserialize");
         match back {
             Inline::Link { is_wikilink, .. } => assert!(!is_wikilink),

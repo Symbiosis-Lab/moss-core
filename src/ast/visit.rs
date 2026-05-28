@@ -60,7 +60,7 @@ where
                 }
             }
         }
-        Block::Table { header, rows } => {
+        Block::Table { header, rows, .. } => {
             for cell in header {
                 for inline in cell {
                     visit_urls_in_inline(inline, callback);
@@ -403,6 +403,7 @@ mod tests {
                 vec![paragraph_with_link("a")],
                 vec![paragraph_with_link("b")],
             ],
+            item_source_lines: vec![],
         }]);
         let mut seen: Vec<String> = Vec::new();
         visit_urls_mut(&mut doc, |u| match u {
@@ -414,7 +415,8 @@ mod tests {
 
     #[test]
     fn visits_urls_inside_blockquote() {
-        let mut doc = Document::from_blocks(vec![Block::BlockQuote(vec![paragraph_with_link("q")])]);
+        let mut doc =
+            Document::from_blocks(vec![Block::BlockQuote(vec![paragraph_with_link("q")])]);
         let mut count = 0;
         visit_urls_mut(&mut doc, |_| count += 1);
         assert_eq!(count, 1);
@@ -435,6 +437,8 @@ mod tests {
                 children: vec![],
                 is_wikilink: false,
             }]]],
+            header_source_line: None,
+            row_source_lines: vec![],
         }]);
         let mut seen: Vec<String> = Vec::new();
         visit_urls_mut(&mut doc, |u| match u {
@@ -510,6 +514,7 @@ mod tests {
         let doc = Document::from_blocks(vec![Block::List {
             ordered: false,
             items: vec![vec![Block::ThematicBreak], vec![Block::ThematicBreak]],
+            item_source_lines: vec![],
         }]);
         let mut count = 0;
         visit_blocks(&doc, |_| {

@@ -78,7 +78,7 @@ fn find_first_image_in_block(block: &Block) -> Option<&Inline> {
         }
         Block::BlockQuote(children) => find_first_image_in_blocks(children),
         Block::Callout { children, .. } => find_first_image_in_blocks(children),
-        Block::Table { header, rows } => {
+        Block::Table { header, rows, .. } => {
             // Headers walked first (document order), then rows.
             for cell in header {
                 if let Some(img) = find_first_image_in_inlines(cell) {
@@ -241,9 +241,9 @@ mod tests {
     fn finds_image_inside_emphasis_or_link() {
         // Inline images can appear nested inside emphasis/strong/link
         // children. The walker must descend.
-        let doc = Document::from_blocks(vec![Block::Paragraph(vec![Inline::Emphasis(
-            vec![img("nested.png")],
-        )])]);
+        let doc = Document::from_blocks(vec![Block::Paragraph(vec![Inline::Emphasis(vec![img(
+            "nested.png",
+        )])])]);
         match find_first_block_image(&doc) {
             Some(Inline::Image { src, .. }) => {
                 let r = src.as_resolved();
@@ -301,6 +301,7 @@ mod tests {
         let doc = Document::from_blocks(vec![Block::List {
             ordered: false,
             items: vec![vec![img_block("list.png")]],
+            item_source_lines: vec![],
         }]);
         assert!(find_first_block_image(&doc).is_some());
     }

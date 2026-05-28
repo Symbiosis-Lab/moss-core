@@ -427,7 +427,7 @@ where
                 }
             }
         }
-        Block::Table { header, rows } => {
+        Block::Table { header, rows, .. } => {
             for cell in header {
                 for inline in cell {
                     walk_images_in_inline(inline, f);
@@ -551,7 +551,7 @@ where
                 }
             }
         }
-        Block::Table { header, rows } => {
+        Block::Table { header, rows, .. } => {
             for cell in header {
                 for inline in cell {
                     walk_links_in_inline(inline, f);

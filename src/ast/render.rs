@@ -177,7 +177,11 @@ fn render_block<H: RenderHooks + ?Sized>(
             out.push_str("</div>\n");
             out.push_str("</div>\n");
         }
-        Block::List { ordered, items } => {
+        Block::List {
+            ordered,
+            items,
+            item_source_lines,
+        } => {
             if *ordered {
                 out.push_str("<ol");
                 push_source_line_attr(out, meta.source_line);
@@ -187,8 +191,17 @@ fn render_block<H: RenderHooks + ?Sized>(
                 push_source_line_attr(out, meta.source_line);
                 out.push_str(">\n");
             }
-            for item_blocks in items {
-                out.push_str("<li>");
+            for (idx, item_blocks) in items.iter().enumerate() {
+                // Per-`<li>` source line — populated only when the parser
+                // ran with `emit_source_lines: true` (otherwise
+                // `item_source_lines` is empty). Mirrors the legacy
+                // transform_events shape (commit f91aca8fa, 2026-04-01) that
+                // emitted `data-source-line` on `<li>` for proportional
+                // scroll-sync interpolation between editor and preview.
+                out.push_str("<li");
+                let item_line = item_source_lines.get(idx).copied().flatten();
+                push_source_line_attr(out, item_line);
+                out.push('>');
                 // Single-paragraph items render their inline content inline
                 // (no extra <p>). Mirrors pulldown-cmark's "tight list" output.
                 if let [Block::Paragraph(inlines)] = item_blocks.as_slice() {
@@ -220,10 +233,19 @@ fn render_block<H: RenderHooks + ?Sized>(
             out.push_str(&escape_text(value));
             out.push_str("</code></pre>\n");
         }
-        Block::Table { header, rows } => {
+        Block::Table {
+            header,
+            rows,
+            header_source_line,
+            row_source_lines,
+        } => {
             out.push_str("<table");
             push_source_line_attr(out, meta.source_line);
-            out.push_str(">\n<thead>\n<tr>");
+            out.push_str(">\n<thead>\n<tr");
+            // Header `<tr>` source line. Same f91aca8fa shape — annotated
+            // when the parser tracked lines, omitted otherwise.
+            push_source_line_attr(out, *header_source_line);
+            out.push('>');
             for cell in header {
                 out.push_str("<th>");
                 render_inlines(hooks, out, cell);
@@ -232,8 +254,11 @@ fn render_block<H: RenderHooks + ?Sized>(
             out.push_str("</tr>\n</thead>\n");
             if !rows.is_empty() {
                 out.push_str("<tbody>\n");
-                for row in rows {
-                    out.push_str("<tr>");
+                for (idx, row) in rows.iter().enumerate() {
+                    out.push_str("<tr");
+                    let row_line = row_source_lines.get(idx).copied().flatten();
+                    push_source_line_attr(out, row_line);
+                    out.push('>');
                     for cell in row {
                         out.push_str("<td>");
                         render_inlines(hooks, out, cell);
@@ -287,24 +312,24 @@ fn render_block<H: RenderHooks + ?Sized>(
             // any other inline falls back to the standard inline path so
             // the renderer never panics on a malformed Figure.
             match image {
-                Inline::Image { src, alt, title, .. } => {
-                    match src {
-                        Url::Resolved(r) => {
-                            hooks.render_image(out, r, alt, title.as_deref());
-                        }
-                        Url::Unresolved(s) => {
-                            debug_assert!(
+                Inline::Image {
+                    src, alt, title, ..
+                } => match src {
+                    Url::Resolved(r) => {
+                        hooks.render_image(out, r, alt, title.as_deref());
+                    }
+                    Url::Unresolved(s) => {
+                        debug_assert!(
                                 false,
                                 "Url::Unresolved({s:?}) reached Block::Figure renderer — visit_urls_mut missing or buggy"
                             );
-                            out.push_str(r#"<img src=""#);
-                            out.push_str(&escape_attr(s));
-                            out.push_str(r#"" alt=""#);
-                            out.push_str(&escape_attr(alt));
-                            out.push_str(r#"" />"#);
-                        }
+                        out.push_str(r#"<img src=""#);
+                        out.push_str(&escape_attr(s));
+                        out.push_str(r#"" alt=""#);
+                        out.push_str(&escape_attr(alt));
+                        out.push_str(r#"" />"#);
                     }
-                }
+                },
                 _ => {
                     // Defensive: a non-Image inline in a Figure violates
                     // the parser-enforced shape, but the renderer must
@@ -347,14 +372,13 @@ fn render_block<H: RenderHooks + ?Sized>(
                 }
             };
             use super::url::UrlKind;
-            let is_external = matches!(
-                resolved.kind,
-                UrlKind::External | UrlKind::AssetNewtab
-            );
+            let is_external = matches!(resolved.kind, UrlKind::External | UrlKind::AssetNewtab);
             if is_external {
                 out.push_str(r#"<a href=""#);
                 out.push_str(&escape_attr(&resolved.href));
-                out.push_str(r#"" class="moss-grid-card link-preview" target="_blank" rel="noopener">"#);
+                out.push_str(
+                    r#"" class="moss-grid-card link-preview" target="_blank" rel="noopener">"#,
+                );
             } else {
                 out.push_str(r#"<a href=""#);
                 out.push_str(&escape_attr(&resolved.href));
@@ -389,7 +413,11 @@ fn push_source_line_attr(out: &mut String, source_line: Option<usize>) {
     }
 }
 
-pub(super) fn render_inlines<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inlines: &[Inline]) {
+pub(super) fn render_inlines<H: RenderHooks + ?Sized>(
+    hooks: &H,
+    out: &mut String,
+    inlines: &[Inline],
+) {
     for inline in inlines {
         render_inline(hooks, out, inline);
     }
@@ -432,7 +460,9 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
             // new signature carries both concerns orthogonally.
             hooks.render_link(out, resolved, *is_wikilink, &content);
         }
-        Inline::Image { src, alt, title, .. } => {
+        Inline::Image {
+            src, alt, title, ..
+        } => {
             let resolved = match src {
                 Url::Resolved(r) => r,
                 Url::Unresolved(s) => {
@@ -580,6 +610,7 @@ mod tests {
                 vec![Block::Paragraph(vec![Inline::Text("one".into())])],
                 vec![Block::Paragraph(vec![Inline::Text("two".into())])],
             ],
+            item_source_lines: vec![],
         }]);
         assert_eq!(html, "<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n");
     }
@@ -589,6 +620,7 @@ mod tests {
         let html = render(vec![Block::List {
             ordered: true,
             items: vec![vec![Block::Paragraph(vec![Inline::Text("a".into())])]],
+            item_source_lines: vec![],
         }]);
         assert!(html.starts_with("<ol>"));
     }
@@ -732,10 +764,7 @@ mod tests {
         let html = render(vec![Block::BlockQuote(vec![Block::Paragraph(vec![
             Inline::Text("q".into()),
         ])])]);
-        assert_eq!(
-            html,
-            "<blockquote>\n<p>q</p>\n</blockquote>\n"
-        );
+        assert_eq!(html, "<blockquote>\n<p>q</p>\n</blockquote>\n");
     }
 
     #[test]
@@ -743,6 +772,8 @@ mod tests {
         let html = render(vec![Block::Table {
             header: vec![vec![Inline::Text("A".into())]],
             rows: vec![vec![vec![Inline::Text("1".into())]]],
+            header_source_line: None,
+            row_source_lines: vec![],
         }]);
         assert!(html.contains("<thead>"));
         assert!(html.contains("<tbody>"));
@@ -758,9 +789,7 @@ mod tests {
 
     #[test]
     fn text_escapes_lt_gt_amp() {
-        let html = render(vec![Block::Paragraph(vec![Inline::Text(
-            "a<b>c&d".into(),
-        )])]);
+        let html = render(vec![Block::Paragraph(vec![Inline::Text("a<b>c&d".into())])]);
         assert_eq!(html, "<p>a&lt;b&gt;c&amp;d</p>\n");
     }
 
@@ -889,7 +918,10 @@ mod tests {
             "expected figure, got: {html}"
         );
         assert!(html.contains(r#"src="photo.jpg""#), "got: {html}");
-        assert!(html.contains("<figcaption>A photo</figcaption>"), "got: {html}");
+        assert!(
+            html.contains("<figcaption>A photo</figcaption>"),
+            "got: {html}"
+        );
     }
 
     #[test]
@@ -974,10 +1006,12 @@ mod tests {
             Block::List {
                 ordered: false,
                 items: vec![vec![Block::Paragraph(vec![Inline::Text("a".into())])]],
+                item_source_lines: vec![],
             },
             Block::List {
                 ordered: true,
                 items: vec![vec![Block::Paragraph(vec![Inline::Text("b".into())])]],
+                item_source_lines: vec![],
             },
             Block::CodeBlock {
                 lang: Some("rust".into()),
@@ -986,24 +1020,179 @@ mod tests {
             Block::Table {
                 header: vec![vec![Inline::Text("H".into())]],
                 rows: vec![vec![vec![Inline::Text("c".into())]]],
+                header_source_line: None,
+                row_source_lines: vec![],
             },
             Block::ThematicBreak,
         ];
         let meta = vec![
-            BlockMeta { source_line: Some(1) },
-            BlockMeta { source_line: Some(2) },
-            BlockMeta { source_line: Some(3) },
-            BlockMeta { source_line: Some(4) },
-            BlockMeta { source_line: Some(5) },
-            BlockMeta { source_line: Some(6) },
+            BlockMeta {
+                source_line: Some(1),
+            },
+            BlockMeta {
+                source_line: Some(2),
+            },
+            BlockMeta {
+                source_line: Some(3),
+            },
+            BlockMeta {
+                source_line: Some(4),
+            },
+            BlockMeta {
+                source_line: Some(5),
+            },
+            BlockMeta {
+                source_line: Some(6),
+            },
         ];
         let html = render_with_meta(blocks, meta);
-        assert!(html.contains(r#"<blockquote data-source-line="1">"#), "blockquote missing: {html}");
-        assert!(html.contains(r#"<ul data-source-line="2">"#), "ul missing: {html}");
-        assert!(html.contains(r#"<ol data-source-line="3">"#), "ol missing: {html}");
-        assert!(html.contains(r#"<pre data-source-line="4">"#), "pre missing: {html}");
-        assert!(html.contains(r#"<table data-source-line="5">"#), "table missing: {html}");
-        assert!(html.contains(r#"<hr data-source-line="6" />"#), "hr missing: {html}");
+        assert!(
+            html.contains(r#"<blockquote data-source-line="1">"#),
+            "blockquote missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<ul data-source-line="2">"#),
+            "ul missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<ol data-source-line="3">"#),
+            "ol missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<pre data-source-line="4">"#),
+            "pre missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<table data-source-line="5">"#),
+            "table missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<hr data-source-line="6" />"#),
+            "hr missing: {html}"
+        );
+    }
+
+    #[test]
+    fn list_emits_per_li_data_source_line_when_parser_tracks() {
+        // 2026-05-28 (Phase 4 source-lines followup): `<li>` carries
+        // `data-source-line="N"` when the parser populated
+        // `item_source_lines`. Mirrors the legacy transform_events shape
+        // (commit f91aca8fa, 2026-04-01) that emitted on `<li>` for
+        // proportional scroll-sync interpolation. The outer `<ul>` carries
+        // BlockMeta.source_line separately.
+        let blocks = vec![Block::List {
+            ordered: false,
+            items: vec![
+                vec![Block::Paragraph(vec![Inline::Text("one".into())])],
+                vec![Block::Paragraph(vec![Inline::Text("two".into())])],
+                vec![Block::Paragraph(vec![Inline::Text("three".into())])],
+            ],
+            item_source_lines: vec![Some(10), Some(11), Some(12)],
+        }];
+        let meta = vec![BlockMeta {
+            source_line: Some(10),
+        }];
+        let html = render_with_meta(blocks, meta);
+        assert!(
+            html.contains(r#"<ul data-source-line="10">"#),
+            "ul opener missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<li data-source-line="10">one</li>"#),
+            "li 10 missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<li data-source-line="11">two</li>"#),
+            "li 11 missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<li data-source-line="12">three</li>"#),
+            "li 12 missing: {html}"
+        );
+    }
+
+    #[test]
+    fn list_omits_li_data_source_line_when_parser_did_not_track() {
+        // When `item_source_lines` is empty (default — parser ran with
+        // `emit_source_lines: false`), no per-`<li>` attribute is emitted.
+        // Locks the publish-build invariant: byte-identical output to the
+        // pre-followup renderer.
+        let blocks = vec![Block::List {
+            ordered: false,
+            items: vec![
+                vec![Block::Paragraph(vec![Inline::Text("a".into())])],
+                vec![Block::Paragraph(vec![Inline::Text("b".into())])],
+            ],
+            item_source_lines: vec![],
+        }];
+        let html = render_with_meta(blocks, vec![BlockMeta::default()]);
+        assert_eq!(html, "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n");
+    }
+
+    #[test]
+    fn table_emits_per_tr_data_source_line_when_parser_tracks() {
+        // Header `<tr>` carries `header_source_line`; each body `<tr>`
+        // carries the matching `row_source_lines[i]`.
+        let blocks = vec![Block::Table {
+            header: vec![vec![Inline::Text("H".into())]],
+            rows: vec![
+                vec![vec![Inline::Text("1".into())]],
+                vec![vec![Inline::Text("2".into())]],
+                vec![vec![Inline::Text("3".into())]],
+            ],
+            header_source_line: Some(5),
+            row_source_lines: vec![Some(7), Some(8), Some(9)],
+        }];
+        let meta = vec![BlockMeta {
+            source_line: Some(5),
+        }];
+        let html = render_with_meta(blocks, meta);
+        assert!(
+            html.contains(r#"<table data-source-line="5">"#),
+            "table opener missing: {html}"
+        );
+        assert!(html.contains(r#"<thead>"#), "thead missing: {html}");
+        // Header row line — note the header tr is on the marker line
+        // because pulldown-cmark anchors the head row to the line of the
+        // `| h |` header markdown row.
+        assert!(
+            html.contains(r#"<tr data-source-line="5"><th>H</th>"#),
+            "head tr missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<tr data-source-line="7"><td>1</td>"#),
+            "body tr 7 missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<tr data-source-line="8"><td>2</td>"#),
+            "body tr 8 missing: {html}"
+        );
+        assert!(
+            html.contains(r#"<tr data-source-line="9"><td>3</td>"#),
+            "body tr 9 missing: {html}"
+        );
+    }
+
+    #[test]
+    fn table_omits_tr_data_source_line_when_parser_did_not_track() {
+        // Publish-build invariant: byte-identical output to pre-followup.
+        let blocks = vec![Block::Table {
+            header: vec![vec![Inline::Text("A".into())]],
+            rows: vec![vec![vec![Inline::Text("1".into())]]],
+            header_source_line: None,
+            row_source_lines: vec![],
+        }];
+        let html = render_with_meta(blocks, vec![BlockMeta::default()]);
+        // No `data-source-line` anywhere — the table opener also has
+        // BlockMeta::default() (None), so the entire `<table>...</table>`
+        // block is annotation-free.
+        assert!(
+            !html.contains("data-source-line"),
+            "no annotation expected: {html}"
+        );
+        assert!(html.contains("<thead>"));
+        assert!(html.contains("<tr><th>A</th></tr>"));
+        assert!(html.contains("<tr><td>1</td></tr>"));
     }
 
     #[test]
@@ -1018,7 +1207,9 @@ mod tests {
             },
             caption: Some(vec![Inline::Text("A".into())]),
         }];
-        let meta = vec![BlockMeta { source_line: Some(9) }];
+        let meta = vec![BlockMeta {
+            source_line: Some(9),
+        }];
         let html = render_with_meta(blocks, meta);
         assert!(
             html.contains(r#"<figure class="moss-image" data-source-line="9">"#),

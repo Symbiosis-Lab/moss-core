@@ -162,12 +162,21 @@ pub fn parse_with_config(markdown: &str, config: &ParseConfig) -> Document {
         None
     };
 
+    // Line-tracking context handed to every recursive parser entry; the
+    // Tag::List / Tag::Table arms consult it to annotate per-item / per-row
+    // source lines. `None` when `emit_source_lines` is off; the inner
+    // arms see this as "skip annotation" and emit empty parallel vecs.
+    let line_ctx: Option<LineCtx<'_>> = line_lookup.as_ref().map(|lookup| LineCtx {
+        lookup,
+        offsets: &offsets,
+    });
+
     let mut blocks = Vec::new();
     let mut block_meta: Vec<BlockMeta> = Vec::new();
     let mut i = 0;
     while i < events.len() {
         let event_start_idx = i;
-        let (block, advance) = parse_block(&events, i);
+        let (block, advance) = parse_block(&events, i, line_ctx.as_ref());
         if let Some(b) = block {
             // Compute source_line from the first event's byte offset, if
             // we collected offsets and a lookup is in scope.
@@ -256,6 +265,31 @@ fn unwrap_implicit_figure(block: &mut Block) {
     }
 }
 
+/// Bundle of borrowed line-tracking state threaded through recursive
+/// parser entries. Constructed once per `parse_with_config` when
+/// `emit_source_lines` is true; `None` everywhere else.
+///
+/// `parse_block` / `parse_block_with_tag` consult `line_at_event` to
+/// annotate per-`<li>` and per-`<tr>` source lines. The outer
+/// top-level-block source line is computed at the parse loop itself
+/// (already in place), not here.
+struct LineCtx<'a> {
+    lookup: &'a LineLookup,
+    offsets: &'a [Option<std::ops::Range<usize>>],
+}
+
+impl<'a> LineCtx<'a> {
+    /// 1-based source line of the event at `event_index`, or `None` if
+    /// the offset is missing (defensive — shouldn't happen when the
+    /// parser is operating with `emit_source_lines: true`).
+    fn line_at_event(&self, event_index: usize) -> Option<usize> {
+        match self.offsets.get(event_index) {
+            Some(Some(range)) => Some(self.lookup.line_at(range.start)),
+            _ => None,
+        }
+    }
+}
+
 /// Prefix-sum line-number lookup for byte offsets in a source string.
 ///
 /// Built once per parse (when `emit_source_lines` is on). Stores the byte
@@ -329,9 +363,17 @@ fn substitute_shortcode_placeholders(
 /// Parse one block-level construct starting at `events[start]`. Returns
 /// the parsed block (or `None` if `events[start]` was a closing tag /
 /// stray event we skip) and how many events to advance.
-fn parse_block(events: &[Event<'_>], start: usize) -> (Option<Block>, usize) {
+///
+/// `line_ctx` carries the optional line-tracking context for per-item
+/// (`<li>`) and per-row (`<tr>`) source-line annotation; threaded through
+/// to `parse_block_with_tag`.
+fn parse_block(
+    events: &[Event<'_>],
+    start: usize,
+    line_ctx: Option<&LineCtx<'_>>,
+) -> (Option<Block>, usize) {
     match &events[start] {
-        Event::Start(tag) => parse_block_with_tag(events, start, tag),
+        Event::Start(tag) => parse_block_with_tag(events, start, tag, line_ctx),
         Event::Text(_) | Event::Code(_) | Event::Html(_) | Event::SoftBreak | Event::HardBreak => {
             // Top-level stray inlines: pulldown-cmark always wraps these in
             // `Tag::Paragraph` at top level, so this branch is dead in practice.
@@ -350,7 +392,12 @@ fn parse_block(events: &[Event<'_>], start: usize) -> (Option<Block>, usize) {
     }
 }
 
-fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (Option<Block>, usize) {
+fn parse_block_with_tag(
+    events: &[Event<'_>],
+    start: usize,
+    tag: &Tag<'_>,
+    line_ctx: Option<&LineCtx<'_>>,
+) -> (Option<Block>, usize) {
     match tag {
         Tag::Heading { level, .. } => {
             let (children, end) = collect_inlines_until(events, start + 1, |e| {
@@ -421,10 +468,7 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
                 }
                 i += 1;
             }
-            (
-                Some(Block::CodeBlock { lang, value }),
-                i - start + 1,
-            )
+            (Some(Block::CodeBlock { lang, value }), i - start + 1)
         }
         Tag::BlockQuote(_) => {
             // Phase 4 PR4: detect Obsidian-style callouts. A blockquote
@@ -441,10 +485,10 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
             // preserves the structural break before inline
             // collapse, which is what the marker-line-vs-body-line
             // boundary check needs.
-            match detect_and_assemble_callout(events, start + 1) {
+            match detect_and_assemble_callout(events, start + 1, line_ctx) {
                 Some((block, body_end)) => (Some(block), body_end - start + 1),
                 None => {
-                    let (children, end) = collect_blocks_until(events, start + 1, |e| {
+                    let (children, end) = collect_blocks_until(events, start + 1, line_ctx, |e| {
                         matches!(e, Event::End(TagEnd::BlockQuote(_)))
                     });
                     (Some(Block::BlockQuote(children)), end - start + 1)
@@ -454,23 +498,45 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
         Tag::List(start_num) => {
             let ordered = start_num.is_some();
             let mut items: Vec<Vec<Block>> = Vec::new();
+            // Parallel-to-`items` per-`<li>` source-line annotations.
+            // Empty when `line_ctx` is None; otherwise tracks each
+            // `Event::Start(Tag::Item)`'s byte offset → line. The renderer
+            // emits `<li data-source-line="N">` for entries that are Some.
+            let mut item_source_lines: Vec<Option<usize>> = Vec::new();
+            let track_lines = line_ctx.is_some();
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
                     Event::End(TagEnd::List(_)) => break,
                     Event::Start(Tag::Item) => {
-                        let (item_blocks, end) = collect_item_blocks(events, i + 1);
+                        if track_lines {
+                            item_source_lines.push(line_ctx.and_then(|ctx| ctx.line_at_event(i)));
+                        }
+                        let (item_blocks, end) = collect_item_blocks(events, i + 1, line_ctx);
                         items.push(item_blocks);
                         i = end + 1;
                     }
                     _ => i += 1,
                 }
             }
-            (Some(Block::List { ordered, items }), i - start + 1)
+            (
+                Some(Block::List {
+                    ordered,
+                    items,
+                    item_source_lines,
+                }),
+                i - start + 1,
+            )
         }
         Tag::Table(_) => {
             let mut header: Vec<Vec<Inline>> = Vec::new();
             let mut rows: Vec<Vec<Vec<Inline>>> = Vec::new();
+            // Per-`<tr>` source-line tracking. `header_source_line` is the
+            // `<thead><tr>` line; `row_source_lines` is parallel to `rows`.
+            // Both stay empty / None when `line_ctx` is None.
+            let mut header_source_line: Option<usize> = None;
+            let mut row_source_lines: Vec<Option<usize>> = Vec::new();
+            let track_lines = line_ctx.is_some();
             let mut current_row: Vec<Vec<Inline>> = Vec::new();
             let mut in_head = false;
             let mut in_body_row = false;
@@ -480,6 +546,14 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
                     Event::End(TagEnd::Table) => break,
                     Event::Start(Tag::TableHead) => {
                         in_head = true;
+                        // pulldown-cmark does NOT emit `Tag::TableRow` for the
+                        // header row — it goes straight from `Tag::TableHead`
+                        // to the cells. So we anchor the header `<tr>` line
+                        // to the `TableHead` event itself (line of the
+                        // markdown `| h |` row).
+                        if track_lines {
+                            header_source_line = line_ctx.and_then(|ctx| ctx.line_at_event(i));
+                        }
                         i += 1;
                     }
                     Event::End(TagEnd::TableHead) => {
@@ -489,6 +563,12 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
                     Event::Start(Tag::TableRow) => {
                         in_body_row = true;
                         current_row = Vec::new();
+                        if track_lines {
+                            // pulldown-cmark only emits `TableRow` for body
+                            // rows (header cells live directly inside
+                            // `TableHead`). Always push to body lines here.
+                            row_source_lines.push(line_ctx.and_then(|ctx| ctx.line_at_event(i)));
+                        }
                         i += 1;
                     }
                     Event::End(TagEnd::TableRow) => {
@@ -512,7 +592,15 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
                     _ => i += 1,
                 }
             }
-            (Some(Block::Table { header, rows }), i - start + 1)
+            (
+                Some(Block::Table {
+                    header,
+                    rows,
+                    header_source_line,
+                    row_source_lines,
+                }),
+                i - start + 1,
+            )
         }
         Tag::HtmlBlock => {
             let mut html = String::new();
@@ -603,11 +691,7 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
 /// Collect a contiguous run of inline events into `Vec<Inline>`. Stops
 /// when `is_end(event)` returns true or events run out. Returns the
 /// collected inlines and the end-event index.
-fn collect_inlines_until<F>(
-    events: &[Event<'_>],
-    start: usize,
-    is_end: F,
-) -> (Vec<Inline>, usize)
+fn collect_inlines_until<F>(events: &[Event<'_>], start: usize, is_end: F) -> (Vec<Inline>, usize)
 where
     F: Fn(&Event<'_>) -> bool,
 {
@@ -673,8 +757,7 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                 // `LinkType::WikiLink` discriminator on the typed AST so
                 // the renderer can emit `class="wikilink"` and graph
                 // builders can identify wikilink targets.
-                let is_wikilink =
-                    matches!(*link_type, pulldown_cmark::LinkType::WikiLink { .. });
+                let is_wikilink = matches!(*link_type, pulldown_cmark::LinkType::WikiLink { .. });
                 (
                     Some(Inline::Link {
                         url: Url::unresolved(dest_url.to_string()),
@@ -801,7 +884,12 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
 
 /// Collect a contiguous run of block events into `Vec<Block>`. Stops when
 /// `is_end(event)` returns true or events run out.
-fn collect_blocks_until<F>(events: &[Event<'_>], start: usize, is_end: F) -> (Vec<Block>, usize)
+fn collect_blocks_until<F>(
+    events: &[Event<'_>],
+    start: usize,
+    line_ctx: Option<&LineCtx<'_>>,
+    is_end: F,
+) -> (Vec<Block>, usize)
 where
     F: Fn(&Event<'_>) -> bool,
 {
@@ -811,7 +899,7 @@ where
         if is_end(&events[i]) {
             return (out, i);
         }
-        let (block, advance) = parse_block(events, i);
+        let (block, advance) = parse_block(events, i, line_ctx);
         if let Some(b) = block {
             out.push(b);
         }
@@ -838,7 +926,11 @@ where
 /// The renderer recognises a single-paragraph item shape and emits
 /// `<li>...inline...</li>` without an inner `<p>`, matching production's
 /// tight-list output byte-for-byte.
-fn collect_item_blocks(events: &[Event<'_>], start: usize) -> (Vec<Block>, usize) {
+fn collect_item_blocks(
+    events: &[Event<'_>],
+    start: usize,
+    line_ctx: Option<&LineCtx<'_>>,
+) -> (Vec<Block>, usize) {
     let mut out: Vec<Block> = Vec::new();
     let mut pending_inlines: Vec<Inline> = Vec::new();
     let mut i = start;
@@ -857,7 +949,7 @@ fn collect_item_blocks(events: &[Event<'_>], start: usize) -> (Vec<Block>, usize
         // Block-level event: flush any accumulated inlines, then parse
         // through the standard dispatcher.
         flush_pending_paragraph(&mut out, &mut pending_inlines);
-        let (block, advance) = parse_block(events, i);
+        let (block, advance) = parse_block(events, i, line_ctx);
         if let Some(b) = block {
             out.push(b);
         }
@@ -897,6 +989,7 @@ fn collect_item_blocks(events: &[Event<'_>], start: usize) -> (Vec<Block>, usize
 fn detect_and_assemble_callout(
     events: &[Event<'_>],
     start: usize,
+    line_ctx: Option<&LineCtx<'_>>,
 ) -> Option<(Block, usize)> {
     if !matches!(events.get(start), Some(Event::Start(Tag::Paragraph))) {
         return None;
@@ -962,10 +1055,9 @@ fn detect_and_assemble_callout(
     if let Some(body_start) = body_paragraph_start {
         // Collect inlines until End(Paragraph) and synthesize a
         // Block::Paragraph for the marker-paragraph body content.
-        let (body_inlines, after_para) =
-            collect_inlines_until(events, body_start, |e| {
-                matches!(e, Event::End(TagEnd::Paragraph))
-            });
+        let (body_inlines, after_para) = collect_inlines_until(events, body_start, |e| {
+            matches!(e, Event::End(TagEnd::Paragraph))
+        });
         // Skip past End(Paragraph) itself.
         i = after_para + 1;
         // Trim leading whitespace-only Text inlines (e.g. if the
@@ -984,7 +1076,7 @@ fn detect_and_assemble_callout(
         if matches!(event, Event::End(TagEnd::BlockQuote(_))) {
             break;
         }
-        let (block, advance) = parse_block(events, i);
+        let (block, advance) = parse_block(events, i, line_ctx);
         if let Some(b) = block {
             body_blocks.push(b);
         }
@@ -1070,10 +1162,7 @@ fn parse_callout_marker(text: &str) -> Option<(&str, Option<Fold>, Option<&str>,
 /// `None` for block-level events, end tags, or anything the inline
 /// dispatcher doesn't own — letting the caller fall back to the block
 /// path.
-fn parse_inline_event(
-    events: &[Event<'_>],
-    i: usize,
-) -> Option<(Option<Inline>, usize)> {
+fn parse_inline_event(events: &[Event<'_>], i: usize) -> Option<(Option<Inline>, usize)> {
     match &events[i] {
         Event::Text(_)
         | Event::Code(_)
@@ -1179,7 +1268,11 @@ mod tests {
     use super::*;
 
     fn first_block(md: &str) -> Block {
-        parse(md).blocks.into_iter().next().expect("at least one block")
+        parse(md)
+            .blocks
+            .into_iter()
+            .next()
+            .expect("at least one block")
     }
 
     // -----------------------------------------------------------------
@@ -1326,10 +1419,7 @@ mod tests {
     fn callout_foldable_open_suffix() {
         match first_block("> [!note]+ Open by default\n> body\n") {
             Block::Callout {
-                kind,
-                fold,
-                title,
-                ..
+                kind, fold, title, ..
             } => {
                 assert_eq!(kind, CalloutKind::Note);
                 assert_eq!(fold, Some(Fold::Open));
@@ -1343,10 +1433,7 @@ mod tests {
     fn callout_foldable_closed_suffix() {
         match first_block("> [!note]- Closed by default\n> body\n") {
             Block::Callout {
-                kind,
-                fold,
-                title,
-                ..
+                kind, fold, title, ..
             } => {
                 assert_eq!(kind, CalloutKind::Note);
                 assert_eq!(fold, Some(Fold::Closed));
@@ -1360,10 +1447,7 @@ mod tests {
     fn callout_foldable_without_title() {
         match first_block("> [!tip]+\n> body\n") {
             Block::Callout {
-                kind,
-                fold,
-                title,
-                ..
+                kind, fold, title, ..
             } => {
                 assert_eq!(kind, CalloutKind::Tip);
                 assert_eq!(fold, Some(Fold::Open));
@@ -1425,9 +1509,7 @@ mod tests {
             } => {
                 assert_eq!(outer_kind, CalloutKind::Warning);
                 let inner = children.iter().find_map(|b| match b {
-                    Block::Callout {
-                        kind, title, ..
-                    } => Some((*kind, title.clone())),
+                    Block::Callout { kind, title, .. } => Some((*kind, title.clone())),
                     _ => None,
                 });
                 let (inner_kind, inner_title) =
@@ -1493,7 +1575,9 @@ mod tests {
     fn parses_h1_heading() {
         match first_block("# Hello\n") {
             Block::Heading {
-                level, children, id,
+                level,
+                children,
+                id,
             } => {
                 assert_eq!(level, 1);
                 // Phase 4 PR2: parser populates id with the Obsidian anchor slug.
@@ -1535,7 +1619,12 @@ mod tests {
         // Critical contract: every URL starts as Unresolved.
         match first_block("[Docs](docs/)\n") {
             Block::Paragraph(children) => match &children[0] {
-                Inline::Link { url, title, children, is_wikilink } => {
+                Inline::Link {
+                    url,
+                    title,
+                    children,
+                    is_wikilink,
+                } => {
                     assert!(url.is_unresolved());
                     match url {
                         Url::Unresolved(s) => assert_eq!(s, "docs/"),
@@ -1627,7 +1716,9 @@ mod tests {
         match first_block("![cat photo](cat.jpg)\n") {
             Block::Figure { image, caption } => {
                 match image {
-                    Inline::Image { src, alt, title, .. } => {
+                    Inline::Image {
+                        src, alt, title, ..
+                    } => {
                         assert!(src.is_unresolved());
                         assert_eq!(alt, "cat photo");
                         assert!(title.is_none());
@@ -1666,15 +1757,15 @@ mod tests {
 
     #[test]
     fn parses_emphasis_and_strong() {
-        let para = parse("*em* and **strong**\n").blocks.into_iter().next().unwrap();
+        let para = parse("*em* and **strong**\n")
+            .blocks
+            .into_iter()
+            .next()
+            .unwrap();
         match para {
             Block::Paragraph(children) => {
-                let has_em = children
-                    .iter()
-                    .any(|i| matches!(i, Inline::Emphasis(_)));
-                let has_strong = children
-                    .iter()
-                    .any(|i| matches!(i, Inline::Strong(_)));
+                let has_em = children.iter().any(|i| matches!(i, Inline::Emphasis(_)));
+                let has_strong = children.iter().any(|i| matches!(i, Inline::Strong(_)));
                 assert!(has_em, "missing Emphasis: {children:?}");
                 assert!(has_strong, "missing Strong: {children:?}");
             }
@@ -1695,7 +1786,7 @@ mod tests {
     #[test]
     fn parses_unordered_list() {
         match first_block("- one\n- two\n") {
-            Block::List { ordered, items } => {
+            Block::List { ordered, items, .. } => {
                 assert!(!ordered);
                 assert_eq!(items.len(), 2);
             }
@@ -1711,7 +1802,7 @@ mod tests {
         // stray inlines, producing empty <li></li> instead of the expected
         // <li><strong>bold</strong> text</li>.
         match first_block("- **bold** text\n- another item\n") {
-            Block::List { ordered, items } => {
+            Block::List { ordered, items, .. } => {
                 assert!(!ordered);
                 assert_eq!(items.len(), 2, "expected two items, got {items:?}");
                 let first_item = &items[0];
@@ -1723,10 +1814,13 @@ mod tests {
                 match &first_item[0] {
                     Block::Paragraph(inlines) => {
                         let has_strong = inlines.iter().any(|i| matches!(i, Inline::Strong(_)));
-                        let has_text = inlines.iter().any(|i| {
-                            matches!(i, Inline::Text(t) if t.contains("text"))
-                        });
-                        assert!(has_strong, "expected Inline::Strong inside item, got {inlines:?}");
+                        let has_text = inlines
+                            .iter()
+                            .any(|i| matches!(i, Inline::Text(t) if t.contains("text")));
+                        assert!(
+                            has_strong,
+                            "expected Inline::Strong inside item, got {inlines:?}"
+                        );
                         assert!(has_text, "expected ' text' Inline::Text, got {inlines:?}");
                     }
                     other => panic!("expected Paragraph inside tight item, got {other:?}"),
@@ -1745,7 +1839,11 @@ mod tests {
             Block::List { items, .. } => {
                 assert_eq!(items.len(), 2);
                 let first = &items[0];
-                assert_eq!(first.len(), 1, "expected one Block::Paragraph, got {first:?}");
+                assert_eq!(
+                    first.len(),
+                    1,
+                    "expected one Block::Paragraph, got {first:?}"
+                );
                 match &first[0] {
                     Block::Paragraph(inlines) => {
                         assert!(
@@ -1817,7 +1915,7 @@ mod tests {
     #[test]
     fn parses_ordered_list() {
         match first_block("1. first\n2. second\n") {
-            Block::List { ordered, items } => {
+            Block::List { ordered, items, .. } => {
                 assert!(ordered);
                 assert_eq!(items.len(), 2);
             }
@@ -1880,7 +1978,11 @@ mod tests {
                 // Test the unambiguous mid-doc case.
                 let d = parse("para\n\n---\n\nmore\n");
                 let has_break = d.blocks.iter().any(|b| matches!(b, Block::ThematicBreak));
-                assert!(has_break, "expected at least one ThematicBreak: {:?}", d.blocks);
+                assert!(
+                    has_break,
+                    "expected at least one ThematicBreak: {:?}",
+                    d.blocks
+                );
             }
         }
     }
@@ -1889,7 +1991,7 @@ mod tests {
     fn parses_table() {
         let md = "| h1 | h2 |\n| --- | --- |\n| a | b |\n| c | d |\n";
         match first_block(md) {
-            Block::Table { header, rows } => {
+            Block::Table { header, rows, .. } => {
                 assert_eq!(header.len(), 2);
                 assert_eq!(rows.len(), 2);
                 assert_eq!(rows[0].len(), 2);
@@ -1965,7 +2067,10 @@ mod tests {
     fn heading_id_with_emphasis_uses_text_content() {
         // `*em*` inside a heading: the inner text is `em`, no surrounding
         // chars come from emphasis itself (production captures only Text/Code).
-        assert_eq!(heading_id("# Hello *world*\n"), Some("hello-world".to_string()));
+        assert_eq!(
+            heading_id("# Hello *world*\n"),
+            Some("hello-world".to_string())
+        );
     }
 
     #[test]
@@ -2140,9 +2245,7 @@ mod tests {
                     other => panic!("expected Image inside Paragraph, got {other:?}"),
                 }
             }
-            other => panic!(
-                "empty-alt image-only paragraph must stay as Paragraph, got {other:?}"
-            ),
+            other => panic!("empty-alt image-only paragraph must stay as Paragraph, got {other:?}"),
         }
     }
 
@@ -2180,7 +2283,9 @@ mod tests {
             Block::Paragraph(children) => {
                 assert!(children.iter().any(|i| matches!(i, Inline::Image { .. })));
                 assert!(
-                    children.iter().any(|i| matches!(i, Inline::Text(t) if t.contains("plain"))),
+                    children
+                        .iter()
+                        .any(|i| matches!(i, Inline::Text(t) if t.contains("plain"))),
                     "expected sibling Text to remain, got {children:?}"
                 );
             }
@@ -2359,6 +2464,141 @@ mod tests {
         assert_eq!(doc.blocks.len(), 2);
         assert_eq!(doc.block_meta[0].source_line, Some(1), "ul on line 1");
         assert_eq!(doc.block_meta[1].source_line, Some(4), "bq on line 4");
+    }
+
+    // -----------------------------------------------------------------
+    // 2026-05-28 (Phase 4 source-line followup): per-<li> + per-<tr>
+    // line tracking on Block::List and Block::Table.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parse_with_source_lines_populates_item_lines_on_list() {
+        // Multi-item list spanning consecutive source lines; the parser
+        // must capture the 1-based line of each `Tag::Item` start.
+        let md = "- one\n- two\n- three\n";
+        let config = ParseConfig {
+            emit_source_lines: true,
+            implicit_figure: true,
+        };
+        let doc = parse_with_config(md, &config);
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::List {
+                items,
+                item_source_lines,
+                ..
+            } => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(
+                    item_source_lines.len(),
+                    3,
+                    "item_source_lines must be parallel to items"
+                );
+                assert_eq!(item_source_lines[0], Some(1));
+                assert_eq!(item_source_lines[1], Some(2));
+                assert_eq!(item_source_lines[2], Some(3));
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_default_config_leaves_item_source_lines_empty() {
+        // Production publish builds (default config — `emit_source_lines:
+        // false`) must NOT populate `item_source_lines`. The renderer
+        // treats empty as "no annotations" so the published HTML is
+        // byte-identical to the pre-followup output.
+        let doc = parse("- one\n- two\n");
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::List {
+                item_source_lines, ..
+            } => {
+                assert!(
+                    item_source_lines.is_empty(),
+                    "default config must NOT populate item_source_lines (publish builds): {item_source_lines:?}"
+                );
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_with_source_lines_populates_row_lines_on_table() {
+        // Multi-row table: header on line 1, separator on line 2, body
+        // rows on lines 3, 4, 5. The parser must capture the 1-based
+        // line of each `Tag::TableRow` start.
+        let md = "| h1 | h2 |\n| --- | --- |\n| a | b |\n| c | d |\n| e | f |\n";
+        let config = ParseConfig {
+            emit_source_lines: true,
+            implicit_figure: true,
+        };
+        let doc = parse_with_config(md, &config);
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::Table {
+                rows,
+                header_source_line,
+                row_source_lines,
+                ..
+            } => {
+                assert_eq!(rows.len(), 3);
+                // The header tr anchors at the markdown header row (line 1).
+                assert_eq!(*header_source_line, Some(1), "header tr line");
+                assert_eq!(
+                    row_source_lines.len(),
+                    3,
+                    "row_source_lines must be parallel to rows"
+                );
+                assert_eq!(row_source_lines[0], Some(3));
+                assert_eq!(row_source_lines[1], Some(4));
+                assert_eq!(row_source_lines[2], Some(5));
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_default_config_leaves_row_source_lines_empty() {
+        // Production publish builds must not populate table row lines.
+        let md = "| h1 | h2 |\n| --- | --- |\n| a | b |\n";
+        let doc = parse(md);
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::Table {
+                header_source_line,
+                row_source_lines,
+                ..
+            } => {
+                assert!(header_source_line.is_none());
+                assert!(row_source_lines.is_empty());
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_with_source_lines_handles_list_after_blank_line_offset() {
+        // List items can start past the document start; verify the
+        // 1-based numbering tracks the actual source line, not a
+        // 0-based index from the list opener.
+        let md = "intro paragraph\n\n- item on line 3\n- item on line 4\n";
+        let config = ParseConfig {
+            emit_source_lines: true,
+            implicit_figure: true,
+        };
+        let doc = parse_with_config(md, &config);
+        assert_eq!(doc.blocks.len(), 2);
+        match &doc.blocks[1] {
+            Block::List {
+                item_source_lines, ..
+            } => {
+                assert_eq!(item_source_lines.len(), 2);
+                assert_eq!(item_source_lines[0], Some(3));
+                assert_eq!(item_source_lines[1], Some(4));
+            }
+            other => panic!("expected List as second block, got {other:?}"),
+        }
     }
 
     #[test]
