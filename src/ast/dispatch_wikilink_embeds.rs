@@ -216,14 +216,7 @@ fn dispatch_in_shortcode(
         }
         Shortcode::Grid(args) => {
             for cell in args.cells.iter_mut() {
-                dispatch_in_block_children(
-                    cell,
-                    snapshot,
-                    graph,
-                    registry,
-                    source_path,
-                    result,
-                );
+                dispatch_in_block_children(cell, snapshot, graph, registry, source_path, result);
             }
         }
     }
@@ -445,9 +438,15 @@ mod tests {
 
     fn block_has_wikilink_image(block: &Block) -> bool {
         match block {
-            Block::Paragraph(inlines) => {
-                inlines.iter().any(|i| matches!(i, Inline::Image { is_wikilink: true, .. }))
-            }
+            Block::Paragraph(inlines) => inlines.iter().any(|i| {
+                matches!(
+                    i,
+                    Inline::Image {
+                        is_wikilink: true,
+                        ..
+                    }
+                )
+            }),
             Block::Figure { image, .. } => matches!(
                 image,
                 Inline::Image {
@@ -498,15 +497,14 @@ mod tests {
             is_wikilink: true,
             wikilink_pothole: None,
         }])];
-        let mut doc = Document::from_blocks(vec![Block::Shortcode(Shortcode::Grid(
-            GridShortcode {
+        let mut doc =
+            Document::from_blocks(vec![Block::Shortcode(Shortcode::Grid(GridShortcode {
                 columns: 1,
                 ratio: None,
                 classes: String::new(),
                 cells: vec![cell],
                 width: None,
-            },
-        ))]);
+            }))]);
         let snap = empty_snapshot();
         let graph = empty_graph();
         let reg = empty_registry();
@@ -533,16 +531,15 @@ mod tests {
             is_wikilink: true,
             wikilink_pothole: None,
         }])];
-        let mut doc = Document::from_blocks(vec![Block::Shortcode(Shortcode::Hero(
-            HeroShortcode {
+        let mut doc =
+            Document::from_blocks(vec![Block::Shortcode(Shortcode::Hero(HeroShortcode {
                 image: None,
                 attrs: String::new(),
                 classes: String::new(),
                 overlay,
                 overlay_text: String::new(),
                 width: None,
-            },
-        ))]);
+            }))]);
         let snap = empty_snapshot();
         let graph = empty_graph();
         let reg = empty_registry();
