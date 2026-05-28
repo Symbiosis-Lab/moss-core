@@ -43,13 +43,28 @@ pub trait RenderHooks {
     /// Emit `<a href="...">...</a>` for a link.
     ///
     /// The default impl carries forward moss's existing post-render
-    /// conventions: `class="wikilink"` for resolved wikilinks,
-    /// `target="_blank" rel="noopener"` for asset-newtab links.
+    /// conventions: `class="wikilink"` when `is_wikilink: true`,
+    /// `target="_blank" rel="noopener"` when `url.kind ==
+    /// UrlKind::AssetNewtab`. Both flags are **orthogonal** — a wikilink
+    /// that resolves to an asset-newtab target emits BOTH `class="wikilink"`
+    /// AND `target="_blank" rel="noopener"`.
+    ///
+    /// # `is_wikilink` parameter (PR7a-flip-core-A)
+    ///
+    /// Phase 4 PR7a-flip-core-A (2026-05-28) added `is_wikilink: bool` to
+    /// the signature. Before this change, the renderer had to synthesize
+    /// a wikilink-kinded `ResolvedUrl` to coax the hook into emitting
+    /// `class="wikilink"` — a lossy workaround that fused two orthogonal
+    /// concerns (URL kind + wikilink syntax discriminator) into a single
+    /// field. The flag carries pulldown-cmark's `LinkType::WikiLink`
+    /// discriminator faithfully into the renderer, matching how every
+    /// AST-bearing SSG threads its parse-time link metadata through
+    /// (Hugo's `linkContext.Type`, Markdoc, mdast's `Resource`).
     ///
     /// # Title parameter (PR8 — scheduled)
     ///
-    /// This signature is missing the `title: Option<&str>` parameter that
-    /// CommonMark links can carry (`[text](href "title")`). Title is
+    /// This signature is still missing the `title: Option<&str>` parameter
+    /// that CommonMark links can carry (`[text](href "title")`). Title is
     /// silently dropped today through the AST render path. Invisible
     /// because production HTML still comes from `pulldown_cmark::html::push_html`
     /// (events carry title natively); becomes a regression the moment
@@ -61,24 +76,34 @@ pub trait RenderHooks {
     /// (Hugo's `linkContext.Title`, Markdoc, mdast's `Resource.title`,
     /// comrak, Pandoc) — see
     /// [docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md](../../../../docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md).
-    fn render_link(&self, out: &mut String, url: &ResolvedUrl, content: &str) {
-        match url.kind {
-            UrlKind::Wikilink => {
-                out.push_str(r#"<a class="wikilink" href=""#);
-                out.push_str(&escape_attr(&url.href));
-                out.push_str(r#"">"#);
-            }
-            UrlKind::AssetNewtab => {
-                out.push_str(r#"<a target="_blank" rel="noopener" href=""#);
-                out.push_str(&escape_attr(&url.href));
-                out.push_str(r#"">"#);
-            }
-            _ => {
-                out.push_str(r#"<a href=""#);
-                out.push_str(&escape_attr(&url.href));
-                out.push_str(r#"">"#);
-            }
+    fn render_link(
+        &self,
+        out: &mut String,
+        url: &ResolvedUrl,
+        is_wikilink: bool,
+        content: &str,
+    ) {
+        // PR7a-flip-core-A: is_wikilink and UrlKind::AssetNewtab are
+        // orthogonal. A wikilink that resolves to an asset-newtab kind
+        // emits BOTH `class="wikilink"` AND `target="_blank" rel="noopener"`
+        // — neither concern shadows the other.
+        //
+        // `UrlKind::Wikilink` is also honored for is_wikilink for back-
+        // compat with paths that set the kind without the flag (legacy
+        // production resolved-URL kind classification still drives the
+        // class injection for inline links that pre-date the flag).
+        let want_wikilink_class = is_wikilink || matches!(url.kind, UrlKind::Wikilink);
+        let want_newtab = matches!(url.kind, UrlKind::AssetNewtab);
+        out.push_str(r#"<a"#);
+        if want_wikilink_class {
+            out.push_str(r#" class="wikilink""#);
         }
+        if want_newtab {
+            out.push_str(r#" target="_blank" rel="noopener""#);
+        }
+        out.push_str(r#" href=""#);
+        out.push_str(&escape_attr(&url.href));
+        out.push_str(r#"">"#);
         out.push_str(content);
         out.push_str("</a>");
     }
@@ -728,6 +753,7 @@ mod tests {
         hooks.render_link(
             &mut out,
             &ResolvedUrl::new("docs/", UrlKind::Internal),
+            false,
             "Docs",
         );
         assert_eq!(out, r#"<a href="docs/">Docs</a>"#);
@@ -740,6 +766,24 @@ mod tests {
         hooks.render_link(
             &mut out,
             &ResolvedUrl::new("../docs/", UrlKind::Wikilink),
+            false,
+            "Docs",
+        );
+        assert_eq!(out, r#"<a class="wikilink" href="../docs/">Docs</a>"#);
+    }
+
+    #[test]
+    fn default_hooks_render_link_is_wikilink_flag_injects_class() {
+        // PR7a-flip-core-A: `is_wikilink: true` injects `class="wikilink"`
+        // regardless of `url.kind` — the flag carries the parse-time
+        // discriminator (pulldown-cmark `LinkType::WikiLink`) and is
+        // honored independently from the resolved URL classification.
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_link(
+            &mut out,
+            &ResolvedUrl::new("../docs/", UrlKind::Internal),
+            true,
             "Docs",
         );
         assert_eq!(out, r#"<a class="wikilink" href="../docs/">Docs</a>"#);
@@ -752,11 +796,34 @@ mod tests {
         hooks.render_link(
             &mut out,
             &ResolvedUrl::new("file.pdf", UrlKind::AssetNewtab),
+            false,
             "PDF",
         );
         assert_eq!(
             out,
             r#"<a target="_blank" rel="noopener" href="file.pdf">PDF</a>"#
+        );
+    }
+
+    #[test]
+    fn default_hooks_render_link_wikilink_and_newtab_compose() {
+        // PR7a-flip-core-A: `is_wikilink` and `UrlKind::AssetNewtab` are
+        // orthogonal flags — a wikilink that resolves to an asset-newtab
+        // target emits BOTH `class="wikilink"` AND `target="_blank"
+        // rel="noopener"`. Pins the composition so a future refactor that
+        // re-fuses the two concerns (e.g. via a single match arm) gets
+        // caught here.
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_link(
+            &mut out,
+            &ResolvedUrl::new("file.pdf", UrlKind::AssetNewtab),
+            true,
+            "PDF",
+        );
+        assert_eq!(
+            out,
+            r#"<a class="wikilink" target="_blank" rel="noopener" href="file.pdf">PDF</a>"#
         );
     }
 
@@ -796,6 +863,7 @@ mod tests {
         hooks.render_link(
             &mut out,
             &ResolvedUrl::new(r#"q=a&b="c""#, UrlKind::External),
+            false,
             "x",
         );
         assert!(out.contains(r#"href="q=a&amp;b=&quot;c&quot;""#));

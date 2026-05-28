@@ -47,7 +47,7 @@
 use super::document::Document;
 use super::hooks::{escape_attr, escape_text, RenderHooks};
 use super::node::{Block, Fold, Inline};
-use super::url::{ResolvedUrl, Url, UrlKind};
+use super::url::Url;
 
 /// Render a [`Document`] to an HTML string using the given hooks.
 ///
@@ -347,23 +347,14 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
             };
             let mut content = String::new();
             render_inlines(hooks, &mut content, children);
-            // Phase 4 PR7a (2026-05-28): is_wikilink flag carries
-            // pulldown-cmark's `LinkType::WikiLink` discriminator into
-            // the renderer; legacy production resolved-URL kind also
-            // produces the wikilink class via `UrlKind::Wikilink`.
-            if *is_wikilink && !matches!(resolved.kind, UrlKind::Wikilink) {
-                // Synthesize a wikilink-kind ResolvedUrl by piggy-backing
-                // the render_link hook's wikilink branch. We construct a
-                // local view by re-routing through the hook with a
-                // wikilink-kinded url.
-                let wiki = ResolvedUrl {
-                    href: resolved.href.clone(),
-                    kind: UrlKind::Wikilink,
-                };
-                hooks.render_link(out, &wiki, &content);
-            } else {
-                hooks.render_link(out, resolved, &content);
-            }
+            // Phase 4 PR7a-flip-core-A (2026-05-28): pass the
+            // `is_wikilink` flag directly to the hook. Pre-flip-core-A,
+            // this arm synthesized a wikilink-kinded `ResolvedUrl` to
+            // coax the hook's wikilink branch — a lossy workaround that
+            // dropped the original `UrlKind` (`AssetNewtab` wikilinks
+            // lost their `target="_blank" rel="noopener"`). The hook's
+            // new signature carries both concerns orthogonally.
+            hooks.render_link(out, resolved, *is_wikilink, &content);
         }
         Inline::Image { src, alt, title } => {
             let resolved = match src {
@@ -407,7 +398,7 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
 mod tests {
     use super::super::hooks::DefaultHooks;
     use super::super::node::Inline;
-    use super::super::url::{ResolvedUrl, Url, UrlKind};
+    use super::super::url::{Url, UrlKind};
     use super::*;
 
     fn render(blocks: Vec<Block>) -> String {
