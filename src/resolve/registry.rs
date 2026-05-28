@@ -49,9 +49,8 @@
 //! | With plugins | [`super::wikilink_dispatch::dispatch_wikilink_embed_with_registry`] | custom registry built at init |
 
 use super::embed_renderer::{
-    EmbedRenderer, ImageRenderer, IframeRenderer, MarkdownEmbedRenderer,
+    AudioRenderer, EmbedRenderer, IframeRenderer, ImageRenderer, MarkdownEmbedRenderer,
     ModelViewerRenderer, NotebookRenderer, PdfRenderer, TableRenderer, VideoRenderer,
-    AudioRenderer,
 };
 
 /// A registry of embed renderers, built from the built-in set plus any custom
@@ -152,8 +151,8 @@ impl Default for RendererRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::embed_renderer::{ParsedEmbed, RenderedEmbed};
+    use super::*;
 
     #[derive(Debug)]
     struct CustomRenderer;
@@ -169,7 +168,9 @@ mod tests {
     #[test]
     fn test_builtin_registry_has_core_renderers() {
         let reg = RendererRegistry::builtin().build();
-        for ext in ["jpg", "md", "html", "pdf", "mp3", "mp4", "ipynb", "glb", "csv"] {
+        for ext in [
+            "jpg", "md", "html", "pdf", "mp3", "mp4", "ipynb", "glb", "csv",
+        ] {
             assert!(
                 reg.lookup(ext).is_some(),
                 "builtin missing renderer for .{}",

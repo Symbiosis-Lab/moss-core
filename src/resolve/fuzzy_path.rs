@@ -255,8 +255,19 @@ fn push_encoded_segment(out: &mut String, segment: &str) {
             b'A'..=b'Z'
             | b'a'..=b'z'
             | b'0'..=b'9'
-            | b'-' | b'.' | b'_' | b'~'
-            | b'!' | b'$' | b'&' | b'\'' | b'+' | b',' | b';' | b'=' | b'@' => {
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'!'
+            | b'$'
+            | b'&'
+            | b'\''
+            | b'+'
+            | b','
+            | b';'
+            | b'='
+            | b'@' => {
                 out.push(b as char);
             }
             _ => {
@@ -422,7 +433,10 @@ mod tests {
     #[test]
     fn test_relative_url_root_level_file() {
         // "guide.md" (at guide/) to "notes/daily.md" (at notes/daily/) → "../notes/daily/"
-        assert_eq!(relative_url("guide.md", "notes/daily.md"), "../notes/daily/");
+        assert_eq!(
+            relative_url("guide.md", "notes/daily.md"),
+            "../notes/daily/"
+        );
     }
 
     #[test]
@@ -457,10 +471,7 @@ mod tests {
         // The original symptom: a filename with spaces produced an unparsable
         // markdown image link. Spaces must encode to %20.
         assert_eq!(
-            relative_asset_path(
-                "posts/hello.md",
-                "assets/Pasted image 20260505.png"
-            ),
+            relative_asset_path("posts/hello.md", "assets/Pasted image 20260505.png"),
             "../assets/Pasted%20image%2020260505.png"
         );
     }
@@ -550,15 +561,15 @@ mod tests {
         // For URLs without `?` or `#`, output is identical to
         // `percent_encode_path_segments` — preserving the existing contract.
         let input = "../assets/Pasted image 20260505.png";
-        assert_eq!(percent_encode_url(input), percent_encode_path_segments(input));
+        assert_eq!(
+            percent_encode_url(input),
+            percent_encode_path_segments(input)
+        );
     }
 
     #[test]
     fn split_url_path_at_question_mark() {
-        assert_eq!(
-            split_url_path("foo.html?a=1&b=2"),
-            ("foo.html", "?a=1&b=2")
-        );
+        assert_eq!(split_url_path("foo.html?a=1&b=2"), ("foo.html", "?a=1&b=2"));
     }
 
     #[test]

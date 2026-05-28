@@ -76,9 +76,9 @@ pub fn transform_block_refs(content: &str) -> (String, Vec<String>) {
         if let Some(id) = extract_block_id(line_stripped) {
             // The suffix we strip is ` ^<id>` (space + caret + id).
             let suffix_len = 1 + 1 + id.len(); // space + caret + id
-            // prefix is everything before the space-caret-id.
-            // Char-aligned: the suffix is " ^" (ASCII) + `id` (ASCII alphanumeric/'-',
-            // verified in extract_block_id), so `len() - suffix_len` lands on a char boundary.
+                                               // prefix is everything before the space-caret-id.
+                                               // Char-aligned: the suffix is " ^" (ASCII) + `id` (ASCII alphanumeric/'-',
+                                               // verified in extract_block_id), so `len() - suffix_len` lands on a char boundary.
             #[allow(clippy::string_slice)]
             let prefix = &line_stripped[..line_stripped.len() - suffix_len];
             block_ids.push(id.to_string());

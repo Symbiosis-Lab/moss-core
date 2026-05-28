@@ -97,7 +97,7 @@ pub const MARKER_IPYNB: &str = "moss-embed-ipynb";
 pub const MARKER_TABLE: &str = "moss-embed-table";
 
 // Re-export folder_list marker constants for convenience.
-pub use folder_list::{MARKER_FOLDER_LIST, MARKER_END};
+pub use folder_list::{MARKER_END, MARKER_FOLDER_LIST};
 
 /// An embed that has been parsed and path-resolved, ready for rendering.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -686,7 +686,10 @@ impl EmbedRenderer for MarkdownEmbedRenderer {
     fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
         let anchor = build_embed_anchor(embed.section);
         RenderedEmbed::Deferred {
-            marker: format!("<!-- {}:{}{} -->", MARKER_MARKDOWN, embed.resolved_path, anchor),
+            marker: format!(
+                "<!-- {}:{}{} -->",
+                MARKER_MARKDOWN, embed.resolved_path, anchor
+            ),
         }
     }
 }
@@ -1294,7 +1297,12 @@ mod tests {
     #[test]
     fn stage1_image_structural_alias_yields_empty_alt() {
         // Structural aliases (display keywords / width) all strip from alt.
-        for alias in ["align-left wide", "align-right|wide", "cover|full", "align-left cover|full"] {
+        for alias in [
+            "align-left wide",
+            "align-right|wide",
+            "cover|full",
+            "align-left cover|full",
+        ] {
             let out = image_inline(Some(alias));
             assert_eq!(out, "![](assets/photo.jpg)", "alias={}", alias);
         }
@@ -1324,11 +1332,7 @@ mod tests {
         // Brackets in caption text must be backslash-escaped to keep the
         // CommonMark parser from terminating the alt span early.
         let out = image_inline(Some("a [bracketed] caption"));
-        assert!(
-            out.contains(r"![a \[bracketed\] caption]("),
-            "got: {}",
-            out
-        );
+        assert!(out.contains(r"![a \[bracketed\] caption]("), "got: {}", out);
     }
 
     // -- markdown escape helpers (covered above; spec from plan §D1) -----
@@ -1337,13 +1341,19 @@ mod tests {
     fn markdown_escape_alt_brackets() {
         assert_eq!(markdown_escape_alt("plain"), "plain");
         assert_eq!(markdown_escape_alt("has [brackets]"), r"has \[brackets\]");
-        assert_eq!(markdown_escape_alt(r"with \ backslash"), r"with \\ backslash");
+        assert_eq!(
+            markdown_escape_alt(r"with \ backslash"),
+            r"with \\ backslash"
+        );
     }
 
     #[test]
     fn markdown_escape_title_quotes() {
         assert_eq!(markdown_escape_title("plain"), "plain");
-        assert_eq!(markdown_escape_title(r#"has "quotes""#), r#"has \"quotes\""#);
+        assert_eq!(
+            markdown_escape_title(r#"has "quotes""#),
+            r#"has \"quotes\""#
+        );
         assert_eq!(markdown_escape_title(r"\backslash"), r"\\backslash");
     }
 
@@ -1374,7 +1384,10 @@ mod tests {
 
     #[test]
     fn test_sizing_parse_width_only_percent() {
-        assert_eq!(Sizing::parse("100%"), Some(Sizing::Width(Dim::Percent(100.0))));
+        assert_eq!(
+            Sizing::parse("100%"),
+            Some(Sizing::Width(Dim::Percent(100.0)))
+        );
     }
 
     #[test]
@@ -1882,16 +1895,8 @@ mod tests {
     fn test_model_viewer_head_assets() {
         let assets = ModelViewerRenderer.head_assets();
         assert_eq!(assets.len(), 1);
-        assert!(
-            assets[0].contains("model-viewer"),
-            "got: {}",
-            assets[0]
-        );
-        assert!(
-            assets[0].contains("<script"),
-            "got: {}",
-            assets[0]
-        );
+        assert!(assets[0].contains("model-viewer"), "got: {}", assets[0]);
+        assert!(assets[0].contains("<script"), "got: {}", assets[0]);
     }
 
     // --- TableRenderer ---
@@ -1926,10 +1931,7 @@ mod tests {
 
     /// Build a width-only `ParsedEmbed` mirroring the wikilink resolver's
     /// pre-pass output for `![[file|full]]`-style aliases.
-    fn embed_with_width<'a>(
-        resolved_path: &'a str,
-        width: &'static str,
-    ) -> ParsedEmbed<'a> {
+    fn embed_with_width<'a>(resolved_path: &'a str, width: &'static str) -> ParsedEmbed<'a> {
         ParsedEmbed {
             resolved_path,
             from_path: "post.md",

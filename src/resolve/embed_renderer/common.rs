@@ -13,11 +13,7 @@ use super::Sizing;
 /// URLs from title-attribute params (`query=…`, `fragment=…`). Tests in this
 /// module keep it exercised.
 #[allow(dead_code)]
-pub(super) fn build_src(
-    path: &str,
-    query: Option<&str>,
-    fragment: Option<&str>,
-) -> String {
+pub(super) fn build_src(path: &str, query: Option<&str>, fragment: Option<&str>) -> String {
     let mut out = String::from(path);
     if let Some(q) = query {
         out.push('?');
