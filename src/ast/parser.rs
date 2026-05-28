@@ -441,7 +441,10 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                 )
             }
             Tag::Image {
-                dest_url, title, ..
+                link_type,
+                dest_url,
+                title,
+                ..
             } => {
                 // Collect alt text from text events between Start/End.
                 let mut alt = String::new();
@@ -454,6 +457,54 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                         _ => {}
                     }
                     i += 1;
+                }
+                // PR3.5 (2026-05-28): for wikilink images (`![[file]]` /
+                // `![[file|pothole]]`), pulldown-cmark synthesizes text
+                // events that aren't always author-intended alt:
+                //   - `![[logo.png]]` → text "logo.png" (synthesized from
+                //     dest); production treats as empty alt.
+                //   - `![[logo.png|contain center]]` → text "contain center"
+                //     (display-attrs); production classifies as styling,
+                //     NOT alt.
+                //   - `![[logo.png|width=400]]` → text "width=400" (typed
+                //     params); production classifies as params, NOT alt.
+                //   - `![[logo.png|My caption]]` → text "My caption";
+                //     genuine alt.
+                //
+                // Without this classification, PR3's Block::Figure
+                // detection (Wave 1) promotes wikilink-image paragraphs
+                // with synth-derived "alt" to Figure with bogus
+                // figcaptions ("logo.png", "contain center"). Match
+                // production's transform_events wikilink-dispatch by
+                // running the same classifiers (`is_all_display_keywords`
+                // + `parse_pothole_params`) here.
+                if matches!(link_type, pulldown_cmark::LinkType::WikiLink { .. }) {
+                    let dest_str: &str = dest_url;
+                    let trimmed = alt.trim().to_string();
+                    if trimmed.is_empty() || trimmed == dest_str {
+                        // Empty pothole OR pulldown-cmark synthesized
+                        // dest_url as text → no author alt.
+                        alt.clear();
+                    } else if crate::media::is_all_display_keywords(&trimmed) {
+                        // `contain center`, `left top`, etc. → display
+                        // attrs (production maps to style), not alt.
+                        alt.clear();
+                    } else {
+                        use crate::resolve::wikilink_dispatch::{
+                            parse_pothole_params, PotholeContent,
+                        };
+                        match parse_pothole_params(&trimmed) {
+                            PotholeContent::Empty | PotholeContent::Params(_) => {
+                                alt.clear();
+                            }
+                            PotholeContent::WidthToken { rest_alias, .. } => {
+                                alt = rest_alias;
+                            }
+                            PotholeContent::Alias(text) => {
+                                alt = text;
+                            }
+                        }
+                    }
                 }
                 let title_opt = if title.is_empty() {
                     None
@@ -1950,4 +2001,3 @@ mod tests {
         assert_eq!(kinds, vec!["h", "p", "sc", "p"]);
     }
 }
-
