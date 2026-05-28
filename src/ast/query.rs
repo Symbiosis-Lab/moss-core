@@ -215,7 +215,9 @@ mod tests {
         let doc = Document::from_blocks(vec![img_block("photo.jpg")]);
         match find_first_block_image(&doc) {
             Some(Inline::Image { src, .. }) => {
-                let r = src.as_resolved();
+                let Url::Resolved(r) = src else {
+                    panic!("expected Resolved, got {src:?}")
+                };
                 assert_eq!(r.href, "photo.jpg");
             }
             other => panic!("expected Image, got {other:?}"),
@@ -230,7 +232,9 @@ mod tests {
         ])]);
         match find_first_block_image(&doc) {
             Some(Inline::Image { src, .. }) => {
-                let r = src.as_resolved();
+                let Url::Resolved(r) = src else {
+                    panic!("expected Resolved, got {src:?}")
+                };
                 assert_eq!(r.href, "inline.png");
             }
             _ => panic!("expected Image"),
@@ -246,7 +250,9 @@ mod tests {
         )])])]);
         match find_first_block_image(&doc) {
             Some(Inline::Image { src, .. }) => {
-                let r = src.as_resolved();
+                let Url::Resolved(r) = src else {
+                    panic!("expected Resolved, got {src:?}")
+                };
                 assert_eq!(r.href, "nested.png");
             }
             _ => panic!("expected Image"),
@@ -262,7 +268,9 @@ mod tests {
         ]);
         match find_first_block_image(&doc) {
             Some(Inline::Image { src, .. }) => {
-                let r = src.as_resolved();
+                let Url::Resolved(r) = src else {
+                    panic!("expected Resolved, got {src:?}")
+                };
                 assert_eq!(r.href, "first.jpg");
             }
             _ => panic!("expected first.jpg"),
@@ -283,7 +291,9 @@ mod tests {
         }))]);
         match find_first_block_image(&doc) {
             Some(Inline::Image { src, .. }) => {
-                let r = src.as_resolved();
+                let Url::Resolved(r) = src else {
+                    panic!("expected Resolved, got {src:?}")
+                };
                 assert_eq!(r.href, "grid.png");
             }
             _ => panic!("expected grid.png"),
@@ -322,7 +332,9 @@ mod tests {
         }))]);
         match find_first_block_image(&doc) {
             Some(Inline::Image { src, .. }) => {
-                let r = src.as_resolved();
+                let Url::Resolved(r) = src else {
+                    panic!("expected Resolved, got {src:?}")
+                };
                 assert_eq!(r.href, "overlay.jpg");
             }
             _ => panic!("expected overlay image"),

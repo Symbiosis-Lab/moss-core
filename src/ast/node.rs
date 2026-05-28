@@ -546,7 +546,9 @@ mod tests {
                 is_wikilink: _,
                 wikilink_pothole: _,
             } => {
-                let r = src.as_resolved();
+                let Url::Resolved(r) = src else {
+                    panic!("expected Resolved, got {src:?}")
+                };
                 assert_eq!(r.kind, UrlKind::Asset);
                 assert_eq!(alt, "Cat");
             }

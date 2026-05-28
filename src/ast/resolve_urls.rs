@@ -777,7 +777,9 @@ mod tests {
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
                 Inline::Link { url, .. } => {
-                    let r = url.as_resolved();
+                    let Url::Resolved(r) = url else {
+                        panic!("expected Resolved, got {url:?}")
+                    };
                     assert_eq!(r.kind, UrlKind::External);
                     assert_eq!(r.href, "https://example.com");
                 }
@@ -796,7 +798,9 @@ mod tests {
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
                 Inline::Link { url, .. } => {
-                    let r = url.as_resolved();
+                    let Url::Resolved(r) = url else {
+                        panic!("expected Resolved, got {url:?}")
+                    };
                     assert_eq!(r.kind, UrlKind::Anchor);
                     assert_eq!(r.href, "#top");
                 }
@@ -814,7 +818,9 @@ mod tests {
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
                 Inline::Link { url, .. } => {
-                    let r = url.as_resolved();
+                    let Url::Resolved(r) = url else {
+                        panic!("expected Resolved, got {url:?}")
+                    };
                     assert_eq!(r.kind, UrlKind::Mailto);
                     assert_eq!(r.href, "mailto:test@example.com");
                 }
@@ -841,7 +847,9 @@ mod tests {
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
                 Inline::Image { src, .. } => {
-                    let r = src.as_resolved();
+                    let Url::Resolved(r) = src else {
+                        panic!("expected Resolved, got {src:?}")
+                    };
                     assert_eq!(r.href, "../assets/photo.jpg");
                     assert_eq!(r.kind, UrlKind::Asset);
                 }
@@ -854,7 +862,9 @@ mod tests {
                     // accept either the direct image or one-level
                     // deeper.
                     if let Some(Inline::Image { src, .. }) = link_kids.first() {
-                        let r = src.as_resolved();
+                        let Url::Resolved(r) = src else {
+                            panic!("expected Resolved, got {src:?}")
+                        };
                         assert_eq!(r.href, "../assets/photo.jpg");
                     }
                 }
@@ -864,7 +874,9 @@ mod tests {
                 // PR3's Block::Figure: image-only paragraph may parse as
                 // Figure directly.
                 if let Inline::Image { src, .. } = image {
-                    let r = src.as_resolved();
+                    let Url::Resolved(r) = src else {
+                        panic!("expected Resolved, got {src:?}")
+                    };
                     assert_eq!(r.href, "../assets/photo.jpg");
                 }
             }
@@ -886,7 +898,9 @@ mod tests {
             if let Block::Paragraph(children) = block {
                 for inline in children {
                     if let Inline::Image { src, .. } = inline {
-                        let r = src.as_resolved();
+                        let Url::Resolved(r) = src else {
+                            panic!("expected Resolved, got {src:?}")
+                        };
                         assert_eq!(r.href, "nonexistent.jpg");
                         assert_eq!(r.kind, UrlKind::Asset);
                         found_image = true;
@@ -895,7 +909,9 @@ mod tests {
             }
             if let Block::Figure { image, .. } = block {
                 if let Inline::Image { src, .. } = image {
-                    let r = src.as_resolved();
+                    let Url::Resolved(r) = src else {
+                        panic!("expected Resolved, got {src:?}")
+                    };
                     assert_eq!(r.href, "nonexistent.jpg");
                     found_image = true;
                 }
@@ -1053,7 +1069,9 @@ mod tests {
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
                 Inline::Link { url, .. } => {
-                    let r = url.as_resolved();
+                    let Url::Resolved(r) = url else {
+                        panic!("expected Resolved, got {url:?}")
+                    };
                     assert_eq!(r.href, "missing.md");
                     assert_eq!(r.kind, UrlKind::Internal);
                 }
@@ -1186,7 +1204,9 @@ mod tests {
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
                 Inline::Link { url, .. } => {
-                    let r = url.as_resolved();
+                    let Url::Resolved(r) = url else {
+                        panic!("expected Resolved, got {url:?}")
+                    };
                     assert_eq!(r.href, "/about.html");
                 }
                 _ => panic!("expected Link"),

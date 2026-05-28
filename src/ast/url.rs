@@ -3,8 +3,11 @@
 //! Two-state machine: a URL is either author input (`Unresolved`) or has been
 //! classified by the pipeline's resolver into a `ResolvedUrl` (`Resolved`).
 //! The renderer's contract is that it never sees `Unresolved` — at HTML
-//! emission time, every URL must be `Resolved`. A debug assertion enforces
-//! this; the type system makes the bypass class hard to introduce.
+//! emission time, every URL must be `Resolved`. `RenderHooks::render_image`
+//! and `render_link` take `&ResolvedUrl` directly, so the bypass class is
+//! statically unreachable: the only way to read a resolved href is to
+//! destructure `Url::Resolved(r)`, which forces callers to handle the
+//! `Url::Unresolved(_)` arm.
 //!
 //! # Why two states, not three
 //!
@@ -29,8 +32,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// State machine: `Unresolved` → `Resolved`. The transition is performed
 /// once per URL by [`crate::ast::visit::visit_urls_mut`]. The renderer's
-/// signature accepts only `Resolved`; emitting an `Unresolved` URL to HTML
-/// is a debug-assertion failure.
+/// signature accepts only `&ResolvedUrl`; the bypass class is statically
+/// unreachable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Url {
@@ -115,16 +118,6 @@ impl Url {
     pub fn is_resolved(&self) -> bool {
         matches!(self, Url::Resolved(_))
     }
-
-    /// Borrow the resolved URL, panicking if still unresolved.
-    ///
-    /// The renderer uses this; if it fires, a visitor is missing or buggy.
-    pub fn as_resolved(&self) -> &ResolvedUrl {
-        match self {
-            Url::Resolved(r) => r,
-            Url::Unresolved(s) => panic!("Url::as_resolved called on Unresolved({s:?})"),
-        }
-    }
 }
 
 impl ResolvedUrl {
@@ -165,7 +158,9 @@ mod tests {
     fn resolved_with_wikilink_kind() {
         let u = Url::resolved("../docs/", UrlKind::Wikilink);
         assert!(u.is_resolved());
-        let r = u.as_resolved();
+        let Url::Resolved(r) = &u else {
+            panic!("expected Resolved, got {u:?}")
+        };
         assert_eq!(r.href, "../docs/");
         assert_eq!(r.kind, UrlKind::Wikilink);
     }
@@ -229,12 +224,5 @@ mod tests {
         let r = Url::resolved("x", UrlKind::Internal);
         let s = serde_json::to_string(&r).expect("serialize");
         assert_eq!(s, r#"{"resolved":{"href":"x","kind":"internal"}}"#);
-    }
-
-    #[test]
-    #[should_panic(expected = "Url::as_resolved called on Unresolved")]
-    fn as_resolved_on_unresolved_panics() {
-        let u = Url::unresolved("x");
-        let _ = u.as_resolved();
     }
 }

@@ -330,7 +330,9 @@ mod tests {
             Block::Paragraph(children) => match &children[0] {
                 Inline::Link { url, .. } => {
                     assert!(url.is_resolved());
-                    let r = url.as_resolved();
+                    let Url::Resolved(r) = url else {
+                        panic!("expected Resolved, got {url:?}")
+                    };
                     assert_eq!(r.href, "../docs/");
                 }
                 _ => panic!("expected Link"),
