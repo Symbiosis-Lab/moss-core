@@ -8,9 +8,17 @@
 //! [`Url::Resolved`] is the job of [`crate::ast::visit::visit_urls_mut`]
 //! (a separate pass).
 //!
-//! Heading IDs are not assigned by this parser; they're attached by a
-//! later pass (the existing `obsidian_heading_anchor` flow). The parser
-//! leaves `Block::Heading.id == None`.
+//! Heading IDs ARE assigned by this parser. Phase 4 PR2: each
+//! `Tag::Heading` arm computes the Obsidian-compatible anchor slug from
+//! the heading's text content (only `Event::Text` / `Event::Code`,
+//! matching production's `transform_events` behavior in
+//! `src-tauri/src/build/markdown/pipeline.rs` lines 1776-1845); a
+//! post-parse pass ([`assign_heading_id_suffixes`]) walks all headings in
+//! document order (recursively into BlockQuotes, lists, callouts) and
+//! applies duplicate-suffix numbering (`{slug}-1`, `-2`, …) matching the
+//! `id_counts` HashMap behavior at `pipeline.rs:1798`.
+
+use std::collections::HashMap;
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -18,6 +26,7 @@ use super::document::Document;
 use super::node::{Block, Inline};
 use super::shortcode_extract::{extract_shortcodes, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
+use crate::heading_anchor::obsidian_heading_anchor;
 
 /// Parse markdown into a typed [`Document`].
 ///
@@ -60,6 +69,12 @@ pub fn parse(markdown: &str) -> Document {
 
     // Substitute sentinel placeholders with their typed Shortcode variants.
     substitute_shortcode_placeholders(&mut blocks, &extraction.nonce, &extraction.extracted);
+
+    // Apply duplicate-suffix numbering to heading IDs in document order.
+    // Each Tag::Heading arm computes the base slug; this pass disambiguates
+    // collisions across the whole document, matching production's id_counts
+    // HashMap behavior in pipeline.rs::transform_events.
+    assign_heading_id_suffixes(&mut blocks);
 
     Document::from_blocks(blocks)
 }
@@ -124,11 +139,19 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
                 HeadingLevel::H5 => 5,
                 HeadingLevel::H6 => 6,
             };
+            // Phase 4 PR2: compute the heading-anchor base slug from the
+            // text/code content between Start(Heading) and End(Heading),
+            // matching production's transform_events behavior. Inline HTML
+            // (`<br>` etc.), images, and link href text are NOT included —
+            // only Event::Text and Event::Code. The post-parse
+            // `assign_heading_id_suffixes` pass disambiguates collisions.
+            let heading_text = collect_heading_text(events, start + 1, end);
+            let base_slug = obsidian_heading_anchor(&heading_text);
             (
                 Some(Block::Heading {
                     level: level_num,
                     children,
-                    id: None,
+                    id: Some(base_slug),
                 }),
                 end - start + 1,
             )
@@ -454,6 +477,80 @@ fn flush_pending_paragraph(out: &mut Vec<Block>, pending_inlines: &mut Vec<Inlin
     }
 }
 
+/// Collect the text content of a heading by walking events between
+/// `start..end` (exclusive of the matching `Event::End(TagEnd::Heading)`)
+/// and concatenating every `Event::Text` and `Event::Code` payload.
+///
+/// Mirrors production's `transform_events` heading-text collection at
+/// `src-tauri/src/build/markdown/pipeline.rs:1784-1795`. Inline HTML
+/// (`Event::InlineHtml` / `Event::Html`) is intentionally skipped so that
+/// e.g. `# FAREWELL,<br>AND ERASE` yields the slug for
+/// `FAREWELL,AND ERASE` (no `<br>` in the slug). Soft/hard breaks are
+/// skipped — production only captures Text + Code. Image alt text and
+/// link href text are NOT included; the events inside `Tag::Link` /
+/// `Tag::Image` are walked transparently and their `Event::Text`
+/// payloads (the link/image label) ARE captured, matching production.
+fn collect_heading_text(events: &[Event<'_>], start: usize, end: usize) -> String {
+    let mut text = String::new();
+    for i in start..end {
+        match &events[i] {
+            Event::Text(t) => text.push_str(t),
+            Event::Code(c) => text.push_str(c),
+            _ => {}
+        }
+    }
+    text
+}
+
+/// Post-parse pass: walk every heading in document order (recursively
+/// descending into BlockQuote, List items, and Callout children) and
+/// disambiguate duplicate IDs by appending `-1`, `-2`, … to the slug.
+///
+/// Mirrors the `id_counts: HashMap<String, usize>` behavior at
+/// `src-tauri/src/build/markdown/pipeline.rs:1798-1805`:
+///
+/// - First occurrence of slug `foo` keeps id `foo`; counter starts at 1.
+/// - Second occurrence becomes `foo-1`; counter becomes 2.
+/// - Third occurrence becomes `foo-2`; counter becomes 3.
+///
+/// Headings whose base slug is `None` (shouldn't happen post-PR2, but
+/// safe-guarded) are left untouched.
+fn assign_heading_id_suffixes(blocks: &mut [Block]) {
+    let mut id_counts: HashMap<String, usize> = HashMap::new();
+    assign_heading_id_suffixes_walk(blocks, &mut id_counts);
+}
+
+fn assign_heading_id_suffixes_walk(blocks: &mut [Block], id_counts: &mut HashMap<String, usize>) {
+    for block in blocks.iter_mut() {
+        match block {
+            Block::Heading { id, .. } => {
+                if let Some(slug) = id {
+                    let count_entry = id_counts.entry(slug.clone()).or_insert(0);
+                    let count = *count_entry;
+                    if count > 0 {
+                        *id = Some(format!("{}-{}", slug, count));
+                    }
+                    *count_entry = count + 1;
+                }
+            }
+            Block::BlockQuote(children) | Block::Callout { children, .. } => {
+                assign_heading_id_suffixes_walk(children, id_counts);
+            }
+            Block::List { items, .. } => {
+                for item in items.iter_mut() {
+                    assign_heading_id_suffixes_walk(item, id_counts);
+                }
+            }
+            // Tables/CodeBlocks/Shortcodes/Paragraphs/ThematicBreak/Other
+            // cannot contain block-level headings — nothing to descend
+            // into. Shortcode bodies (Hero overlay, Grid cells) currently
+            // carry their content as String (pre-PR4.5); once promoted to
+            // Vec<Block>, this walker will need to descend there too.
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::node::Inline;
@@ -476,7 +573,8 @@ mod tests {
                 level, children, id,
             } => {
                 assert_eq!(level, 1);
-                assert!(id.is_none());
+                // Phase 4 PR2: parser populates id with the Obsidian anchor slug.
+                assert_eq!(id.as_deref(), Some("hello"));
                 assert!(matches!(&children[0], Inline::Text(t) if t == "Hello"));
             }
             other => panic!("expected Heading, got {other:?}"),
@@ -838,6 +936,154 @@ mod tests {
             }
             other => panic!("expected Heading, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 PR2: heading ID injection
+    // -----------------------------------------------------------------
+
+    fn heading_id(md: &str) -> Option<String> {
+        let blocks = parse(md).blocks;
+        for block in &blocks {
+            if let Block::Heading { id, .. } = block {
+                return id.clone();
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn heading_id_simple_phrase() {
+        // SoCiviC `## Mission` baseline case.
+        assert_eq!(heading_id("## Mission\n"), Some("mission".to_string()));
+    }
+
+    #[test]
+    fn heading_id_spaces_become_hyphens() {
+        assert_eq!(
+            heading_id("# Getting Started\n"),
+            Some("getting-started".to_string())
+        );
+    }
+
+    #[test]
+    fn heading_id_with_emphasis_uses_text_content() {
+        // `*em*` inside a heading: the inner text is `em`, no surrounding
+        // chars come from emphasis itself (production captures only Text/Code).
+        assert_eq!(heading_id("# Hello *world*\n"), Some("hello-world".to_string()));
+    }
+
+    #[test]
+    fn heading_id_with_strong_uses_text_content() {
+        assert_eq!(
+            heading_id("# Bold **stuff**\n"),
+            Some("bold-stuff".to_string())
+        );
+    }
+
+    #[test]
+    fn heading_id_with_inline_link_uses_link_text() {
+        // `# [Docs](url)` — the link label "Docs" comes through as Event::Text.
+        assert_eq!(heading_id("# [Docs](url)\n"), Some("docs".to_string()));
+    }
+
+    #[test]
+    fn heading_id_with_inline_code_includes_code_payload() {
+        // Production captures Event::Code, so `` `fn(x)` `` enters the slug.
+        assert_eq!(
+            heading_id("# call `fn(x)`\n"),
+            Some("call-fn(x)".to_string())
+        );
+    }
+
+    #[test]
+    fn heading_id_with_inline_html_strips_html() {
+        // SoCiviC `# FAREWELL,<br>AND ERASE` — the `<br>` is Event::InlineHtml
+        // and must NOT appear in the slug. Production's slug for this is
+        // derived from "FAREWELL,AND ERASE".
+        let id = heading_id("# FAREWELL,<br>AND ERASE\n").expect("heading id");
+        // No `<br>` or `br` injected; punctuation preserved (`,`), spaces → `-`.
+        assert!(!id.contains("br"), "got: {id}");
+        assert_eq!(id, "farewell,and-erase");
+    }
+
+    #[test]
+    fn heading_id_cjk_preserved() {
+        // 刘果's CJK headings exercise Unicode anchor normalization —
+        // characters pass through unchanged (lowercase already, no whitespace).
+        assert_eq!(heading_id("## 视频\n"), Some("视频".to_string()));
+        assert_eq!(heading_id("## 中文标题\n"), Some("中文标题".to_string()));
+    }
+
+    #[test]
+    fn heading_id_obsidian_strip_chars() {
+        // Pipes / brackets / hashes / backslashes / carets are stripped.
+        assert_eq!(heading_id("# Note ^ref\n"), Some("note-ref".to_string()));
+        assert_eq!(heading_id("# A | B\n"), Some("a-b".to_string()));
+    }
+
+    #[test]
+    fn duplicate_headings_get_suffixed_ids() {
+        // Production behavior: first occurrence keeps slug; second gets `-1`,
+        // third gets `-2`. The HashMap in pipeline.rs:1798 is the contract.
+        let md = "# Mission\n\n# Mission\n\n# Mission\n";
+        let doc = parse(md);
+        let ids: Vec<Option<String>> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Heading { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some("mission".to_string()),
+                Some("mission-1".to_string()),
+                Some("mission-2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_suffix_descends_into_blockquote() {
+        // Headings inside a blockquote share the same id-counter as top-level.
+        let md = "# Notes\n\n> # Notes\n";
+        let doc = parse(md);
+        let mut found_ids: Vec<String> = Vec::new();
+        collect_heading_ids_recursive(&doc.blocks, &mut found_ids);
+        assert_eq!(found_ids, vec!["notes".to_string(), "notes-1".to_string()]);
+    }
+
+    fn collect_heading_ids_recursive(blocks: &[Block], out: &mut Vec<String>) {
+        for b in blocks {
+            match b {
+                Block::Heading { id, .. } => {
+                    if let Some(s) = id {
+                        out.push(s.clone());
+                    }
+                }
+                Block::BlockQuote(children) | Block::Callout { children, .. } => {
+                    collect_heading_ids_recursive(children, out);
+                }
+                Block::List { items, .. } => {
+                    for item in items {
+                        collect_heading_ids_recursive(item, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn heading_id_empty_text_yields_empty_slug() {
+        // Edge case: `# ###` strips to empty slug; suffix counter still ticks.
+        // (obsidian_heading_anchor("") == "")
+        let md = "# ###\n";
+        let id = heading_id(md);
+        assert_eq!(id, Some(String::new()));
     }
 
     #[test]

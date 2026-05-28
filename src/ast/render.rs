@@ -409,6 +409,9 @@ mod tests {
     fn round_trips_parse_to_render_for_canonical_doc() {
         // End-to-end: post-resolve markdown → parse → simulate visit
         // (mark every URL Internal) → render → check shape.
+        //
+        // Phase 4 PR2: the parser now populates Block::Heading.id with the
+        // Obsidian anchor slug, so the rendered <h1> carries id="title".
         let md = "# Title\n\npara with [link](docs/) and *em*.\n";
         let mut doc = super::super::parser::parse(md);
         super::super::visit::visit_urls_mut(&mut doc, |u| match u {
@@ -416,7 +419,7 @@ mod tests {
             _ => {}
         });
         let html = render_document(&doc, &DefaultHooks::new());
-        assert!(html.contains("<h1>Title</h1>"));
+        assert!(html.contains(r#"<h1 id="title">Title</h1>"#), "got: {html}");
         assert!(html.contains(r#"<a href="docs/">link</a>"#));
         assert!(html.contains("<em>em</em>"));
     }
