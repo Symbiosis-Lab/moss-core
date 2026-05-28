@@ -12,6 +12,7 @@ use crate::asset_snapshot::AssetSnapshot;
 use crate::content_graph::ContentGraph;
 
 pub mod block_refs;
+pub mod callouts;
 pub mod embed_renderer;
 pub mod embeds;
 pub mod fuzzy_path;
@@ -218,33 +219,33 @@ pub fn resolve_content_with_handlers_and_snapshot(
     // Step 5: Transform block references.
     let (block_result, block_ids) = block_refs::transform_block_refs(&md_link_result.content);
 
-    // Step 6 (Phase 4 PR4 — 2026-05-27): callout transformation removed.
-    // Obsidian-callout syntax (`> [!type] body`) is now detected in
-    // the typed AST parser (`crates/moss-core/src/ast/parser.rs`'s
-    // `Tag::BlockQuote` arm → `Block::Callout`). The Stage 1 regex
-    // pass at `crates/moss-core/src/resolve/callouts.rs` was deleted
-    // because authoring intent ("this blockquote is a callout") is a
-    // structural fact that belongs in the typed AST.
+    // Step 6: Transform callouts.
     //
-    // Note: production HTML continues to flow through
-    // `pulldown_cmark::html::push_html` over `transform_events` in
-    // `src-tauri/src/build/markdown/pipeline.rs` until Phase 4 PR7a
-    // flips production to `render_document`. Until then, `> [!note]`
-    // syntax in production output appears as a plain `<blockquote>`
-    // (the typed AST renders the canonical callout HTML, but its
-    // output isn't yet wired into the build). Snapshot fixtures for
-    // callouts-bearing sites are updated in this commit to reflect
-    // that interim state; PR7a restores callout HTML by flipping the
-    // rendering source. See `docs/plans/2026-05-27-phase4-typed-ast-completion.md`.
+    // Phase 4 PR4 (2026-05-27) added a typed `Block::Callout` to the
+    // moss-core AST (`crates/moss-core/src/ast/parser.rs`'s
+    // `Tag::BlockQuote` arm) with proper Obsidian-alias canonicalization
+    // and foldable-suffix support. The AST renderer (`render_document`)
+    // emits the same canonical callout HTML this Stage 1 pass produces.
+    //
+    // We keep this Stage 1 pass UNTIL PR7a flips production rendering to
+    // `render_document`. Removing Stage 1 before then would regress
+    // production output (`> [!note]` would render as plain `<blockquote>`
+    // because pulldown-cmark + `html::push_html` don't know callout
+    // syntax). PR7a deletes this call + the `callouts` module + the
+    // `pub mod callouts;` declaration above + regenerates the
+    // callouts-site snapshot fixtures atomically with the production
+    // flip. See `docs/plans/2026-05-27-phase4-typed-ast-completion.md`
+    // § PR7a for the coordinated removal.
+    let callout_result = callouts::transform_callouts(&block_result);
 
     // Step 7: Resolve frontmatter wikilinks + rejoin with resolved body.
     let content_markdown = match frontmatter {
         Some(fm) => {
             let resolved_fm = resolve_frontmatter_wikilinks(fm, graph, source_path);
             diagnostics.extend(resolved_fm.diagnostics);
-            format!("{}{}", resolved_fm.content, block_result)
+            format!("{}{}", resolved_fm.content, callout_result)
         }
-        None => block_result,
+        None => callout_result,
     };
 
     ResolveResult {
@@ -820,16 +821,18 @@ mod tests {
         assert!(result.content_markdown.contains("<span id=\"my-block\"></span>"));
         assert_eq!(result.block_ids, vec!["my-block"]);
 
-        // Phase 4 PR4 (2026-05-27): callout transformation moved from
-        // the Stage 1 regex pass (`resolve/callouts.rs`, deleted) into
-        // the typed AST parser (`ast/parser.rs`'s Tag::BlockQuote arm).
-        // `resolve_content` no longer rewrites `> [!type]` syntax; the
-        // marker passes through unchanged for the typed AST to consume.
+        // Phase 4 PR4 (2026-05-27): typed Block::Callout was added to
+        // the AST parser (`ast/parser.rs`'s Tag::BlockQuote arm) WITH
+        // proper Obsidian-alias canonicalization. The Stage 1
+        // `resolve/callouts.rs` pass STAYS until PR7a flips production
+        // rendering to `render_document` (deleting Stage 1 before then
+        // would regress production output to a plain `<blockquote>`).
+        // So `resolve_content` still emits the canonical callout HTML
+        // here, matching the pre-PR4 behavior.
         assert!(
-            result.content_markdown.contains("> [!warning] Watch Out"),
-            "callout marker passes through resolve_content unchanged"
+            result.content_markdown.contains(r#"class="callout""#),
+            "Stage 1 callout transformation still active until PR7a flip"
         );
-        assert!(result.content_markdown.contains("> Be careful here."));
     }
 
     #[test]
