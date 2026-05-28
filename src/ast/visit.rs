@@ -384,7 +384,9 @@ mod tests {
     #[test]
     fn visits_urls_inside_callout() {
         let mut doc = Document::from_blocks(vec![Block::Callout {
-            kind: "note".into(),
+            kind: super::super::node::CalloutKind::Note,
+            fold: None,
+            title: None,
             children: vec![paragraph_with_link("inside")],
         }]);
         let mut count = 0;

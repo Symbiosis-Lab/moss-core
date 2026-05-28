@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::document::Document;
-use super::node::{Block, Inline};
+use super::node::{Block, CalloutKind, Fold, Inline};
 use super::shortcode_extract::{extract_shortcodes, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
 use crate::heading_anchor::obsidian_heading_anchor;
@@ -202,10 +202,27 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
             )
         }
         Tag::BlockQuote(_) => {
-            let (children, end) = collect_blocks_until(events, start + 1, |e| {
-                matches!(e, Event::End(TagEnd::BlockQuote(_)))
-            });
-            (Some(Block::BlockQuote(children)), end - start + 1)
+            // Phase 4 PR4: detect Obsidian-style callouts. A blockquote
+            // whose first paragraph's leading text matches `[!<kind>]`
+            // (with optional `+`/`-` foldable suffix and optional
+            // inline title) promotes to `Block::Callout`. Otherwise it
+            // stays a plain blockquote. See shape-spec § 1.
+            //
+            // Detection works on the EVENT stream (not the parsed
+            // children) because pulldown-cmark converts `SoftBreak`
+            // events to `Inline::Text(" ")` during inline parsing,
+            // which would erase the "marker line vs body line"
+            // boundary. Working on events preserves the structural
+            // break (SoftBreak event).
+            match detect_and_assemble_callout(events, start + 1) {
+                Some((block, body_end)) => (Some(block), body_end - start + 1),
+                None => {
+                    let (children, end) = collect_blocks_until(events, start + 1, |e| {
+                        matches!(e, Event::End(TagEnd::BlockQuote(_)))
+                    });
+                    (Some(Block::BlockQuote(children)), end - start + 1)
+                }
+            }
         }
         Tag::List(start_num) => {
             let ordered = start_num.is_some();
@@ -528,6 +545,203 @@ fn collect_item_blocks(events: &[Event<'_>], start: usize) -> (Vec<Block>, usize
     (out, i)
 }
 
+/// Phase 4 PR4: detect a callout marker inside a blockquote and, if
+/// found, assemble the entire `Block::Callout` (with body blocks).
+///
+/// `start` is the event index AFTER `Start(BlockQuote)`. Returns
+/// `Some((Block::Callout, end_index))` where `end_index` is the event
+/// index of the matching `End(TagEnd::BlockQuote(_))`, so the outer
+/// caller can compute the advance. Returns `None` for plain
+/// blockquotes (no `[!type]` marker on the first paragraph).
+///
+/// Detection rule (shape-spec § 1):
+/// - The first event must be `Start(Tag::Paragraph)`.
+/// - The leading `Event::Text` run (before the first `SoftBreak` or
+///   any non-Text inline event) must match `[!<kind>]`, optionally
+///   followed by `+` or `-` for foldable callouts, optionally followed
+///   by space + inline title.
+/// - The kind is canonicalized via [`CalloutKind::from_raw`]; unknown
+///   kinds fall back to [`CalloutKind::Note`]. (Diagnostic threading
+///   is a Phase 4 followup — `validation::Diagnostic` is scoped to
+///   frontmatter validation today.)
+///
+/// Why detection runs on events (not parsed children): pulldown-cmark
+/// converts `SoftBreak` events to `Inline::Text(" ")` during the
+/// existing inline parsing, which erases the marker-line vs body-line
+/// boundary. Working at the event layer preserves the SoftBreak
+/// boundary so we can split "title" (before SoftBreak) from "body"
+/// (after SoftBreak) correctly.
+fn detect_and_assemble_callout(
+    events: &[Event<'_>],
+    start: usize,
+) -> Option<(Block, usize)> {
+    if !matches!(events.get(start), Some(Event::Start(Tag::Paragraph))) {
+        return None;
+    }
+    // Coalesce the leading run of `Event::Text` into one logical
+    // string. Stops at SoftBreak, HardBreak, any Start/End tag, or
+    // any non-Text inline.
+    let mut leading = String::new();
+    let mut i = start + 1;
+    while let Some(event) = events.get(i) {
+        match event {
+            Event::Text(t) => {
+                leading.push_str(t);
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+    if leading.is_empty() {
+        return None;
+    }
+
+    let (raw_kind, fold, title, _marker_byte_len) = parse_callout_marker(&leading)?;
+    let kind = CalloutKind::from_raw(raw_kind).unwrap_or(CalloutKind::Note);
+    let title: Option<String> = title.map(|s| s.to_string()).filter(|s| !s.is_empty());
+
+    // We've consumed the leading Text events. `i` now points at the
+    // first non-Text event in the (still-open) marker paragraph.
+    //
+    // Three shapes from here:
+    //   (A) SoftBreak / HardBreak → body lines continue in the same
+    //       Paragraph. Skip the break, then collect inlines until
+    //       End(Paragraph). Wrap them in a synthetic Block::Paragraph.
+    //   (B) End(Paragraph) immediately → marker-only callout (no body
+    //       in the marker paragraph). Skip End(Paragraph).
+    //   (C) Another inline event (Start(Emphasis), Code, etc.) → the
+    //       marker was actually followed by inline markup on the same
+    //       line. Currently treated as title continuation — but we
+    //       lack a clean event-level coalescer for inline tags, so we
+    //       just collect remaining inlines and wrap them as a body
+    //       paragraph. The author can use a separator paragraph for
+    //       clarity if they want clean title isolation.
+    let mut body_blocks: Vec<Block> = Vec::new();
+    let body_paragraph_start: Option<usize> = match events.get(i) {
+        Some(Event::SoftBreak) | Some(Event::HardBreak) => {
+            // Skip the break; collect remaining inlines for the body
+            // paragraph.
+            Some(i + 1)
+        }
+        Some(Event::End(TagEnd::Paragraph)) => {
+            // Marker was the entire paragraph. Skip past End.
+            i += 1;
+            None
+        }
+        _ => {
+            // Other inline events directly following the marker —
+            // collect them as body paragraph content. (Edge case;
+            // see method comment.)
+            Some(i)
+        }
+    };
+
+    if let Some(body_start) = body_paragraph_start {
+        // Collect inlines until End(Paragraph) and synthesize a
+        // Block::Paragraph for the marker-paragraph body content.
+        let (body_inlines, after_para) =
+            collect_inlines_until(events, body_start, |e| {
+                matches!(e, Event::End(TagEnd::Paragraph))
+            });
+        // Skip past End(Paragraph) itself.
+        i = after_para + 1;
+        // Trim leading whitespace-only Text inlines (e.g. if the
+        // line-break Text(" ") leaks through).
+        let trimmed_empty = body_inlines.iter().all(|x| match x {
+            Inline::Text(t) => t.trim().is_empty(),
+            _ => false,
+        });
+        if !trimmed_empty {
+            body_blocks.push(Block::Paragraph(body_inlines));
+        }
+    }
+
+    // Continue collecting subsequent blocks until End(BlockQuote).
+    while let Some(event) = events.get(i) {
+        if matches!(event, Event::End(TagEnd::BlockQuote(_))) {
+            break;
+        }
+        let (block, advance) = parse_block(events, i);
+        if let Some(b) = block {
+            body_blocks.push(b);
+        }
+        i += advance.max(1);
+    }
+
+    // `i` now points at `End(BlockQuote)`. Return total event
+    // span: outer caller computes `i - start + 1` (where `start` here
+    // is the pre-Start-BlockQuote index in the outer scope; but we
+    // were called with `start = outer_start + 1`, so the outer
+    // caller's `start` correctly indexes the opening `Start(BlockQuote)`).
+    // Per the call shape in `parse_block_with_tag` Tag::BlockQuote arm:
+    //   `match detect_and_assemble_callout(events, start + 1)`
+    //   `Some((block, body_end)) => (Some(block), body_end - start + 1)`
+    // we must return `body_end = i` (the `End(BlockQuote)` index).
+    let block = Block::Callout {
+        kind,
+        fold,
+        title,
+        children: body_blocks,
+    };
+    Some((block, i))
+}
+
+/// Parse the leading text of a callout-shaped paragraph.
+///
+/// Accepts text shaped like `[!kind] title text…`, `[!kind]+ title`,
+/// `[!kind]-`, etc. Returns:
+/// - `raw_kind` — the kind identifier verbatim (lowercased on
+///   canonicalization, not here).
+/// - `fold` — `Some(Fold::Open)` for `+`, `Some(Fold::Closed)` for `-`,
+///   `None` otherwise.
+/// - `title` — `Some(title_text)` when text follows the marker (space
+///   separator consumed); `None` when the marker is the entire string.
+///   Title may be empty (`""`) if author wrote `[!note] ` with trailing
+///   whitespace only — caller treats empty as None.
+/// - `marker_byte_len` — number of bytes from the start of `text` that
+///   constituted the marker + the single separator space (if any). The
+///   caller slices `&text[marker_byte_len..]` to recover trailing body
+///   text that should stay in the paragraph (multi-line callouts where
+///   pulldown-cmark concatenated lines).
+fn parse_callout_marker(text: &str) -> Option<(&str, Option<Fold>, Option<&str>, usize)> {
+    let after_open = text.strip_prefix("[!")?;
+    let close_offset = after_open.find(']')?;
+    let raw_kind = &after_open[..close_offset];
+    if raw_kind.is_empty() || raw_kind.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    // Offset within `text` immediately after the `]`.
+    let after_bracket_offset = 2 + close_offset + 1;
+    let rest = &text[after_bracket_offset..];
+
+    let (fold, after_fold_offset) = match rest.chars().next() {
+        Some('+') => (Some(Fold::Open), after_bracket_offset + 1),
+        Some('-') => (Some(Fold::Closed), after_bracket_offset + 1),
+        _ => (None, after_bracket_offset),
+    };
+
+    let rest_after_fold = &text[after_fold_offset..];
+    let (title, marker_byte_len) = if rest_after_fold.is_empty() {
+        // Marker only, no title segment.
+        (None, after_fold_offset)
+    } else if let Some(remainder) = rest_after_fold.strip_prefix(' ') {
+        // ` title text…` — title is everything in this coalesced
+        // leading-text string. Pulldown-cmark splits line breaks into
+        // SoftBreak inlines, so this Text inline never contains
+        // newlines; the title is bounded by the next non-Text inline.
+        let title_str = remainder;
+        let consumed = after_fold_offset + 1 + remainder.len();
+        (Some(title_str), consumed)
+    } else {
+        // No separator after marker but more text follows (e.g.
+        // `[!note]+body` with no space). Treat as no title; keep the
+        // text intact.
+        (None, after_fold_offset)
+    };
+
+    Some((raw_kind, fold, title, marker_byte_len))
+}
+
 /// If `events[i]` is an inline-level event, parse it via the existing
 /// [`parse_inline`] machinery and return `(inline, advance)`. Returns
 /// `None` for block-level events, end tags, or anything the inline
@@ -638,11 +852,312 @@ fn assign_heading_id_suffixes_walk(blocks: &mut [Block], id_counts: &mut HashMap
 
 #[cfg(test)]
 mod tests {
-    use super::super::node::Inline;
+    use super::super::node::{CalloutKind, Fold, Inline};
     use super::*;
 
     fn first_block(md: &str) -> Block {
         parse(md).blocks.into_iter().next().expect("at least one block")
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 PR4: Block::Callout migration + Obsidian alias canonicalization
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parses_basic_callout_with_inline_title() {
+        match first_block("> [!note] Heads up\n> Body line 1.\n") {
+            Block::Callout {
+                kind,
+                fold,
+                title,
+                children,
+            } => {
+                assert_eq!(kind, CalloutKind::Note);
+                assert!(fold.is_none(), "non-foldable callout");
+                assert_eq!(title.as_deref(), Some("Heads up"));
+                assert!(!children.is_empty(), "body should remain");
+            }
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_titleless_callout() {
+        match first_block("> [!warning]\n> Watch out.\n") {
+            Block::Callout {
+                kind,
+                fold,
+                title,
+                children,
+            } => {
+                assert_eq!(kind, CalloutKind::Warning);
+                assert!(fold.is_none());
+                assert!(title.is_none(), "no inline title");
+                assert!(!children.is_empty());
+            }
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_alias_tldr_canonicalizes_to_abstract() {
+        match first_block("> [!tldr] Short summary\n> body\n") {
+            Block::Callout { kind, .. } => assert_eq!(kind, CalloutKind::Abstract),
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_alias_hint_canonicalizes_to_tip() {
+        match first_block("> [!hint] Pro tip\n> body\n") {
+            Block::Callout { kind, .. } => assert_eq!(kind, CalloutKind::Tip),
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_alias_important_canonicalizes_to_tip() {
+        match first_block("> [!important] Read this\n> body\n") {
+            Block::Callout { kind, .. } => assert_eq!(kind, CalloutKind::Tip),
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_alias_check_done_canonicalizes_to_success() {
+        for alias in &["check", "done"] {
+            let md = format!("> [!{alias}] Yes\n> body\n");
+            match first_block(&md) {
+                Block::Callout { kind, .. } => assert_eq!(
+                    kind,
+                    CalloutKind::Success,
+                    "alias `{alias}` should canonicalize to Success"
+                ),
+                other => panic!("alias `{alias}` — expected Callout, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn callout_alias_help_faq_canonicalizes_to_question() {
+        for alias in &["help", "faq"] {
+            let md = format!("> [!{alias}] question\n> body\n");
+            match first_block(&md) {
+                Block::Callout { kind, .. } => assert_eq!(
+                    kind,
+                    CalloutKind::Question,
+                    "alias `{alias}` should canonicalize to Question"
+                ),
+                other => panic!("alias `{alias}` — expected Callout, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn callout_alias_caution_attention_canonicalizes_to_warning() {
+        for alias in &["caution", "attention"] {
+            let md = format!("> [!{alias}] careful\n> body\n");
+            match first_block(&md) {
+                Block::Callout { kind, .. } => assert_eq!(
+                    kind,
+                    CalloutKind::Warning,
+                    "alias `{alias}` should canonicalize to Warning"
+                ),
+                other => panic!("alias `{alias}` — expected Callout, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn callout_alias_fail_missing_canonicalizes_to_failure() {
+        for alias in &["fail", "missing"] {
+            let md = format!("> [!{alias}] oops\n> body\n");
+            match first_block(&md) {
+                Block::Callout { kind, .. } => assert_eq!(
+                    kind,
+                    CalloutKind::Failure,
+                    "alias `{alias}` should canonicalize to Failure"
+                ),
+                other => panic!("alias `{alias}` — expected Callout, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn callout_alias_error_canonicalizes_to_danger() {
+        match first_block("> [!error] bad\n> body\n") {
+            Block::Callout { kind, .. } => assert_eq!(kind, CalloutKind::Danger),
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_alias_cite_canonicalizes_to_quote() {
+        match first_block("> [!cite] source\n> body\n") {
+            Block::Callout { kind, .. } => assert_eq!(kind, CalloutKind::Quote),
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_foldable_open_suffix() {
+        match first_block("> [!note]+ Open by default\n> body\n") {
+            Block::Callout {
+                kind,
+                fold,
+                title,
+                ..
+            } => {
+                assert_eq!(kind, CalloutKind::Note);
+                assert_eq!(fold, Some(Fold::Open));
+                assert_eq!(title.as_deref(), Some("Open by default"));
+            }
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_foldable_closed_suffix() {
+        match first_block("> [!note]- Closed by default\n> body\n") {
+            Block::Callout {
+                kind,
+                fold,
+                title,
+                ..
+            } => {
+                assert_eq!(kind, CalloutKind::Note);
+                assert_eq!(fold, Some(Fold::Closed));
+                assert_eq!(title.as_deref(), Some("Closed by default"));
+            }
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_foldable_without_title() {
+        match first_block("> [!tip]+\n> body\n") {
+            Block::Callout {
+                kind,
+                fold,
+                title,
+                ..
+            } => {
+                assert_eq!(kind, CalloutKind::Tip);
+                assert_eq!(fold, Some(Fold::Open));
+                assert!(title.is_none());
+            }
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_unknown_kind_falls_back_to_note() {
+        // Per shape-spec § 1 — unknown kind canonicalizes to Note.
+        // Diagnostic emission is a Phase 4 followup (see parser.rs
+        // `promote_callout` comment).
+        match first_block("> [!unknownkind] body\n") {
+            Block::Callout { kind, .. } => assert_eq!(kind, CalloutKind::Note),
+            other => panic!("expected Callout (fallback to Note), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_multi_paragraph_body_preserves_blocks() {
+        let md = "> [!info] Multi\n> First paragraph.\n>\n> Second paragraph.\n";
+        match first_block(md) {
+            Block::Callout {
+                kind,
+                title,
+                children,
+                ..
+            } => {
+                assert_eq!(kind, CalloutKind::Info);
+                assert_eq!(title.as_deref(), Some("Multi"));
+                // pulldown-cmark emits two paragraphs in the blockquote
+                // body when separated by an empty `>` line.
+                let para_count = children
+                    .iter()
+                    .filter(|b| matches!(b, Block::Paragraph(_)))
+                    .count();
+                assert!(
+                    para_count >= 2,
+                    "expected at least 2 paragraphs, got {children:?}"
+                );
+            }
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_nested_inside_callout() {
+        // The docs promise nested callouts. After PR4 the outer is
+        // Block::Callout containing an inner Block::Callout in its
+        // children (no Stage 1 rewrite needed).
+        let md = "> [!warning] Outer\n> Outer content.\n>\n> > [!tip] Inner\n> > Inner content.\n";
+        match first_block(md) {
+            Block::Callout {
+                kind: outer_kind,
+                children,
+                ..
+            } => {
+                assert_eq!(outer_kind, CalloutKind::Warning);
+                let inner = children.iter().find_map(|b| match b {
+                    Block::Callout {
+                        kind, title, ..
+                    } => Some((*kind, title.clone())),
+                    _ => None,
+                });
+                let (inner_kind, inner_title) =
+                    inner.expect("inner Block::Callout missing from outer's children");
+                assert_eq!(inner_kind, CalloutKind::Tip);
+                assert_eq!(inner_title.as_deref(), Some("Inner"));
+            }
+            other => panic!("expected outer Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_blockquote_without_marker_stays_blockquote() {
+        // Regression: an ordinary blockquote (no `[!type]` marker) must
+        // remain Block::BlockQuote — only callout-shaped blockquotes
+        // promote.
+        match first_block("> Just a quote.\n> More of the quote.\n") {
+            Block::BlockQuote(_) => {} // expected
+            other => panic!("expected BlockQuote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blockquote_with_text_starting_like_callout_but_unknown_kind_still_promotes() {
+        // The marker `[!xyz]` is structurally a callout — we promote
+        // and fall back to Note (per shape-spec). The author can fix
+        // by removing the bracket prefix if they wanted a plain quote.
+        match first_block("> [!xyz] not a real kind\n> body\n") {
+            Block::Callout { kind, .. } => assert_eq!(kind, CalloutKind::Note),
+            other => panic!("expected Callout fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_case_insensitive_kind() {
+        // Stage 1 was case-insensitive; preserve that contract.
+        match first_block("> [!WARNING] Loud\n> body\n") {
+            Block::Callout { kind, .. } => assert_eq!(kind, CalloutKind::Warning),
+            other => panic!("expected Callout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn callout_pending_alias_canonicalizes_to_todo() {
+        // SoCiviC Theatre's voices.md uses `> [!pending]` — carried
+        // over from Stage 1 support.
+        match first_block("> [!pending] Trailer video\n> Add when ready.\n") {
+            Block::Callout { kind, title, .. } => {
+                assert_eq!(kind, CalloutKind::Todo);
+                assert_eq!(title.as_deref(), Some("Trailer video"));
+            }
+            other => panic!("expected Callout, got {other:?}"),
+        }
     }
 
     #[test]

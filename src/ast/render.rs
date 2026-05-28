@@ -46,7 +46,7 @@
 
 use super::document::Document;
 use super::hooks::{escape_attr, escape_text, RenderHooks};
-use super::node::{Block, Inline};
+use super::node::{Block, Fold, Inline};
 use super::url::Url;
 
 /// Render a [`Document`] to an HTML string using the given hooks.
@@ -85,12 +85,48 @@ fn render_block<H: RenderHooks>(hooks: &H, out: &mut String, block: &Block) {
             render_inlines(hooks, out, children);
             out.push_str("</p>\n");
         }
-        Block::Callout { kind, children } => {
-            out.push_str(r#"<div class="moss-callout callout" data-type=""#);
-            out.push_str(&escape_attr(kind));
-            out.push_str(r#"">"#);
+        Block::Callout {
+            kind,
+            fold,
+            title,
+            children,
+        } => {
+            // Phase 4 PR4: byte-shape mirrors the (now-deleted) Stage 1
+            // `resolve/callouts.rs` output that production HTML still
+            // assumes — `<div class="callout" data-type="{slug}"> /
+            //   <div class="callout-title">{title}</div> /
+            //   <div class="callout-content">…</div>
+            // </div>`. The `data-fold` attribute is new in PR4 (Obsidian
+            // foldable callouts); absent on non-foldable callouts so
+            // existing fixtures remain byte-identical.
+            out.push_str(r#"<div class="callout" data-type=""#);
+            out.push_str(kind.as_slug());
+            out.push_str(r#"""#);
+            if let Some(fold_state) = fold {
+                let fold_attr = match fold_state {
+                    Fold::Open => "open",
+                    Fold::Closed => "closed",
+                };
+                out.push_str(r#" data-fold=""#);
+                out.push_str(fold_attr);
+                out.push_str(r#"""#);
+            }
+            out.push_str(">\n");
+            // Title slot: prefer the parser-extracted title; fall back
+            // to the kind's capitalized default (matches Stage 1).
+            let display_title = title
+                .as_deref()
+                .map(|t| t.trim())
+                .filter(|t| !t.is_empty())
+                .map(|t| escape_text(t))
+                .unwrap_or_else(|| kind.default_title().to_string());
+            out.push_str(r#"  <div class="callout-title">"#);
+            out.push_str(&display_title);
+            out.push_str("</div>\n");
+            out.push_str(r#"  <div class="callout-content">"#);
             out.push('\n');
             render_blocks(hooks, out, children);
+            out.push_str("</div>\n");
             out.push_str("</div>\n");
         }
         Block::List { ordered, items } => {
@@ -424,6 +460,113 @@ mod tests {
     fn renders_thematic_break() {
         let html = render(vec![Block::ThematicBreak]);
         assert_eq!(html, "<hr />\n");
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 PR4: Block::Callout render shape
+    // -----------------------------------------------------------------
+
+    use super::super::node::{CalloutKind, Fold};
+
+    #[test]
+    fn renders_basic_callout_with_title() {
+        let html = render(vec![Block::Callout {
+            kind: CalloutKind::Note,
+            fold: None,
+            title: Some("Heads up".into()),
+            children: vec![Block::Paragraph(vec![Inline::Text("Body.".into())])],
+        }]);
+        assert!(
+            html.contains(r#"<div class="callout" data-type="note">"#),
+            "expected callout div with data-type, got: {html}"
+        );
+        assert!(
+            html.contains(r#"<div class="callout-title">Heads up</div>"#),
+            "expected inline title slot, got: {html}"
+        );
+        assert!(
+            html.contains(r#"<div class="callout-content">"#),
+            "expected content slot, got: {html}"
+        );
+        assert!(html.contains("<p>Body.</p>"), "body must render: {html}");
+    }
+
+    #[test]
+    fn renders_callout_falls_back_to_default_title() {
+        let html = render(vec![Block::Callout {
+            kind: CalloutKind::Warning,
+            fold: None,
+            title: None,
+            children: vec![],
+        }]);
+        assert!(
+            html.contains(r#"<div class="callout-title">Warning</div>"#),
+            "expected capitalized fallback title, got: {html}"
+        );
+    }
+
+    #[test]
+    fn renders_foldable_callout_with_data_fold_attribute() {
+        let html_open = render(vec![Block::Callout {
+            kind: CalloutKind::Tip,
+            fold: Some(Fold::Open),
+            title: Some("Open".into()),
+            children: vec![],
+        }]);
+        assert!(
+            html_open.contains(r#"data-type="tip""#) && html_open.contains(r#"data-fold="open""#),
+            "expected data-fold='open' attribute, got: {html_open}"
+        );
+
+        let html_closed = render(vec![Block::Callout {
+            kind: CalloutKind::Tip,
+            fold: Some(Fold::Closed),
+            title: None,
+            children: vec![],
+        }]);
+        assert!(
+            html_closed.contains(r#"data-fold="closed""#),
+            "expected data-fold='closed' attribute, got: {html_closed}"
+        );
+    }
+
+    #[test]
+    fn callout_alias_renders_canonical_data_type_slug() {
+        // tldr → abstract; ensures the canonicalized slug is what
+        // appears in HTML.
+        let html = render(vec![Block::Callout {
+            kind: CalloutKind::Abstract,
+            fold: None,
+            title: Some("TL;DR".into()),
+            children: vec![],
+        }]);
+        assert!(
+            html.contains(r#"data-type="abstract""#),
+            "expected canonical slug 'abstract', got: {html}"
+        );
+    }
+
+    #[test]
+    fn callout_title_is_html_escaped() {
+        // Title is rendered through escape_text (the same function the
+        // existing renderer uses for text content). escape_text escapes
+        // `<`, `>`, `&` but NOT `"` — `"` is only dangerous inside HTML
+        // attribute values, and title sits between `<div>` tags as text.
+        let html = render(vec![Block::Callout {
+            kind: CalloutKind::Warning,
+            fold: None,
+            title: Some(r#"Use <script> & "quotes""#.into()),
+            children: vec![],
+        }]);
+        assert!(
+            html.contains("Use &lt;script&gt; &amp;"),
+            "title must escape lt/gt/amp, got: {html}"
+        );
+        // No raw `<script>` may appear inside the title div.
+        assert!(
+            !html.contains("<div class=\"callout-title\">Use <script>"),
+            "unescaped angle brackets leaked, got: {html}"
+        );
     }
 
     #[test]

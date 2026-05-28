@@ -15,6 +15,149 @@ use serde::{Deserialize, Serialize};
 use super::shortcode::Shortcode;
 use super::url::Url;
 
+/// Canonical callout kind. Obsidian-dialect aliases canonicalize via
+/// [`CalloutKind::from_raw`] (e.g. `tldr`/`summary` → [`CalloutKind::Abstract`]).
+/// Unknown kinds fall back to [`CalloutKind::Note`]; the parser logs at
+/// trace level (Diagnostic threading is a Phase 4 followup — see
+/// `validation::Diagnostic`, today scoped to frontmatter validation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalloutKind {
+    Note,
+    Abstract,
+    Info,
+    Todo,
+    Tip,
+    Success,
+    Question,
+    Warning,
+    Failure,
+    Danger,
+    Bug,
+    Example,
+    Quote,
+    Important,
+    Summary,
+    Help,
+}
+
+impl CalloutKind {
+    /// Canonicalize a raw callout name (case-insensitive) to a
+    /// [`CalloutKind`]. Returns `None` if the name is not a recognized
+    /// canonical kind or alias.
+    ///
+    /// Alias table (Obsidian-dialect, per shape-spec § 1):
+    /// - `tldr` / `summary` → `Abstract`
+    /// - `hint` / `important` → `Tip`
+    /// - `check` / `done` → `Success`
+    /// - `help` / `faq` → `Question`
+    /// - `caution` / `attention` → `Warning`
+    /// - `fail` / `missing` → `Failure`
+    /// - `error` → `Danger`
+    /// - `cite` → `Quote`
+    ///
+    /// `pending` is also accepted as an alias for `Todo` (used by
+    /// SoCiviC Theatre voices.md; carried over from pre-Phase-4 Stage 1
+    /// support in `crates/moss-core/src/resolve/callouts.rs`).
+    ///
+    /// Note: the [`CalloutKind`] enum reserves `Important`, `Summary`,
+    /// and `Help` as canonical variants for future Stage 2 use (e.g.
+    /// editor-emitted callouts that should not name-clash with the
+    /// Obsidian aliases above). Author markdown can't currently produce
+    /// these three through `from_raw`; they're reachable only via
+    /// programmatic construction.
+    pub fn from_raw(raw: &str) -> Option<Self> {
+        let lower = raw.to_lowercase();
+        let canonical = match lower.as_str() {
+            // Canonical kinds (exact match, alias-free names)
+            "note" => Self::Note,
+            "abstract" => Self::Abstract,
+            "info" => Self::Info,
+            "todo" => Self::Todo,
+            "tip" => Self::Tip,
+            "success" => Self::Success,
+            "question" => Self::Question,
+            "warning" => Self::Warning,
+            "failure" => Self::Failure,
+            "danger" => Self::Danger,
+            "bug" => Self::Bug,
+            "example" => Self::Example,
+            "quote" => Self::Quote,
+            // Obsidian-dialect aliases (shape-spec § 1)
+            "tldr" | "summary" => Self::Abstract,
+            "hint" | "important" => Self::Tip,
+            "check" | "done" => Self::Success,
+            "help" | "faq" => Self::Question,
+            "caution" | "attention" => Self::Warning,
+            "fail" | "missing" => Self::Failure,
+            "error" => Self::Danger,
+            "cite" => Self::Quote,
+            // Legacy alias retained from pre-Phase-4 Stage 1
+            // (`crates/moss-core/src/resolve/callouts.rs`). SoCiviC
+            // Theatre's voices.md uses `> [!pending]`; map to Todo.
+            "pending" => Self::Todo,
+            _ => return None,
+        };
+        Some(canonical)
+    }
+
+    /// Slug form used in the rendered `data-type` attribute.
+    pub fn as_slug(self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Abstract => "abstract",
+            Self::Info => "info",
+            Self::Todo => "todo",
+            Self::Tip => "tip",
+            Self::Success => "success",
+            Self::Question => "question",
+            Self::Warning => "warning",
+            Self::Failure => "failure",
+            Self::Danger => "danger",
+            Self::Bug => "bug",
+            Self::Example => "example",
+            Self::Quote => "quote",
+            Self::Important => "important",
+            Self::Summary => "summary",
+            Self::Help => "help",
+        }
+    }
+
+    /// Default display title (capitalized canonical kind) used when the
+    /// author wrote `> [!type]` with no inline title text.
+    pub fn default_title(self) -> &'static str {
+        match self {
+            Self::Note => "Note",
+            Self::Abstract => "Abstract",
+            Self::Info => "Info",
+            Self::Todo => "Todo",
+            Self::Tip => "Tip",
+            Self::Success => "Success",
+            Self::Question => "Question",
+            Self::Warning => "Warning",
+            Self::Failure => "Failure",
+            Self::Danger => "Danger",
+            Self::Bug => "Bug",
+            Self::Example => "Example",
+            Self::Quote => "Quote",
+            Self::Important => "Important",
+            Self::Summary => "Summary",
+            Self::Help => "Help",
+        }
+    }
+}
+
+/// Foldable callout state. `> [!type]+` → [`Fold::Open`] (foldable,
+/// open by default); `> [!type]-` → [`Fold::Closed`] (foldable, closed
+/// by default). Non-foldable callouts have `fold: None` on the
+/// containing [`Block::Callout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fold {
+    Open,
+    Closed,
+}
+
 /// A block-level AST node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,10 +172,20 @@ pub enum Block {
     },
     /// A paragraph of inline content.
     Paragraph(Vec<Inline>),
-    /// `> [!type] body` — typed callouts. The `kind` is the literal
-    /// callout name as written; downstream code maps to CSS classes.
+    /// `> [!type] body` — typed callouts. The `kind` is canonicalized
+    /// via [`CalloutKind::from_raw`] (Obsidian-dialect aliases collapse
+    /// to the canonical 16-kind set). Foldable callouts (`> [!type]+`
+    /// open by default, `> [!type]-` closed) carry the [`Fold`] state;
+    /// non-foldable callouts have `fold: None`.
+    ///
+    /// Phase 4 PR4 extended the shape from `kind: String` to
+    /// `kind: CalloutKind` + added `fold: Option<Fold>` and `title: Option<String>`.
+    /// Title is the optional inline text following the marker
+    /// (`> [!note] My title` → `title: Some("My title")`).
     Callout {
-        kind: String,
+        kind: CalloutKind,
+        fold: Option<Fold>,
+        title: Option<String>,
         children: Vec<Block>,
     },
     /// `- item` / `1. item`. Each item is a list of blocks (so list items
@@ -294,6 +447,90 @@ mod tests {
             level: 2,
             children: vec![Inline::Text("Setup".to_string())],
             id: Some("setup".to_string()),
+        };
+        let s = serde_json::to_string(&original).expect("serialize");
+        let back: Block = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(original, back);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 PR4: CalloutKind canonicalization
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn callout_kind_canonicalizes_canonical_names() {
+        assert_eq!(CalloutKind::from_raw("note"), Some(CalloutKind::Note));
+        assert_eq!(CalloutKind::from_raw("tip"), Some(CalloutKind::Tip));
+        assert_eq!(CalloutKind::from_raw("warning"), Some(CalloutKind::Warning));
+        assert_eq!(CalloutKind::from_raw("danger"), Some(CalloutKind::Danger));
+        assert_eq!(CalloutKind::from_raw("info"), Some(CalloutKind::Info));
+        assert_eq!(CalloutKind::from_raw("todo"), Some(CalloutKind::Todo));
+        assert_eq!(CalloutKind::from_raw("success"), Some(CalloutKind::Success));
+        assert_eq!(CalloutKind::from_raw("question"), Some(CalloutKind::Question));
+        assert_eq!(CalloutKind::from_raw("failure"), Some(CalloutKind::Failure));
+        assert_eq!(CalloutKind::from_raw("bug"), Some(CalloutKind::Bug));
+        assert_eq!(CalloutKind::from_raw("example"), Some(CalloutKind::Example));
+        assert_eq!(CalloutKind::from_raw("quote"), Some(CalloutKind::Quote));
+        assert_eq!(CalloutKind::from_raw("abstract"), Some(CalloutKind::Abstract));
+    }
+
+    #[test]
+    fn callout_kind_canonicalizes_all_obsidian_aliases() {
+        // The 8 alias mappings from shape-spec § 1.
+        assert_eq!(CalloutKind::from_raw("tldr"), Some(CalloutKind::Abstract));
+        assert_eq!(CalloutKind::from_raw("summary"), Some(CalloutKind::Abstract));
+        assert_eq!(CalloutKind::from_raw("hint"), Some(CalloutKind::Tip));
+        assert_eq!(CalloutKind::from_raw("important"), Some(CalloutKind::Tip));
+        assert_eq!(CalloutKind::from_raw("check"), Some(CalloutKind::Success));
+        assert_eq!(CalloutKind::from_raw("done"), Some(CalloutKind::Success));
+        assert_eq!(CalloutKind::from_raw("help"), Some(CalloutKind::Question));
+        assert_eq!(CalloutKind::from_raw("faq"), Some(CalloutKind::Question));
+        assert_eq!(CalloutKind::from_raw("caution"), Some(CalloutKind::Warning));
+        assert_eq!(CalloutKind::from_raw("attention"), Some(CalloutKind::Warning));
+        assert_eq!(CalloutKind::from_raw("fail"), Some(CalloutKind::Failure));
+        assert_eq!(CalloutKind::from_raw("missing"), Some(CalloutKind::Failure));
+        assert_eq!(CalloutKind::from_raw("error"), Some(CalloutKind::Danger));
+        assert_eq!(CalloutKind::from_raw("cite"), Some(CalloutKind::Quote));
+        // Legacy alias for SoCiviC Theatre's `> [!pending]` syntax.
+        assert_eq!(CalloutKind::from_raw("pending"), Some(CalloutKind::Todo));
+    }
+
+    #[test]
+    fn callout_kind_is_case_insensitive() {
+        assert_eq!(CalloutKind::from_raw("NOTE"), Some(CalloutKind::Note));
+        assert_eq!(CalloutKind::from_raw("Warning"), Some(CalloutKind::Warning));
+        assert_eq!(CalloutKind::from_raw("TLDR"), Some(CalloutKind::Abstract));
+    }
+
+    #[test]
+    fn callout_kind_unknown_returns_none() {
+        assert_eq!(CalloutKind::from_raw("xyz"), None);
+        assert_eq!(CalloutKind::from_raw(""), None);
+        assert_eq!(CalloutKind::from_raw("not-a-kind"), None);
+    }
+
+    #[test]
+    fn callout_kind_slug_matches_canonical_name() {
+        assert_eq!(CalloutKind::Note.as_slug(), "note");
+        assert_eq!(CalloutKind::Abstract.as_slug(), "abstract");
+        assert_eq!(CalloutKind::Warning.as_slug(), "warning");
+        assert_eq!(CalloutKind::Danger.as_slug(), "danger");
+    }
+
+    #[test]
+    fn callout_kind_default_title_is_capitalized() {
+        assert_eq!(CalloutKind::Note.default_title(), "Note");
+        assert_eq!(CalloutKind::Warning.default_title(), "Warning");
+        assert_eq!(CalloutKind::Abstract.default_title(), "Abstract");
+    }
+
+    #[test]
+    fn block_callout_round_trips_through_serde() {
+        let original = Block::Callout {
+            kind: CalloutKind::Warning,
+            fold: Some(Fold::Open),
+            title: Some("Hey".to_string()),
+            children: vec![Block::Paragraph(vec![Inline::Text("body".into())])],
         };
         let s = serde_json::to_string(&original).expect("serialize");
         let back: Block = serde_json::from_str(&s).expect("deserialize");

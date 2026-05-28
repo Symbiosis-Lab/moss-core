@@ -45,7 +45,7 @@ pub mod visit;
 
 pub use document::Document;
 pub use hooks::{DefaultHooks, RenderHooks};
-pub use node::{Block, Inline};
+pub use node::{Block, CalloutKind, Fold, Inline};
 pub use parser::parse;
 pub use render::render_document;
 pub use shortcode::{
