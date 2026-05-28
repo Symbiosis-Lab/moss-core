@@ -23,7 +23,7 @@ use super::cells::split_cells;
 use super::node::Block;
 use super::shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
-    Shortcode, SubscribeShortcode,
+    RecentShortcode, Shortcode, SubscribeShortcode,
 };
 use super::url::Url;
 
@@ -61,7 +61,7 @@ pub struct ExtractionResult {
 /// Names recognized by the typed AST. Other names fall through to the
 /// unknown-name renderer (`<div class="moss-unknown-shortcode" data-name="…">`)
 /// with a build warning.
-const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero", "grid"];
+const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero", "grid", "recent"];
 
 fn is_typed_known(name: &str) -> bool {
     TYPED_KNOWN.contains(&name)
@@ -105,7 +105,30 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> (Option<Shortcod
             }
             (Some(Shortcode::Grid(sc)), warns)
         }
+        "recent" => (Some(Shortcode::Recent(parse_recent_args(args, body))), vec![]),
         _ => (None, vec![]),
+    }
+}
+
+/// Parse `:::recent {since=... last=... count=...}` body into a typed struct.
+///
+/// `args` is the attribute block (e.g. `{since="2026-04-01" count="5"}`);
+/// `body` is the content between the opening and closing `:::` fences,
+/// captured verbatim (trimmed) as the fallback markdown for the zero-match
+/// render path.
+///
+/// Tolerant: unknown keys are ignored. A `count=` value that fails to parse
+/// as a `u32` becomes `None`; the renderer falls back to its default (10).
+/// `since` and `last` are passed through as raw strings — the rendering
+/// layer parses them into a `DateTime` / `Duration` so this stays I/O-free
+/// and chrono-free (moss-core invariant: pure data in / data out).
+pub fn parse_recent_args(args: &str, body: &str) -> RecentShortcode {
+    let attrs = super::attrs::parse_attrs(args).unwrap_or_default();
+    RecentShortcode {
+        since: attrs.get("since").map(str::to_string),
+        last: attrs.get("last").map(str::to_string),
+        count: attrs.get("count").and_then(|v| v.parse::<u32>().ok()),
+        fallback_markdown: body.trim().to_string(),
     }
 }
 
@@ -2740,5 +2763,129 @@ mod tests {
             Shortcode::Grid(g) => assert!(g.width.is_none()),
             other => panic!("expected Grid, got {other:?}"),
         }
+    }
+
+    // ---- Recent (Phase B / Task 4.2) ----
+
+    #[test]
+    fn parses_recent_with_since_and_count() {
+        let (sc, warns) = parse_shortcode_block(
+            "recent",
+            r#"{since="2026-04-01" count="5"}"#,
+            "",
+        );
+        assert!(warns.is_empty());
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Recent(args) => {
+                assert_eq!(args.since.as_deref(), Some("2026-04-01"));
+                assert_eq!(args.count, Some(5));
+                assert!(args.last.is_none());
+                assert!(args.fallback_markdown.is_empty());
+            }
+            other => panic!("expected Recent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_recent_with_last_window() {
+        let (sc, _) = parse_shortcode_block("recent", r#"{last="month"}"#, "");
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Recent(args) => {
+                assert_eq!(args.last.as_deref(), Some("month"));
+                assert!(args.since.is_none());
+                assert!(args.count.is_none());
+            }
+            other => panic!("expected Recent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn captures_recent_body_as_fallback_markdown() {
+        let body = "No posts yet. [Follow along](/).";
+        let (sc, _) = parse_shortcode_block("recent", "", body);
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Recent(args) => {
+                assert_eq!(args.fallback_markdown, body);
+            }
+            other => panic!("expected Recent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recent_with_no_args_yields_all_none() {
+        let (sc, warns) = parse_shortcode_block("recent", "", "");
+        assert!(warns.is_empty());
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Recent(args) => {
+                assert!(args.since.is_none());
+                assert!(args.last.is_none());
+                assert!(args.count.is_none());
+                assert!(args.fallback_markdown.is_empty());
+            }
+            other => panic!("expected Recent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_recent_with_all_three_attrs() {
+        let (sc, warns) = parse_shortcode_block(
+            "recent",
+            r#"{since="2026-01-01" last="month" count="3"}"#,
+            "",
+        );
+        assert!(warns.is_empty());
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Recent(args) => {
+                assert_eq!(args.since.as_deref(), Some("2026-01-01"));
+                assert_eq!(args.last.as_deref(), Some("month"));
+                assert_eq!(args.count, Some(3));
+            }
+            other => panic!("expected Recent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recent_with_malformed_count_yields_none_count() {
+        // Tolerant parsing: a non-numeric count value drops to None
+        // rather than failing the whole block. The renderer will fall
+        // back to its default (10).
+        let (sc, _) = parse_shortcode_block("recent", r#"{count="lots"}"#, "");
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Recent(args) => assert!(args.count.is_none()),
+            other => panic!("expected Recent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recent_body_is_trimmed() {
+        // Surrounding whitespace and trailing newlines do not need to
+        // travel as part of the fallback markdown.
+        let (sc, _) = parse_shortcode_block("recent", "", "\n  hello world  \n\n");
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Recent(args) => assert_eq!(args.fallback_markdown, "hello world"),
+            other => panic!("expected Recent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_recent_end_to_end_with_sentinel() {
+        // Full extraction path: `:::recent` opener is recognized as
+        // typed-known, gets routed through parse_shortcode_block, and the
+        // literal `:::recent` is replaced by a sentinel.
+        let md = ":::recent {since=\"2026-04-01\" count=\"5\"}\nNo posts yet.\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Recent(args) => {
+                assert_eq!(args.since.as_deref(), Some("2026-04-01"));
+                assert_eq!(args.count, Some(5));
+                assert_eq!(args.fallback_markdown, "No posts yet.");
+            }
+            other => panic!("expected Recent, got {other:?}"),
+        }
+        assert!(!result.markdown_with_placeholders.contains(":::recent"));
+        assert!(result
+            .markdown_with_placeholders
+            .contains(&placeholder_for(&result.nonce, 0)));
     }
 }

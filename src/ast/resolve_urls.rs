@@ -452,7 +452,7 @@ where
     F: FnMut(&mut Inline),
 {
     match sc {
-        Shortcode::Subscribe(_) | Shortcode::Buttons(_) => {}
+        Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) => {}
         Shortcode::Gallery(args) => {
             // Gallery items are not Inline::Image (they carry Url directly
             // in GalleryItem::src). Skip — gallery URLs are handled by
@@ -581,7 +581,7 @@ where
     F: FnMut(&mut Url, &str),
 {
     match sc {
-        Shortcode::Subscribe(_) => {}
+        Shortcode::Subscribe(_) | Shortcode::Recent(_) => {}
         Shortcode::Buttons(args) => {
             for item in &mut args.items {
                 // ButtonItem display text comes from item.text per the

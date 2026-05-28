@@ -148,6 +148,7 @@ where
                 }
             }
         }
+        Shortcode::Recent(_) => {} // No URLs.
     }
 }
 

@@ -58,7 +58,7 @@ pub use render::render_document;
 pub use resolve_urls::{classify_remaining_urls, resolve_urls};
 pub use shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
-    Shortcode, ShortcodeKind, SubscribeShortcode,
+    RecentShortcode, Shortcode, ShortcodeKind, SubscribeShortcode,
 };
 pub use url::{ResolvedUrl, Url, UrlKind};
 pub use visit::{has_shortcode_recursive, visit_blocks, visit_urls_mut};

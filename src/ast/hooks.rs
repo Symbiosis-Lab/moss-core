@@ -461,6 +461,16 @@ pub trait RenderHooks {
                 out.push_str(&card_htmls.join("\n"));
                 out.push_str("</div>");
             }
+            Shortcode::Recent(_args) => {
+                // Test-harness skeleton; the production renderer in
+                // src-tauri's PipelineHooks queries the post set (which
+                // moss-core cannot see) and emits the actual list. This
+                // default emits an empty `<div class="moss-recent">` so
+                // unit tests that only care about presence can pattern-
+                // match. Body fallback rendering is the production
+                // renderer's responsibility.
+                out.push_str(r#"<div class="moss-recent"></div>"#);
+            }
         }
     }
 
