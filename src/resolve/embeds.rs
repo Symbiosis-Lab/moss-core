@@ -170,13 +170,8 @@ fn resolve_embeds_inner(
 
                     // Recurse into the inlined content.
                     visited.insert(file_path.to_string());
-                    let nested = resolve_embeds_inner(
-                        &section,
-                        file_path,
-                        file_reader,
-                        visited,
-                        depth + 1,
-                    );
+                    let nested =
+                        resolve_embeds_inner(&section, file_path, file_reader, visited, depth + 1);
                     visited.remove(file_path);
 
                     diagnostics.extend(nested.diagnostics);
@@ -387,8 +382,7 @@ fn parse_heading(line: &str) -> Option<(usize, &str)> {
 /// reporting I/O errors or invalid targets; the handler is expected to
 /// return a best-effort fallback HTML even on failure so the build doesn't
 /// stall.
-pub type MarkerHandler<'a> =
-    Box<dyn Fn(&str, &mut Vec<Diagnostic>) -> String + Send + Sync + 'a>;
+pub type MarkerHandler<'a> = Box<dyn Fn(&str, &mut Vec<Diagnostic>) -> String + Send + Sync + 'a>;
 
 /// Registry of marker-prefix → handler, used by
 /// [`resolve_deferred_markers`] to dispatch Deferred embeds
@@ -416,17 +410,16 @@ impl<'a> MarkerHandlers<'a> {
     ///
     /// `prefix` should NOT include the trailing colon — the scanner matches
     /// `<!-- <prefix>:` automatically.
-    pub fn register(
-        &mut self,
-        prefix: impl Into<String>,
-        handler: MarkerHandler<'a>,
-    ) {
+    pub fn register(&mut self, prefix: impl Into<String>, handler: MarkerHandler<'a>) {
         self.handlers.push((prefix.into(), handler));
     }
 
     /// Find the handler whose prefix matches the body of this marker.
     /// Returns `(prefix, handler, target_body)`.
-    fn find<'b>(&'b self, marker_body: &'b str) -> Option<(&'b str, &'b MarkerHandler<'a>, &'b str)> {
+    fn find<'b>(
+        &'b self,
+        marker_body: &'b str,
+    ) -> Option<(&'b str, &'b MarkerHandler<'a>, &'b str)> {
         self.handlers.iter().find_map(|(p, h)| {
             let needle = format!("{}:", p);
             marker_body
@@ -453,10 +446,7 @@ impl<'a> Default for MarkerHandlers<'a> {
 ///
 /// This is a pure string transform. The handler closures may do I/O; this
 /// function does not.
-pub fn resolve_deferred_markers(
-    content: &str,
-    handlers: &MarkerHandlers<'_>,
-) -> DeferredResult {
+pub fn resolve_deferred_markers(content: &str, handlers: &MarkerHandlers<'_>) -> DeferredResult {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     if handlers.is_empty() {
@@ -689,12 +679,16 @@ mod tests {
 
         // index.md -> a.md, a.md -> b.md
         assert!(
-            result.embed_deps.contains(&("a.md".to_string(), "index.md".to_string())),
+            result
+                .embed_deps
+                .contains(&("a.md".to_string(), "index.md".to_string())),
             "Missing dep: (a.md, index.md). Got: {:?}",
             result.embed_deps
         );
         assert!(
-            result.embed_deps.contains(&("b.md".to_string(), "a.md".to_string())),
+            result
+                .embed_deps
+                .contains(&("b.md".to_string(), "a.md".to_string())),
             "Missing dep: (b.md, a.md). Got: {:?}",
             result.embed_deps
         );
@@ -847,7 +841,10 @@ mod tests {
         let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert!(result.content.contains("stem"), "Should contain 'stem'");
-        assert!(!result.content.contains("leaf"), "Should not contain 'leaf'");
+        assert!(
+            !result.content.contains("leaf"),
+            "Should not contain 'leaf'"
+        );
         assert!(
             !result.content.contains("^def-stem"),
             "Should strip block ref marker"
@@ -867,14 +864,13 @@ mod tests {
         let result = resolve_embeds(content, "index.md", &mock_reader(&files));
 
         assert_eq!(result.diagnostics.len(), 1);
-        assert!(result.diagnostics[0]
-            .message
-            .contains("Block reference"));
+        assert!(result.diagnostics[0].message.contains("Block reference"));
     }
 
     #[test]
     fn test_extract_block_section_basic() {
-        let body = "First paragraph.\n\nA **stem** is a folder's own page. ^def-stem\n\nLast paragraph.";
+        let body =
+            "First paragraph.\n\nA **stem** is a folder's own page. ^def-stem\n\nLast paragraph.";
         let section = extract_block_section(body, "def-stem");
         assert!(section.is_some());
         let s = section.unwrap();
@@ -925,14 +921,8 @@ mod tests {
     fn test_deferred_markers_dispatches_multiple_different_prefixes() {
         let content = "a <!-- moss-embed-ipynb:n.ipynb --> b <!-- moss-embed-table:d.csv --> c";
         let mut h = MarkerHandlers::new();
-        h.register(
-            "moss-embed-ipynb",
-            Box::new(|t, _| format!("[nb:{}]", t)),
-        );
-        h.register(
-            "moss-embed-table",
-            Box::new(|t, _| format!("[tbl:{}]", t)),
-        );
+        h.register("moss-embed-ipynb", Box::new(|t, _| format!("[nb:{}]", t)));
+        h.register("moss-embed-table", Box::new(|t, _| format!("[tbl:{}]", t)));
         let r = resolve_deferred_markers(content, &h);
         assert_eq!(r.content, "a [nb:n.ipynb] b [tbl:d.csv] c");
     }
@@ -972,10 +962,7 @@ mod tests {
         // A handler for "moss-embed" must NOT swallow "moss-embed-ipynb".
         let content = "<!-- moss-embed-ipynb:nb.ipynb -->";
         let mut h = MarkerHandlers::new();
-        h.register(
-            "moss-embed",
-            Box::new(|_, _| "WRONG".to_string()),
-        );
+        h.register("moss-embed", Box::new(|_, _| "WRONG".to_string()));
         let r = resolve_deferred_markers(content, &h);
         // "moss-embed:" would match; "moss-embed-ipynb:" would not.
         // Our format!("{}:", prefix) matches "moss-embed:", which doesn't

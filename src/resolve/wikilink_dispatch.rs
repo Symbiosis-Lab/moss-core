@@ -207,7 +207,11 @@ pub fn split_dest_url(dest_url: &str) -> SplitDestUrl<'_> {
     // single-byte UTF-8 char. `h+1`/`q+1` step over the single byte.
     #[allow(clippy::string_slice)]
     match (hash_pos, query_pos) {
-        (None, None) => SplitDestUrl { file: dest_url, section: None, query: None },
+        (None, None) => SplitDestUrl {
+            file: dest_url,
+            section: None,
+            query: None,
+        },
         (Some(h), None) => SplitDestUrl {
             file: &dest_url[..h],
             section: Some(&dest_url[h + 1..]),
@@ -367,9 +371,8 @@ fn dispatch_embed_form(
             PotholeContent::Alias(s) => s.clone(),
         };
         let params = super::embed_renderer::folder_list::parse_params(&pothole_raw);
-        let marker = super::embed_renderer::folder_list::emit_marker(
-            split.file, from_path, &params,
-        );
+        let marker =
+            super::embed_renderer::folder_list::emit_marker(split.file, from_path, &params);
         return WikilinkEmit {
             output: EmitKind::Html(marker),
             outgoing_link: Some(OutgoingLink {
@@ -447,11 +450,21 @@ fn dispatch_embed_form(
             if let Some(synth_kind) = ext.as_deref().and_then(synth_kind_for_ext) {
                 let params = build_synth_params(synth_kind, &parsed, &pothole);
                 let html = match synth_kind {
-                    SynthKind::Video => crate::render::video::synthesize_video_html(&params, &url, assets),
-                    SynthKind::Pdf => crate::render::pdf::synthesize_pdf_html(&params, &url, assets),
-                    SynthKind::Audio => crate::render::audio::synthesize_audio_html(&params, &url, assets),
-                    SynthKind::Iframe => crate::render::iframe::synthesize_iframe_html(&params, &url, assets),
-                    SynthKind::Model => crate::render::model::synthesize_model_html(&params, &url, assets),
+                    SynthKind::Video => {
+                        crate::render::video::synthesize_video_html(&params, &url, assets)
+                    }
+                    SynthKind::Pdf => {
+                        crate::render::pdf::synthesize_pdf_html(&params, &url, assets)
+                    }
+                    SynthKind::Audio => {
+                        crate::render::audio::synthesize_audio_html(&params, &url, assets)
+                    }
+                    SynthKind::Iframe => {
+                        crate::render::iframe::synthesize_iframe_html(&params, &url, assets)
+                    }
+                    SynthKind::Model => {
+                        crate::render::model::synthesize_model_html(&params, &url, assets)
+                    }
                 };
                 return WikilinkEmit {
                     output: EmitKind::Html(html),
@@ -496,12 +509,8 @@ fn dispatch_embed_form(
                     // (Matches `ImageRenderer::render_to_markdown`'s
                     // `caption_text = None` branch in the structural-alias
                     // arm.)
-                    let html = synthesize_image_with_media_attrs(
-                        &url,
-                        /* alt */ "",
-                        assets,
-                        &media,
-                    );
+                    let html =
+                        synthesize_image_with_media_attrs(&url, /* alt */ "", assets, &media);
                     return WikilinkEmit {
                         output: EmitKind::Html(html),
                         outgoing_link: Some(outgoing),
@@ -777,9 +786,7 @@ fn synthesize_image_with_media_attrs(
     media: &MediaAttrs,
 ) -> String {
     use crate::media::html_escape;
-    use crate::render::image::{
-        synthesize_image_html, ImageContext, ImageRenderOptions,
-    };
+    use crate::render::image::{synthesize_image_html, ImageContext, ImageRenderOptions};
 
     let mut extra = String::new();
     if let Some(style) = media.to_inline_style() {
@@ -901,18 +908,16 @@ fn build_synth_params(
     // supports free-text titles.
     if let Some(alias) = embed.alias {
         match kind {
-            SynthKind::Video | SynthKind::Pdf | SynthKind::Model => {
-                match Sizing::parse(alias) {
-                    Some(Sizing::Width(w)) => {
-                        params.insert("width", w.to_css());
-                    }
-                    Some(Sizing::Box(w, h)) => {
-                        params.insert("width", w.to_css());
-                        params.insert("height", h.to_css());
-                    }
-                    None => {}
+            SynthKind::Video | SynthKind::Pdf | SynthKind::Model => match Sizing::parse(alias) {
+                Some(Sizing::Width(w)) => {
+                    params.insert("width", w.to_css());
                 }
-            }
+                Some(Sizing::Box(w, h)) => {
+                    params.insert("width", w.to_css());
+                    params.insert("height", h.to_css());
+                }
+                None => {}
+            },
             SynthKind::Iframe => match Sizing::parse(alias) {
                 Some(Sizing::Width(w)) => {
                     params.insert("width", w.to_css());
@@ -1291,8 +1296,16 @@ mod tests {
         match emit.output {
             EmitKind::Html(s) => {
                 assert!(s.contains("<object"), "expected <object>, got: {}", s);
-                assert!(s.contains(r#"data="report.pdf""#), "expected data=, got: {}", s);
-                assert!(s.contains(r#"type="application/pdf""#), "expected type=, got: {}", s);
+                assert!(
+                    s.contains(r#"data="report.pdf""#),
+                    "expected data=, got: {}",
+                    s
+                );
+                assert!(
+                    s.contains(r#"type="application/pdf""#),
+                    "expected type=, got: {}",
+                    s
+                );
             }
             other => panic!("expected Html, got: {:?}", other),
         }
@@ -1313,7 +1326,11 @@ mod tests {
             EmitKind::Html(s) => {
                 assert!(s.contains("<audio"), "expected <audio>, got: {}", s);
                 assert!(s.contains(r#"src="song.mp3""#), "expected src=, got: {}", s);
-                assert!(s.contains(r#"type="audio/mpeg""#), "expected MIME, got: {}", s);
+                assert!(
+                    s.contains(r#"type="audio/mpeg""#),
+                    "expected MIME, got: {}",
+                    s
+                );
             }
             other => panic!("expected Html, got: {:?}", other),
         }
@@ -1333,7 +1350,11 @@ mod tests {
         match emit.output {
             EmitKind::Html(s) => {
                 assert!(s.contains("<iframe"), "expected <iframe>, got: {}", s);
-                assert!(s.contains(r#"src="widget.html""#), "expected src=, got: {}", s);
+                assert!(
+                    s.contains(r#"src="widget.html""#),
+                    "expected src=, got: {}",
+                    s
+                );
             }
             other => panic!("expected Html, got: {:?}", other),
         }
@@ -1352,8 +1373,16 @@ mod tests {
         );
         match emit.output {
             EmitKind::Html(s) => {
-                assert!(s.contains("<model-viewer"), "expected <model-viewer>, got: {}", s);
-                assert!(s.contains(r#"src="scene.glb""#), "expected src=, got: {}", s);
+                assert!(
+                    s.contains("<model-viewer"),
+                    "expected <model-viewer>, got: {}",
+                    s
+                );
+                assert!(
+                    s.contains(r#"src="scene.glb""#),
+                    "expected src=, got: {}",
+                    s
+                );
             }
             other => panic!("expected Html, got: {:?}", other),
         }
@@ -1468,11 +1497,7 @@ mod tests {
                 );
                 // Structural alias must not leak into accessible name:
                 // `cover` is a display keyword, not caption text.
-                assert!(
-                    s.contains(r#"alt="""#),
-                    "expected empty alt, got: {}",
-                    s,
-                );
+                assert!(s.contains(r#"alt="""#), "expected empty alt, got: {}", s,);
             }
             other => panic!("expected Html, got: {:?}", other),
         }
