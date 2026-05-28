@@ -85,7 +85,13 @@ pub(super) fn width_attr(width: Option<&str>) -> String {
 
 /// Extract filename stem (no directory, no extension). Used by renderers that
 /// want a human-readable label from a path.
-pub(super) fn file_stem(path: &str) -> String {
+///
+/// `pub` (not `pub(super)`) so the canonical version is reachable from the
+/// `crates/moss-core/src/render/*.rs` synthesizers. Before promotion,
+/// `render/pdf.rs` carried its own copy with a `// Mirrors file_stem in …
+/// (which is pub(super) and therefore not reachable from here)` comment;
+/// see the polish-pass plan Item C1.
+pub fn file_stem(path: &str) -> String {
     let filename = path.rsplit('/').next().unwrap_or(path);
     match filename.rsplit_once('.') {
         Some((stem, _ext)) if !stem.is_empty() => stem.to_string(),
@@ -95,6 +101,11 @@ pub(super) fn file_stem(path: &str) -> String {
 
 /// Lowercase the filename extension (no leading dot). Returns empty string
 /// if the path has no extension.
+///
+/// Note: does NOT strip `?query` or `#fragment` from the input — callers
+/// passing URL-shaped strings (e.g. `track.mp3?v=2`) need to split first.
+/// `render/audio.rs` has a private query-stripping variant for that case.
+#[allow(dead_code)]
 pub(super) fn path_extension_lower(path: &str) -> String {
     let filename = path.rsplit('/').next().unwrap_or(path);
     match filename.rsplit_once('.') {

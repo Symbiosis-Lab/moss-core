@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 
 mod common;
 pub mod folder_list;
-use common::{file_stem, path_extension_lower};
+use common::path_extension_lower;
 
 // Re-export the canonical 4-char attribute escaper so src-tauri synthesizers
 // (pdf / iframe / model / audio / video) can share one definition instead of
@@ -35,7 +35,7 @@ use common::{file_stem, path_extension_lower};
 // synthesizers via `moss_core::media::html_escape` was 5 chars including
 // `'` → `&#39;`). The 4-char form is correct per HTML5: apostrophe is safe
 // inside `"…"` attributes.
-pub use common::html_escape_attr;
+pub use common::{file_stem, html_escape_attr};
 
 // ---------------------------------------------------------------------------
 // Reserved classnames (HTML/CSS contract, per moss#508)
@@ -307,7 +307,7 @@ use crate::heading_anchor::obsidian_heading_anchor;
 use crate::media::{is_all_display_keywords, parse_media_attrs};
 
 use super::fuzzy_path::relative_asset_path;
-use super::title_params::{emit_title, TitleParams};
+use super::title_params::TitleParams;
 
 /// Image file extensions recognized by `ImageRenderer`.
 pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
@@ -460,17 +460,20 @@ impl ImageRenderer {
 
         let alt = caption_text.unwrap_or_default();
 
-        if params.is_empty() {
-            format!("![{}]({})", markdown_escape_alt(&alt), url)
-        } else {
-            let title = emit_title(&params);
-            format!(
-                r#"![{}]({} "{}")"#,
-                markdown_escape_alt(&alt),
-                url,
-                markdown_escape_title(&title),
-            )
-        }
+        // Phase 3 PR4 (2026-05-27): the `moss:` title channel retired —
+        // `parse_title` no longer reads markdown image titles. The
+        // wikilink dispatcher hands `TitleParams` directly to
+        // synthesizers via `parse_pothole_params`, bypassing the
+        // markdown round-trip entirely. The params accumulated above
+        // are still useful for future Stage 2 surfaces that read them
+        // off the dispatcher's pothole-parse output (Tracked: width /
+        // caption / align threading in `render_inline_md_for_dispatch`).
+        // For now we emit bare markdown; the discarded `params` are
+        // a noop side-effect, not a behavioral regression — the prior
+        // `moss:` title was already discarded by the downstream
+        // `render_inline_md_for_dispatch` path.
+        let _ = params;
+        format!("![{}]({})", markdown_escape_alt(&alt), url)
     }
 }
 
@@ -550,9 +553,11 @@ fn add_class_dedup(acc: &mut Vec<String>, class: &str) {
 /// Lives here so all `render_link_markdown` consumers stay in lockstep when
 /// Decision #11 (attribute-block-wins, class lists union+dedupe) evolves.
 ///
-/// `pub(super)` so the Stage 1 native-markdown sweep in `wikilinks::stage1_sweep`
-/// can fold trailing `{...}` attribute blocks into native-image rewrites
-/// using the same policy.
+/// `pub(super)` for sibling-module use within `resolve/`. Originally exposed
+/// so the Stage 1 native-markdown sweep (`wikilinks::stage1_sweep`) could
+/// fold trailing `{...}` attribute blocks into native-image rewrites;
+/// that sweep retired in Phase 3 PR2, but the visibility stays the same
+/// shape so plugin-side callers can still reach it.
 pub(super) fn fold_attrs_into_params(
     block: &crate::ast::attrs::AttrBlock,
     params: &mut TitleParams,
@@ -634,25 +639,29 @@ fn render_link_markdown(
     extra: impl FnOnce(&ParsedEmbed<'_>, &mut TitleParams),
 ) -> String {
     let url = relative_asset_path(embed.from_path, embed.resolved_path);
+    // Phase 3 PR4 (2026-05-27): the `moss:kind=…` title channel retired.
+    // The accumulated params (kind / data-width / extras / attribute
+    // block) are no longer round-tripped through a markdown title —
+    // `parse_title` is gone, and `render_inline_md_for_dispatch` was
+    // already discarding the title in its Tag::Link arm. We keep the
+    // `params` accumulation as a no-op so the `extra` and
+    // `fold_attrs_into_params` plumbing stays exercised (tests still
+    // call through). Future PRs threading typed params into iframe /
+    // pdf / video / audio / 3D wikilink dispatch should bypass this
+    // markdown round-trip entirely — `EmitKind::Inline` is the wrong
+    // channel for typed structural data.
     let mut params = TitleParams::default();
     params.insert("kind", kind);
     if let Some(w) = embed.width {
         params.insert("data-width", w);
     }
     extra(embed, &mut params);
-    // Fold the trailing Pandoc attribute block last so it wins on typed-field
-    // conflicts (Decision #11) — matches the ImageRenderer ordering.
     if let Some(block) = &embed.attrs {
         fold_attrs_into_params(block, &mut params);
     }
-    let title = emit_title(&params);
+    let _ = params;
     let name = file_stem(embed.resolved_path);
-    format!(
-        r#"[{}]({} "{}")"#,
-        markdown_escape_alt(&name),
-        url,
-        markdown_escape_title(&title),
-    )
+    format!("[{}]({})", markdown_escape_alt(&name), url)
 }
 
 // file_stem now lives in common.rs — imported via common::file_stem below.
@@ -1246,90 +1255,49 @@ mod tests {
         assert_eq!(out, "![](assets/photo.jpg)");
     }
 
+    // Phase 3 PR4 (2026-05-27): `ImageRenderer::render_to_markdown` no
+    // longer emits a `moss:K=V` title. The typed-param accumulation still
+    // runs (so the structural / caption classifier stays exercised) but
+    // the params are discarded — `parse_title` retired and the
+    // downstream pipeline reads `TitleParams` from the wikilink pothole
+    // via `parse_pothole_params`. The remaining assertions pin the alt /
+    // url shape; param round-trip moves to `parse_pothole_params` tests.
+
     #[test]
-    fn stage1_image_with_align_emits_moss_title() {
+    fn stage1_image_with_align_emits_bare_markdown() {
         let out = image_inline(Some("align-left"));
-        assert_eq!(out, r#"![](assets/photo.jpg "moss:align=left")"#);
+        assert_eq!(out, "![](assets/photo.jpg)");
     }
 
     #[test]
-    fn stage1_image_with_width_emits_moss_title() {
-        // `wide` is a canonical width token; no other params.
+    fn stage1_image_with_width_emits_bare_markdown() {
         let out = image_inline(Some("wide"));
-        assert_eq!(out, r#"![](assets/photo.jpg "moss:width=wide")"#);
+        assert_eq!(out, "![](assets/photo.jpg)");
     }
 
     #[test]
-    fn stage1_image_full_aliases_to_screen() {
-        // `full` is the author-facing alias; canonical value is `screen`.
+    fn stage1_image_full_alias_keeps_alt_empty() {
+        // `full` is a width keyword; classifier strips it from the alt
+        // slot. Caption stays empty.
         let out = image_inline(Some("full"));
-        assert_eq!(out, r#"![](assets/photo.jpg "moss:width=screen")"#);
+        assert_eq!(out, "![](assets/photo.jpg)");
     }
 
     #[test]
-    fn stage1_image_width_body_page_screen_round_trip() {
-        for (token, canonical) in [("body", "body"), ("page", "page"), ("screen", "screen")] {
-            let out = image_inline(Some(token));
-            assert_eq!(
-                out,
-                format!(r#"![](assets/photo.jpg "moss:width={}")"#, canonical),
-                "token={}",
-                token
-            );
-        }
-    }
-
-    #[test]
-    fn stage1_image_width_caption_moss_title_with_caption_as_alt() {
-        // Caption text + width: caption becomes alt, width goes into the
-        // title. Multi-pipe form `caption|full` exercises extract_width.
+    fn stage1_image_width_caption_keeps_caption_as_alt() {
+        // Caption text + width: caption becomes alt. The width param is
+        // discarded under PR4 — recoverable via wikilink pothole syntax.
         let out = image_inline(Some("A nice photo|full"));
-        assert_eq!(out, r#"![A nice photo](assets/photo.jpg "moss:width=screen")"#);
+        assert_eq!(out, "![A nice photo](assets/photo.jpg)");
     }
 
     #[test]
-    fn stage1_image_align_and_width_compose() {
-        // BTreeMap canonicalises params alphabetically: align < width.
-        let out = image_inline(Some("align-left wide"));
-        assert!(
-            out.contains(r#""moss:align=left width=wide""#),
-            "got: {}",
-            out
-        );
-    }
-
-    #[test]
-    fn stage1_image_align_with_width_pipe_composes() {
-        // Pipe-separated form: `align-right|wide` — align segment first,
-        // width pipe second. Result is the same composition.
-        let out = image_inline(Some("align-right|wide"));
-        assert!(
-            out.contains(r#""moss:align=right width=wide""#),
-            "got: {}",
-            out
-        );
-    }
-
-    #[test]
-    fn stage1_image_display_keywords_with_width_compose() {
-        // `cover` (object-fit) composes with `full` (width).
-        let out = image_inline(Some("cover|full"));
-        assert!(
-            out.contains(r#""moss:fit=cover width=screen""#),
-            "got: {}",
-            out
-        );
-    }
-
-    #[test]
-    fn stage1_image_align_cover_width_compose() {
-        // Three-way composition: align (class), cover (fit), full (width).
-        let out = image_inline(Some("align-left cover|full"));
-        assert!(
-            out.contains(r#""moss:align=left fit=cover width=screen""#),
-            "got: {}",
-            out
-        );
+    fn stage1_image_structural_alias_yields_empty_alt() {
+        // Structural aliases (display keywords / width) all strip from alt.
+        for alias in ["align-left wide", "align-right|wide", "cover|full", "align-left cover|full"] {
+            let out = image_inline(Some(alias));
+            assert_eq!(out, "![](assets/photo.jpg)", "alias={}", alias);
+        }
     }
 
     #[test]
@@ -1345,18 +1313,10 @@ mod tests {
     #[test]
     fn stage1_image_html_escapes_caption_for_alt() {
         // Caption goes into alt. CommonMark alt allows " and & inline;
-        // only [ and ] need escaping. Title escaping handles the param side.
+        // only [ and ] need escaping. Phase 3 PR4: width param dropped
+        // from output (no title attribute is emitted).
         let out = image_inline(Some(r#"Q&A "best"|wide"#));
-        assert!(
-            out.starts_with(r#"![Q&A "best"]("#),
-            "alt should preserve & and \" verbatim: {}",
-            out
-        );
-        assert!(
-            out.ends_with(r#""moss:width=wide")"#),
-            "title param expected: {}",
-            out
-        );
+        assert_eq!(out, r#"![Q&A "best"](assets/photo.jpg)"#);
     }
 
     #[test]
@@ -1530,9 +1490,15 @@ mod tests {
         }
     }
 
+    // Phase 3 PR4 (2026-05-27): the `moss:kind=…` title channel retired —
+    // `render_link_markdown` now emits bare `[name](url)`. The accumulated
+    // typed params (query / fragment / sizing / data-width / title-alias)
+    // are discarded at the markdown boundary; future PRs will thread them
+    // through wikilink dispatch's `EmitKind` instead of round-tripping.
+    // Until then these renderers smoke-test only the alt / url shape.
+
     #[test]
-    fn stage1_iframe_basic_is_link_with_kind() {
-        // Stage 1 emits `[filename](url "moss:kind=iframe")`.
+    fn stage1_iframe_basic_is_bare_link() {
         let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
@@ -1542,13 +1508,13 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert_eq!(out, r#"[widget](widget.html "moss:kind=iframe")"#);
+        assert_eq!(out, "[widget](widget.html)");
     }
 
     #[test]
-    fn stage1_iframe_with_query_param() {
-        // `?query` is preserved as a title-attribute param (not on the URL
-        // slot) so pulldown-cmark doesn't percent-encode reserved chars.
+    fn stage1_iframe_with_query_emits_bare_link() {
+        // `?query` is no longer round-tripped through the markdown title
+        // attribute.
         let out = iframe_md(&ParsedEmbed {
             resolved_path: "scale.html",
             from_path: "post.md",
@@ -1558,12 +1524,11 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(out.contains(r#"kind=iframe"#), "got: {}", out);
-        assert!(out.contains(r#"query="a=major,minor"#) || out.contains("query=a=major,minor"), "got: {}", out);
+        assert_eq!(out, "[scale](scale.html)");
     }
 
     #[test]
-    fn stage1_iframe_with_sizing_alias_emits_width_height_params() {
+    fn stage1_iframe_with_sizing_alias_emits_bare_link() {
         let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
@@ -1573,16 +1538,11 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(out.contains("height=600px"), "got: {}", out);
-        // 100% contains no whitespace, emitted unquoted.
-        assert!(out.contains("width=100%"), "got: {}", out);
-        assert!(out.contains("kind=iframe"), "got: {}", out);
-        // No `title=` for sizing alias.
-        assert!(!out.contains("title="), "got: {}", out);
+        assert_eq!(out, "[widget](widget.html)");
     }
 
     #[test]
-    fn stage1_iframe_text_alias_becomes_title_param() {
+    fn stage1_iframe_text_alias_emits_bare_link() {
         let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
@@ -1592,15 +1552,11 @@ mod tests {
             width: None,
             attrs: None,
         });
-        // Whitespace forces quoting; emit_title wraps in `"..."`. Inside the
-        // markdown title we then escape the inner quotes.
-        assert!(out.contains(r#"title=\"My cool widget\""#), "got: {}", out);
-        // Filename slot is the file stem (no extension).
-        assert!(out.starts_with("[widget]("), "got: {}", out);
+        assert_eq!(out, "[widget](widget.html)");
     }
 
     #[test]
-    fn stage1_iframe_with_fragment_emits_fragment_param() {
+    fn stage1_iframe_with_fragment_emits_bare_link() {
         let out = iframe_md(&ParsedEmbed {
             resolved_path: "doc.html",
             from_path: "post.md",
@@ -1610,14 +1566,11 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(out.contains("fragment=section2"), "got: {}", out);
-        assert!(out.contains("query=x=1"), "got: {}", out);
+        assert_eq!(out, "[doc](doc.html)");
     }
 
     #[test]
-    fn stage1_iframe_with_canonical_width_emits_data_width_param() {
-        // `embed.width` is a canonical spec § P9 value, preserved as
-        // `data-width=` so Stage 2 can route it to the wrapper attribute.
+    fn stage1_iframe_with_canonical_width_emits_bare_link() {
         let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
@@ -1627,7 +1580,7 @@ mod tests {
             width: Some("wide"),
             attrs: None,
         });
-        assert!(out.contains("data-width=wide"), "got: {}", out);
+        assert_eq!(out, "[widget](widget.html)");
     }
 
     // --- Sizing malformed-input coverage ---
@@ -1640,9 +1593,9 @@ mod tests {
     }
 
     #[test]
-    fn stage1_iframe_malformed_sizing_falls_through_to_title() {
-        // Malformed sizing isn't recognised by Sizing::parse; the alias
-        // becomes a title param instead (matches the legacy iframe behaviour).
+    fn stage1_iframe_malformed_sizing_emits_bare_link() {
+        // PR4: title-attribute fallback retired. Malformed sizing aliases
+        // simply drop alongside other typed params.
         let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
@@ -1652,8 +1605,7 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(out.contains("title=100xbad"), "got: {}", out);
-        assert!(!out.contains("height="), "got: {}", out);
+        assert_eq!(out, "[widget](widget.html)");
     }
 
     // --- PdfRenderer ---
@@ -1671,7 +1623,7 @@ mod tests {
     }
 
     #[test]
-    fn stage1_pdf_basic_is_link_with_kind() {
+    fn stage1_pdf_basic_is_bare_link() {
         let out = pdf_md(&ParsedEmbed {
             resolved_path: "report.pdf",
             from_path: "post.md",
@@ -1681,12 +1633,11 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert_eq!(out, r#"[report](report.pdf "moss:kind=pdf")"#);
+        assert_eq!(out, "[report](report.pdf)");
     }
 
     #[test]
-    fn stage1_pdf_with_page_fragment_emits_fragment_param() {
-        // PDF viewer fragments like `#page=5` round-trip through `fragment=`.
+    fn stage1_pdf_with_page_fragment_emits_bare_link() {
         let out = pdf_md(&ParsedEmbed {
             resolved_path: "doc.pdf",
             from_path: "post.md",
@@ -1696,12 +1647,11 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(out.contains("fragment=page=5"), "got: {}", out);
-        assert!(out.contains("kind=pdf"), "got: {}", out);
+        assert_eq!(out, "[doc](doc.pdf)");
     }
 
     #[test]
-    fn stage1_pdf_with_sizing_emits_width_height_params() {
+    fn stage1_pdf_with_sizing_emits_bare_link() {
         let out = pdf_md(&ParsedEmbed {
             resolved_path: "doc.pdf",
             from_path: "post.md",
@@ -1711,8 +1661,7 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(out.contains("width=100%"), "got: {}", out);
-        assert!(out.contains("height=800px"), "got: {}", out);
+        assert_eq!(out, "[doc](doc.pdf)");
     }
 
     // --- AudioRenderer ---
@@ -1734,7 +1683,7 @@ mod tests {
     }
 
     #[test]
-    fn stage1_audio_basic_is_link_with_kind_and_ext() {
+    fn stage1_audio_basic_is_bare_link() {
         let out = audio_md(&ParsedEmbed {
             resolved_path: "song.mp3",
             from_path: "post.md",
@@ -1744,14 +1693,14 @@ mod tests {
             width: None,
             attrs: None,
         });
-        // BTreeMap alphabetises params: ext < kind.
-        assert_eq!(out, r#"[song](song.mp3 "moss:ext=mp3 kind=audio")"#);
+        assert_eq!(out, "[song](song.mp3)");
     }
 
     #[test]
-    fn stage1_audio_emits_ext_param_for_each_extension() {
-        // Stage 2 reads `ext=` to derive the `<source type=>` MIME type;
-        // the renderer's job is just to preserve the extension.
+    fn stage1_audio_each_extension_emits_bare_link() {
+        // Phase 3 PR4: the `ext=` param is dropped at the markdown
+        // boundary. Per-extension MIME routing now happens inside the
+        // Stage 2 synthesizer via the wikilink dispatcher's typed path.
         for ext in ["mp3", "wav", "ogg", "flac", "m4a", "opus"] {
             let path = format!("a.{}", ext);
             let out = audio_md(&ParsedEmbed {
@@ -1763,13 +1712,7 @@ mod tests {
                 width: None,
                 attrs: None,
             });
-            assert!(
-                out.contains(&format!("ext={}", ext)),
-                "ext={}: got {}",
-                ext,
-                out
-            );
-            assert!(out.contains("kind=audio"), "got: {}", out);
+            assert_eq!(out, format!("[a](a.{})", ext), "ext={}", ext);
         }
     }
 
@@ -1792,7 +1735,7 @@ mod tests {
     }
 
     #[test]
-    fn stage1_video_basic_is_link_with_kind() {
+    fn stage1_video_basic_is_bare_link() {
         let out = video_md(&ParsedEmbed {
             resolved_path: "trailer.mp4",
             from_path: "post.md",
@@ -1802,7 +1745,7 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert_eq!(out, r#"[trailer](trailer.mp4 "moss:kind=video")"#);
+        assert_eq!(out, "[trailer](trailer.mp4)");
     }
 
     #[test]
@@ -1821,18 +1764,12 @@ mod tests {
                 width: None,
                 attrs: None,
             });
-            assert!(
-                out.contains(&format!("({}.", "clip"))
-                    && out.contains(&format!("({}.{}", "clip", ext)),
-                "{}: url slot must reflect original extension, got {}",
-                ext,
-                out
-            );
+            assert_eq!(out, format!("[clip](clip.{})", ext), "ext={}", ext);
         }
     }
 
     #[test]
-    fn stage1_video_with_sizing_emits_width_height_params() {
+    fn stage1_video_with_sizing_emits_bare_link() {
         let out = video_md(&ParsedEmbed {
             resolved_path: "clip.mp4",
             from_path: "post.md",
@@ -1842,8 +1779,7 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(out.contains("width=640px"), "got: {}", out);
-        assert!(out.contains("height=360px"), "got: {}", out);
+        assert_eq!(out, "[clip](clip.mp4)");
     }
 
     // --- NotebookRenderer ---
@@ -1915,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn stage1_model_viewer_basic_is_link_with_3d_kind() {
+    fn stage1_model_viewer_basic_is_bare_link() {
         let out = mv_md(&ParsedEmbed {
             resolved_path: "teapot.glb",
             from_path: "post.md",
@@ -1925,11 +1861,11 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert_eq!(out, r#"[teapot](teapot.glb "moss:kind=3d")"#);
+        assert_eq!(out, "[teapot](teapot.glb)");
     }
 
     #[test]
-    fn stage1_model_viewer_with_sizing_emits_width_height_params() {
+    fn stage1_model_viewer_with_sizing_emits_bare_link() {
         let out = mv_md(&ParsedEmbed {
             resolved_path: "m.glb",
             from_path: "post.md",
@@ -1939,9 +1875,7 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(out.contains("width=400px"), "got: {}", out);
-        assert!(out.contains("height=400px"), "got: {}", out);
-        assert!(out.contains("kind=3d"), "got: {}", out);
+        assert_eq!(out, "[m](m.glb)");
     }
 
     #[test]
@@ -1988,7 +1922,7 @@ mod tests {
         }
     }
 
-    // -- spec § P9 width: data-width title-param round-trip ---------------
+    // -- spec § P9 width: PR4 retires the title-attribute round-trip ----
 
     /// Build a width-only `ParsedEmbed` mirroring the wikilink resolver's
     /// pre-pass output for `![[file|full]]`-style aliases.
@@ -2007,15 +1941,18 @@ mod tests {
         }
     }
 
+    // Phase 3 PR4: width now drops at the markdown boundary. Each renderer
+    // still constructs the typed param (so `extra` / `fold_attrs_into_params`
+    // plumbing stays exercised), but the resulting markdown is bare.
+
     #[test]
-    fn stage1_iframe_width_emits_data_width_title_param() {
+    fn stage1_iframe_width_emits_bare_link() {
         let out = iframe_md(&embed_with_width("widget.html", "screen"));
-        assert!(out.contains("data-width=screen"), "got: {}", out);
-        assert!(out.contains("kind=iframe"), "got: {}", out);
+        assert_eq!(out, "[widget](widget.html)");
     }
 
     #[test]
-    fn stage1_iframe_no_width_omits_data_width_param() {
+    fn stage1_iframe_no_width_emits_bare_link() {
         let out = iframe_md(&ParsedEmbed {
             resolved_path: "widget.html",
             from_path: "post.md",
@@ -2025,35 +1962,31 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(!out.contains("data-width="), "got: {}", out);
+        assert_eq!(out, "[widget](widget.html)");
     }
 
     #[test]
-    fn stage1_pdf_width_emits_data_width_title_param() {
+    fn stage1_pdf_width_emits_bare_link() {
         let out = pdf_md(&embed_with_width("doc.pdf", "wide"));
-        assert!(out.contains("data-width=wide"), "got: {}", out);
-        assert!(out.contains("kind=pdf"), "got: {}", out);
+        assert_eq!(out, "[doc](doc.pdf)");
     }
 
     #[test]
-    fn stage1_audio_width_emits_data_width_title_param() {
+    fn stage1_audio_width_emits_bare_link() {
         let out = audio_md(&embed_with_width("song.mp3", "body"));
-        assert!(out.contains("data-width=body"), "got: {}", out);
-        assert!(out.contains("kind=audio"), "got: {}", out);
+        assert_eq!(out, "[song](song.mp3)");
     }
 
     #[test]
-    fn stage1_video_width_emits_data_width_title_param() {
+    fn stage1_video_width_emits_bare_link() {
         let out = video_md(&embed_with_width("clip.mp4", "screen"));
-        assert!(out.contains("data-width=screen"), "got: {}", out);
-        assert!(out.contains("kind=video"), "got: {}", out);
         // URL slot still carries the original extension — the rewriter
         // contract is preserved at the markdown level.
-        assert!(out.contains("](clip.mp4"), "got: {}", out);
+        assert_eq!(out, "[clip](clip.mp4)");
     }
 
     #[test]
-    fn stage1_video_no_width_omits_data_width_param() {
+    fn stage1_video_no_width_emits_bare_link() {
         let out = video_md(&ParsedEmbed {
             resolved_path: "clip.mp4",
             from_path: "post.md",
@@ -2063,13 +1996,12 @@ mod tests {
             width: None,
             attrs: None,
         });
-        assert!(!out.contains("data-width="), "got: {}", out);
+        assert_eq!(out, "[clip](clip.mp4)");
     }
 
     #[test]
-    fn stage1_model_viewer_width_emits_data_width_title_param() {
+    fn stage1_model_viewer_width_emits_bare_link() {
         let out = mv_md(&embed_with_width("model.glb", "page"));
-        assert!(out.contains("data-width=page"), "got: {}", out);
-        assert!(out.contains("kind=3d"), "got: {}", out);
+        assert_eq!(out, "[model](model.glb)");
     }
 }

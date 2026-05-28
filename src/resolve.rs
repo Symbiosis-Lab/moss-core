@@ -20,7 +20,7 @@ pub mod markdown_links;
 pub mod markdown_refs;
 pub mod registry;
 pub mod title_params;
-pub mod wikilinks;
+pub mod wikilink_dispatch;
 
 /// A link going out from a document.
 #[derive(Debug, Clone)]
@@ -153,43 +153,60 @@ pub fn resolve_content_with_handlers_and_snapshot(
     // Step 1: Separate frontmatter from body.
     let (frontmatter, body) = split_frontmatter(raw_markdown);
 
-    // Step 1.5: Stage 1 native-markdown sweep (Phase 0 Task E2). Rewrites
-    // `![alt](file.X)` with non-image extension into
-    // `[alt](file.X "moss:kind=…")` so the Stage 2 link dispatcher routes
-    // by kind. Image extensions and the empty-title escape hatch pass
-    // through unchanged. Runs as a separate text pass before the wikilink
-    // pass — both are Stage 1 rewrites that don't overlap (wikilink and
-    // native image syntax differ at the `!` / `![[` prefix), so ordering
-    // is a stylistic choice. Sweeping first keeps the wikilink output the
-    // canonical input shape for every downstream pass.
-    let swept = wikilinks::stage1_sweep(body);
+    // Phase 3 PR2: Stage 1's wikilink rewriter + stage1_sweep retire.
+    // pulldown-cmark now parses `[[…]]` / `![[…]]` natively via
+    // `Options::ENABLE_WIKILINKS` (flipped in PR2 at every Parser::new_ext
+    // site), and `transform_events::dispatch_wikilink_at` routes each event
+    // through the EmbedRenderer registry. The `stage1_sweep`
+    // (`![alt](file.pdf)` → `moss:kind=pdf` title rewrite) is retired per
+    // plan Option A: authors who want non-image embeds use the wikilink
+    // form `![[report.pdf]]`. See plan v2 § PR2.
+    let outgoing_links: Vec<OutgoingLink> = Vec::new();
+    let diagnostics: Vec<Diagnostic> = Vec::new();
+    let _ = registry; // Phase 3 PR2: registry flows directly to src-tauri's
+                      // `transform_events` via `process_markdown_file`; this
+                      // crate-side path no longer dispatches embeds in Stage 1.
 
-    // Step 2: First wikilink pass (uses custom registry so plugin renderers
-    // participate in extension dispatch).
-    let wikilink_pass1 =
-        wikilinks::resolve_wikilinks_with_registry(&swept, graph, source_path, registry);
-    let mut outgoing_links = wikilink_pass1.outgoing_links;
-    let mut diagnostics = wikilink_pass1.diagnostics;
+    // Phase 3 PR2: pre-pass that lowers block-level wikilinks into
+    // marker comments BEFORE pulldown-cmark sees them. Two classes of
+    // wikilink need this treatment because their output is block-level
+    // HTML, and pulldown-cmark wraps single-image paragraphs in `<p>`
+    // unconditionally:
+    //   - **markdown transclusions** (`![[note]]`, `![[note.md]]`,
+    //     `![[note#section]]`) → `<!-- moss-embed:TARGET -->` for
+    //     `embeds::resolve_embeds` to inline the body.
+    //   - **folder-list embeds** (`![[/dir/|limit:N]]`) →
+    //     `<!-- MOSS_MARKER_FOLDER_LIST:… -->` for src-tauri's marker
+    //     handlers to expand into card grids.
+    // Both cases used to be emitted by Stage 1's wikilink resolver; with
+    // that resolver retired, pulldown-cmark's Stage 2 dispatcher would
+    // emit the markers inside `<p>` (paragraph context), and
+    // `resolve_embeds` would never see them (it scans markdown lines,
+    // not rendered HTML). Pre-converting both shapes here mirrors the
+    // pre-Phase-3 layering.
+    let body = lower_transclusion_and_folder_wikilinks(body, graph, source_path);
 
-    // Step 3: Resolve markdown transclusion embeds.
-    let embed_result = embeds::resolve_embeds(&wikilink_pass1.content, source_path, file_reader);
+    // Step 3: Resolve markdown transclusion embeds. The inlined body of
+    // each embedded `.md` file is appended verbatim — its wikilinks (if
+    // any) survive into the markdown handed back to src-tauri, where
+    // pulldown-cmark + Stage 2 dispatcher resolves them along with the
+    // host page's own wikilinks.
+    let embed_result = embeds::resolve_embeds(&body, source_path, file_reader);
+    let mut diagnostics = diagnostics;
     diagnostics.extend(embed_result.diagnostics);
     let embed_deps = embed_result.embed_deps;
 
-    // Step 3.5 (new): Resolve Deferred markers (notebook, table, plugins).
+    // Step 3.5: Resolve Deferred markers (notebook, table, plugins). All
+    // built-in handlers emit pure HTML (`<iframe>`, `<table>`); plugin
+    // handlers must do the same (no raw `[[…]]` in handler output).
     // Skipped cheaply if handlers is empty.
     let deferred_result = embeds::resolve_deferred_markers(&embed_result.content, handlers);
     diagnostics.extend(deferred_result.diagnostics);
 
-    // Step 4: Second wikilink pass (for wikilinks inside embedded content).
-    let wikilink_pass2 =
-        wikilinks::resolve_wikilinks_with_registry(&deferred_result.content, graph, source_path, registry);
-    outgoing_links.extend(wikilink_pass2.outgoing_links);
-    diagnostics.extend(wikilink_pass2.diagnostics);
-
     // Step 4.5: Resolve bare filenames in standard markdown images.
     let md_ref_result =
-        markdown_refs::resolve_markdown_refs(&wikilink_pass2.content, graph, source_path);
+        markdown_refs::resolve_markdown_refs(&deferred_result.content, graph, source_path);
+    let mut outgoing_links = outgoing_links;
     outgoing_links.extend(md_ref_result.outgoing_links);
     diagnostics.extend(md_ref_result.diagnostics);
 
@@ -203,6 +220,22 @@ pub fn resolve_content_with_handlers_and_snapshot(
     let (block_result, block_ids) = block_refs::transform_block_refs(&md_link_result.content);
 
     // Step 6: Transform callouts.
+    //
+    // Phase 4 PR4 (2026-05-27) added a typed `Block::Callout` to the
+    // moss-core AST (`crates/moss-core/src/ast/parser.rs`'s
+    // `Tag::BlockQuote` arm) with proper Obsidian-alias canonicalization
+    // and foldable-suffix support. The AST renderer (`render_document`)
+    // emits the same canonical callout HTML this Stage 1 pass produces.
+    //
+    // We keep this Stage 1 pass UNTIL PR7a flips production rendering to
+    // `render_document`. Removing Stage 1 before then would regress
+    // production output (`> [!note]` would render as plain `<blockquote>`
+    // because pulldown-cmark + `html::push_html` don't know callout
+    // syntax). PR7a deletes this call + the `callouts` module + the
+    // `pub mod callouts;` declaration above + regenerates the
+    // callouts-site snapshot fixtures atomically with the production
+    // flip. See `docs/plans/2026-05-27-phase4-typed-ast-completion.md`
+    // § PR7a for the coordinated removal.
     let callout_result = callouts::transform_callouts(&block_result);
 
     // Step 7: Resolve frontmatter wikilinks + rejoin with resolved body.
@@ -224,8 +257,183 @@ pub fn resolve_content_with_handlers_and_snapshot(
     }
 }
 
-/// Result of resolving wikilinks in frontmatter text.
-#[derive(Debug)]
+/// Phase 3 PR2: lower wikilink-form markdown transclusions
+/// (`![[note]]` / `![[note.md]]` / `![[note#section]]`) into the
+/// `<!-- moss-embed:TARGET -->` marker shape that
+/// [`embeds::resolve_embeds`] consumes. Pure text rewrite — no I/O.
+///
+/// Why this pre-pass exists: pre-Phase-3, Stage 1's wikilink resolver
+/// did this conversion. Phase 3 retires that resolver and routes most
+/// wikilink handling through pulldown-cmark's Stage 2 dispatcher in
+/// `src-tauri/src/build/markdown/pipeline.rs::transform_events`. But
+/// `embeds::resolve_embeds` runs BEFORE pulldown-cmark, so the
+/// dispatcher cannot emit the marker in time. We pre-convert the
+/// transclusion wikilinks here.
+///
+/// Only `.md`-extension wikilinks (and extension-less wikilinks
+/// resolving to `.md` files) are rewritten. Image / pdf / iframe /
+/// video / audio / 3d / notebook / table embeds still flow through the
+/// Stage 2 dispatcher untouched.
+///
+/// The conversion is line-based and respects fenced code blocks
+/// (`{```/~~~}` blocks pass through unchanged). It does not honor
+/// inline-code spans on a line — wikilinks inside `` `like this` ``
+/// would also be rewritten — which mirrors the pre-Phase-3 wikilink
+/// resolver's coarse line-level scan.
+fn lower_transclusion_and_folder_wikilinks(
+    body: &str,
+    graph: &ContentGraph,
+    source_path: &str,
+) -> String {
+    let mut output_lines: Vec<String> = Vec::with_capacity(body.lines().count() + 1);
+    let mut fence_char: Option<char> = None;
+    for line in body.lines() {
+        // Fenced code block tracking — same logic as markdown_refs.
+        if let Some(fc) = fence_char {
+            let trimmed = line.trim_start();
+            let closes = trimmed.starts_with(fc)
+                && trimmed.chars().take(3).all(|c| c == fc)
+                && trimmed.trim_matches(fc).trim().is_empty();
+            if closes {
+                fence_char = None;
+            }
+            output_lines.push(line.to_string());
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let fence_rest = trimmed
+            .strip_prefix("```")
+            .map(|r| ('`', r))
+            .or_else(|| trimmed.strip_prefix("~~~").map(|r| ('~', r)));
+        if let Some((candidate_char, rest)) = fence_rest {
+            if !rest.contains(candidate_char) {
+                fence_char = Some(candidate_char);
+                output_lines.push(line.to_string());
+                continue;
+            }
+        }
+
+        // Rewrite `![[…]]` wikilinks where the resolved target is a
+        // markdown file. Single-occurrence per line is the common case;
+        // a loop handles multi-occurrence safely.
+        let mut rewritten = String::with_capacity(line.len());
+        let mut rest = line;
+        while let Some(start) = rest.find("![[") {
+            rewritten.push_str(&rest[..start]);
+            let after = &rest[start + 3..];
+            let Some(end) = after.find("]]") else {
+                rewritten.push_str(&rest[start..]);
+                rest = "";
+                break;
+            };
+            let inner = &after[..end];
+            // Pothole-aware: pre-Phase-3 dropped pothole text for the
+            // marker (params live in the marker's heading-anchor /
+            // query suffix). Today the marker only cares about the
+            // `file#section` shape.
+            let inner_no_pothole = match inner.split_once('|') {
+                Some((f, _)) => f,
+                None => inner,
+            };
+            let (file_part, anchor) = match inner_no_pothole.find('#') {
+                Some(p) => (&inner_no_pothole[..p], Some(&inner_no_pothole[p + 1..])),
+                None => (inner_no_pothole, None),
+            };
+
+            // Skip empty target (`![[]]` is meaningless).
+            if file_part.is_empty() {
+                rewritten.push_str(&rest[start..start + 3 + end + 2]);
+                rest = &rest[start + 3 + end + 2..];
+                continue;
+            }
+
+            // Folder-list embed: trailing slash dispatches to the
+            // `MOSS_MARKER_FOLDER_LIST` marker that src-tauri's marker
+            // handler resolves into a card grid. The pothole carries
+            // params (limit:N, more, sort:axis) in pipe-encoded form.
+            if file_part.ends_with('/') {
+                let pothole_raw = match inner.split_once('|') {
+                    Some((_, params)) => params,
+                    None => "",
+                };
+                let params = embed_renderer::folder_list::parse_params(pothole_raw);
+                let marker = embed_renderer::folder_list::emit_marker(
+                    file_part,
+                    source_path,
+                    &params,
+                );
+                rewritten.push_str(&marker);
+                rest = &rest[start + 3 + end + 2..];
+                continue;
+            }
+
+            // Resolve via ContentGraph. Bail to no-rewrite if the
+            // reference doesn't resolve — Stage 2's dispatcher will
+            // emit the `[unresolved](moss-unresolved:…)` link form.
+            let resolved =
+                fuzzy_path::resolve_reference(file_part, graph, source_path);
+            let target_path = match resolved {
+                fuzzy_path::ResolvedRef::Found(p) => p,
+                fuzzy_path::ResolvedRef::Unresolved => {
+                    rewritten.push_str(&rest[start..start + 3 + end + 2]);
+                    rest = &rest[start + 3 + end + 2..];
+                    continue;
+                }
+            };
+            let ext = target_path
+                .rsplit('.')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            // Markdown transclusion: `![[note.md]]` →
+            // `<!-- moss-embed:note.md[#anchor] -->`.
+            if ext == "md" || ext == "markdown" {
+                let target_with_anchor = match anchor {
+                    Some(a) => format!("{}#{}", target_path, a),
+                    None => target_path,
+                };
+                rewritten.push_str("<!-- moss-embed:");
+                rewritten.push_str(&target_with_anchor);
+                rewritten.push_str(" -->");
+                rest = &rest[start + 3 + end + 2..];
+                continue;
+            }
+            // Deferred-handler embeds: `.ipynb` → notebook marker,
+            // `.csv` / `.tsv` → table marker. These extensions route to
+            // src-tauri marker handlers; the Stage 2 dispatcher would
+            // also produce these markers, but it runs AFTER
+            // `resolve_deferred_markers`, so pre-converting here keeps
+            // the existing marker-handler pipeline working.
+            let marker_prefix = match ext.as_str() {
+                "ipynb" => Some("moss-embed-ipynb"),
+                "csv" | "tsv" => Some("moss-embed-table"),
+                _ => None,
+            };
+            if let Some(prefix) = marker_prefix {
+                rewritten.push_str("<!-- ");
+                rewritten.push_str(prefix);
+                rewritten.push(':');
+                rewritten.push_str(&target_path);
+                rewritten.push_str(" -->");
+                rest = &rest[start + 3 + end + 2..];
+                continue;
+            }
+            // Other extensions (.pdf / .mp4 / .png / etc.) flow through
+            // the Stage 2 dispatcher untouched — those renderers
+            // produce HTML inline, not deferred markers.
+            rewritten.push_str(&rest[start..start + 3 + end + 2]);
+            rest = &rest[start + 3 + end + 2..];
+        }
+        rewritten.push_str(rest);
+        output_lines.push(rewritten);
+    }
+    let mut out = output_lines.join("\n");
+    if body.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 pub struct FrontmatterResolveResult {
     /// The frontmatter text with `[[wikilinks]]` replaced by resolved paths.
     pub content: String,
@@ -603,16 +811,28 @@ mod tests {
         // Frontmatter preserved
         assert!(result.content_markdown.starts_with("---\ntitle: Test\n---\n"));
 
-        // Wikilink resolved (moss-resolved: scheme, deferred to Tauri layer)
-        assert!(result.content_markdown.contains("[guide > Setup](moss-resolved:guide.md#setup)"));
+        // Phase 3 PR2: `resolve_content` no longer resolves body wikilinks
+        // — that's the Stage 2 dispatcher's job in
+        // `src-tauri/src/build/markdown/pipeline.rs::transform_events`.
+        // The `[[guide#Setup]]` wikilink passes through unchanged here.
+        assert!(result.content_markdown.contains("[[guide#Setup]]"));
 
         // Block ref transformed
         assert!(result.content_markdown.contains("<span id=\"my-block\"></span>"));
         assert_eq!(result.block_ids, vec!["my-block"]);
 
-        // Callout transformed
-        assert!(result.content_markdown.contains(r#"data-type="warning""#));
-        assert!(result.content_markdown.contains("Watch Out"));
+        // Phase 4 PR4 (2026-05-27): typed Block::Callout was added to
+        // the AST parser (`ast/parser.rs`'s Tag::BlockQuote arm) WITH
+        // proper Obsidian-alias canonicalization. The Stage 1
+        // `resolve/callouts.rs` pass STAYS until PR7a flips production
+        // rendering to `render_document` (deleting Stage 1 before then
+        // would regress production output to a plain `<blockquote>`).
+        // So `resolve_content` still emits the canonical callout HTML
+        // here, matching the pre-PR4 behavior.
+        assert!(
+            result.content_markdown.contains(r#"class="callout""#),
+            "Stage 1 callout transformation still active until PR7a flip"
+        );
     }
 
     #[test]
@@ -648,14 +868,21 @@ mod tests {
         let files = test_files();
 
         // disclaimer.md body contains `See [[guide]] for details.`
-        // After embed, that wikilink needs to be resolved in the second pass.
+        // Phase 3 PR2: the embedded body's wikilink is no longer
+        // resolved by `resolve_content`; the Stage 2 dispatcher in
+        // src-tauri handles it. `resolve_content` lowers
+        // `![[disclaimer]]` into the `<!-- moss-embed:disclaimer.md -->`
+        // marker, then `resolve_embeds` inlines the disclaimer body
+        // verbatim — wikilinks inside survive into the markdown
+        // returned here.
         let input = "![[disclaimer]]";
         let result = resolve_content("note.md", input, &graph, &mock_reader(&files));
 
-        // The embedded content's wikilink [[guide]] should be resolved (moss-resolved: scheme)
+        // The embedded body's wikilink survives as raw `[[guide]]`
+        // (handed off to Stage 2 downstream).
         assert!(
-            result.content_markdown.contains("[guide](moss-resolved:guide.md)"),
-            "Expected resolved wikilink from embedded content, got: {}",
+            result.content_markdown.contains("[[guide]]"),
+            "Expected raw wikilink from embedded content, got: {}",
             result.content_markdown
         );
         // The disclaimer body text should be present
@@ -667,17 +894,27 @@ mod tests {
         let graph = test_graph();
         let files = HashMap::new();
 
-        // Two unresolved references: one wikilink, one embed (file not found)
+        // Phase 3 PR2: wikilink unresolved diagnostics now surface from
+        // the Stage 2 dispatcher in src-tauri. `resolve_content` only
+        // surfaces diagnostics from passes it still runs (transclusion
+        // / deferred markers / markdown_refs / markdown_links / block
+        // refs / callouts). `![[missing]]` with no extension resolves
+        // to Unresolved in the lowering pass — but the lowering pass
+        // leaves the raw `![[missing]]` for Stage 2 to handle and does
+        // NOT emit a diagnostic itself. So this test asserts the new
+        // contract: zero diagnostics for body wikilinks at this layer.
         let input = "[[nonexistent]] and ![[missing]]";
         let result = resolve_content("note.md", input, &graph, &mock_reader(&files));
 
-        // Should have diagnostics from wikilinks (unresolved) and possibly embeds
+        // Body wikilinks pass through; no diagnostics from this layer.
         assert!(
-            result.diagnostics.len() >= 2,
-            "Expected at least 2 diagnostics, got {}: {:?}",
-            result.diagnostics.len(),
+            result.diagnostics.is_empty(),
+            "Expected zero diagnostics post-PR2 (body wikilinks deferred), got: {:?}",
             result.diagnostics
         );
+        // Raw wikilinks pass through to the markdown handed back.
+        assert!(result.content_markdown.contains("[[nonexistent]]"));
+        assert!(result.content_markdown.contains("![[missing]]"));
     }
 
     #[test]
@@ -685,14 +922,18 @@ mod tests {
         let graph = test_graph();
         let files = test_files();
 
-        // disclaimer.md body contains [[guide]], so after embedding and second pass,
-        // we should have links from both passes.
-        // Embeds must be on their own line for the embed resolver to process them.
+        // Phase 3 PR2: body wikilink outgoing-links are populated by
+        // the Stage 2 dispatcher in src-tauri (not by `resolve_content`).
+        // What this layer still populates: markdown_refs / markdown_links
+        // / block_refs / callouts results. The wikilink body links
+        // `[[guide]]` and `![[disclaimer]]` pass through to Stage 2.
         let input = "[[guide]]\n\n![[disclaimer]]";
         let result = resolve_content("note.md", input, &graph, &mock_reader(&files));
 
-        // First pass: [[guide]] (Wikilink) + ![[disclaimer]] (Embed)
-        // Second pass: [[guide]] from embedded content (Wikilink)
+        // The disclaimer body got inlined (via `<!-- moss-embed -->`
+        // lowering + resolve_embeds), but its `[[guide]]` is now raw
+        // markdown for Stage 2 — none of these appear in
+        // outgoing_links from this layer.
         let wikilinks: Vec<_> = result
             .outgoing_links
             .iter()
@@ -705,13 +946,16 @@ mod tests {
             .collect();
 
         assert!(
-            wikilinks.len() >= 2,
-            "Expected at least 2 wikilink outgoing links (from both passes), got {}: {:?}",
+            wikilinks.is_empty(),
+            "Expected zero wikilink outgoing links from resolve_content post-PR2; got {}: {:?}",
             wikilinks.len(),
             wikilinks
         );
+        // No-op smoke check that the rest of the assertions still
+        // exercise the embed-tracking path through `embed_deps`.
+        let _ = embeds; // not populated by this layer either
         assert!(
-            !embeds.is_empty(),
+            !result.embed_deps.is_empty(),
             "Expected at least 1 embed outgoing link"
         );
     }
@@ -1006,7 +1250,7 @@ mod tests {
         let files = HashMap::new();
 
         // Simplified frontmatter (no leading ---) with a wikilink in sidebar value.
-        // The wikilink in frontmatter IS now resolved — to a path, not a markdown link.
+        // Frontmatter wikilinks ARE still resolved here (to a path).
         let input = "children: false\nsidebar: \"[[news]]\"\nuid: a48746ca\n---\n\n# Welcome\n\nBody with [[news]] link.";
         let result = resolve_content("index.md", input, &graph, &mock_reader(&files));
 
@@ -1017,10 +1261,12 @@ mod tests {
             result.content_markdown
         );
 
-        // Body wikilink [[news]] SHOULD be resolved to moss-resolved: scheme.
+        // Phase 3 PR2: body wikilink `[[news]]` passes through as raw
+        // markdown — Stage 2 in src-tauri resolves it via the
+        // `dispatch_wikilink_embed` arm in `transform_events`.
         assert!(
-            result.content_markdown.contains("[news](moss-resolved:news.md)"),
-            "Expected body wikilink to be resolved with moss-resolved: scheme, got: {}",
+            result.content_markdown.contains("[[news]]"),
+            "Expected body wikilink to pass through verbatim, got: {}",
             result.content_markdown
         );
     }

@@ -18,8 +18,9 @@
 //!   (pulldown-cmark passes HTML comments through `Event::Html` as
 //!   `Block::HtmlBlock`).
 
-use super::attrs::{brace_depth, gather_multi_line_attrs};
+use super::attrs::gather_multi_line_attrs;
 use super::cells::split_cells;
+use super::node::Block;
 use super::shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
     RecentShortcode, Shortcode, SubscribeShortcode,
@@ -193,7 +194,26 @@ fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
         }
     }
 
-    let (cells, found_legacy_dash) = split_grid_cells(body);
+    let (raw_cells, found_legacy_dash) = split_grid_cells(body);
+
+    // Phase 4 PR4.5 (2026-05-28): cells become Vec<Vec<Block>>. Each raw
+    // cell string is either:
+    //
+    // - A "compound-link" cell whose entire content is wrapped in a markdown
+    //   link `[inner](url)` and whose `inner` carries block-level content
+    //   (image + heading + paragraphs — the SoCiviC pattern). CommonMark's
+    //   inline parser cannot represent a `[](url)` with `### heading` inside,
+    //   so we detect this shape at the cell-string level FIRST and emit a
+    //   typed [`Block::LinkCard { url, children }`] where `children` is the
+    //   inner content parsed as blocks via [`super::parser::parse`].
+    //
+    // - A plain markdown cell. Parse via [`super::parser::parse`] (which
+    //   re-runs extract_shortcodes so any nested `::::buttons` etc. get
+    //   substituted) and drop the wrapping `Document`.
+    let cells: Vec<Vec<Block>> = raw_cells
+        .iter()
+        .map(|raw| parse_cell_to_blocks(raw))
+        .collect();
 
     (
         GridShortcode {
@@ -205,6 +225,284 @@ fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
         },
         found_legacy_dash,
     )
+}
+
+/// Parse one grid cell's raw markdown source into a `Vec<Block>`.
+///
+/// Phase 4 PR4.5 (2026-05-28): detects the compound-link shape first
+/// (`[inner](url)` wrapping the entire trimmed cell content). On match,
+/// emits a single-element `vec![Block::LinkCard { url, children }]` where
+/// `children` is the inner parsed as blocks. On no match, parses the cell
+/// directly via [`super::parser::parse`].
+fn parse_cell_to_blocks(raw: &str) -> Vec<Block> {
+    if let Some((url, inner)) = detect_compound_link(raw) {
+        let inner_trimmed = inner.trim();
+        // Simple compound-link special case: when the inner content is
+        // plain phrasing text (no images, no nested links, no
+        // block-level markdown) AND the URL is external, fall through
+        // to the normal markdown parse so the cell renders as
+        // `<p><a href="URL">text</a></p>` — the shape `build/render/
+        // grid_post.rs::link_only_cell_href` detects to layer the
+        // `<span class="link-preview-title">` post-pass enhancement
+        // (title + favicon + domain). LinkCard's
+        // `<a class="moss-grid-card link-preview">` shape would skip
+        // the post-pass (tag != "div" guard) and lose the title row.
+        //
+        // Mirrors the pre-PR4.5 carve-out in
+        // `crate::build::markdown::typed_renderers::render_compound_link_cell`
+        // (the `if !inner.contains('!') && !inner.contains('[') && !inner.contains('\n')`
+        // branch).
+        let inner_is_plain_text = !inner_trimmed.contains('!')
+            && !inner_trimmed.contains('[')
+            && !inner_trimmed.contains('\n');
+        let is_external = url.starts_with("http://") || url.starts_with("https://");
+        if inner_is_plain_text && is_external {
+            // Re-emit as standard markdown link inside a paragraph so the
+            // grid_post post-pass owns the rendering.
+            let linkified = format!("[{}]({})", inner_trimmed, url);
+            return super::parser::parse(&linkified).blocks;
+        }
+        let inner_doc = super::parser::parse(inner_trimmed);
+        return vec![Block::LinkCard {
+            url: Url::unresolved(url),
+            children: inner_doc.blocks,
+        }];
+    }
+    // Phase 4 PR4.5 (2026-05-28): bare-URL cell auto-promotion. When the
+    // entire cell content is a single bare URL on its own line (no
+    // markdown link syntax), parse it as `[](URL)` so the cell renders as
+    // `<p><a href="URL"></a></p>` (an empty-text link inside a paragraph).
+    // The grid-render post-pass in `build/render/grid_post.rs` detects
+    // this shape and replaces with a `<span class="link-preview-domain">…</span>`
+    // wrapper carrying title/favicon (from cached link metadata).
+    //
+    // Matches the pre-PR4.5 `linkify_bare_urls_in_cell` behavior — the
+    // helper turned `https://...` into `[](https://...)` so the downstream
+    // compound-link pass picked it up. PR4.5 ports the linkification to
+    // parse time so the bytes flow through the typed AST.
+    if let Some(url) = detect_bare_url_cell(raw) {
+        let linkified = format!("[]({})", url);
+        let doc = super::parser::parse(&linkified);
+        return doc.blocks;
+    }
+    let doc = super::parser::parse(raw);
+    doc.blocks
+}
+
+/// Detect a "bare URL cell": the entire cell content (after trim) is a
+/// single `https?://...` URL on its own line, with no other content.
+///
+/// Returns the URL string on match, `None` otherwise. Used by
+/// [`parse_cell_to_blocks`] to linkify bare-URL cells via `[](URL)` so
+/// they thread through the grid_post link-preview post-pass like
+/// authored `[Title](URL)` cells.
+fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
+    let trimmed = cell_text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.lines().count() > 1 {
+        return None;
+    }
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return None;
+    }
+    if trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Detect the compound-link shape in a grid cell's markdown content.
+///
+/// Matches cells whose entire content (after trimming whitespace) begins
+/// with `[` and ends with `](url)`. The inner content may span blank lines
+/// and contain any markdown block syntax (headings, images, paragraphs,
+/// lists, emphasis).
+///
+/// Returns `Some((url, inner_content))` on a match, `None` otherwise.
+///
+/// Ported from src-tauri's `crate::build::markdown::typed_renderers::
+/// detect_compound_link` (Phase 4 PR4.5, 2026-05-28) — the AST-level
+/// equivalent of the same string-level detection. The src-tauri version
+/// is deleted in PR4.5.
+///
+/// Safety rules that cause this function to return `None`:
+/// - Cell contains a top-level code fence (\`\`\` or ~~~).
+/// - Cell content starts with a backtick (inline code on first line).
+/// - The outer `[…](url)` shape cannot be confirmed by bracket-balance
+///   scanning (multiple top-level links, bare `]` / `(` without a pair).
+/// - There is non-whitespace content after the closing `)`.
+///
+/// Detection uses bracket balancing so nested `](` sequences inside images
+/// (`![alt](src)`) or inline code do NOT prematurely end the outer link.
+pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String)> {
+    let stripped = cell_text.trim();
+
+    if !stripped.starts_with('[') {
+        return None;
+    }
+    if !stripped.ends_with(')') {
+        return None;
+    }
+    if stripped.len() > 1 && stripped.as_bytes()[1] == b'`' {
+        return None;
+    }
+
+    for line in stripped.lines() {
+        let t = line.trim();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            return None;
+        }
+    }
+
+    let bytes = stripped.as_bytes();
+
+    // Phase 1: find the outer closing `]` via bracket-balance scan.
+    let mut i: usize = 1;
+    let mut depth: usize = 1;
+    let mut outer_close: Option<usize> = None;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                i += 2;
+                continue;
+            }
+            b'`' => {
+                let tick_start = i;
+                while i < bytes.len() && bytes[i] == b'`' {
+                    i += 1;
+                }
+                let fence_len = i - tick_start;
+                'code_scan: while i < bytes.len() {
+                    if bytes[i] == b'`' {
+                        let close_start = i;
+                        while i < bytes.len() && bytes[i] == b'`' {
+                            i += 1;
+                        }
+                        if i - close_start == fence_len {
+                            break 'code_scan;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            b'[' => {
+                depth += 1;
+            }
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    outer_close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let close_bracket = outer_close?;
+
+    if bytes.get(close_bracket + 1) != Some(&b'(') {
+        return None;
+    }
+
+    // Phase 2: find the matching `)` with paren balance.
+    let mut j = close_bracket + 2;
+    let mut pdepth: usize = 1;
+    let mut paren_close: Option<usize> = None;
+
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => {
+                j += 2;
+                continue;
+            }
+            b'(' => pdepth += 1,
+            b')' => {
+                pdepth -= 1;
+                if pdepth == 0 {
+                    paren_close = Some(j);
+                    break;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+
+    let close_paren = paren_close?;
+
+    // Phase 3: after `)`, only whitespace/blank lines.
+    let tail = &stripped[close_paren + 1..];
+    if !tail.chars().all(|c| c.is_whitespace()) {
+        return None;
+    }
+
+    // Phase 4: validate inner content.
+    let inner = &stripped[1..close_bracket];
+    if inner.trim().is_empty() {
+        return None;
+    }
+
+    // Phase 5: reject multiple top-level links (images allowed).
+    {
+        let inner_bytes = inner.as_bytes();
+        let mut k: usize = 0;
+        let mut image_stack: Vec<bool> = Vec::new();
+
+        while k < inner_bytes.len() {
+            match inner_bytes[k] {
+                b'\\' => {
+                    k += 2;
+                    continue;
+                }
+                b'`' => {
+                    let tick_start = k;
+                    while k < inner_bytes.len() && inner_bytes[k] == b'`' {
+                        k += 1;
+                    }
+                    let fence_len = k - tick_start;
+                    'inner_code: while k < inner_bytes.len() {
+                        if inner_bytes[k] == b'`' {
+                            let cs = k;
+                            while k < inner_bytes.len() && inner_bytes[k] == b'`' {
+                                k += 1;
+                            }
+                            if k - cs == fence_len {
+                                break 'inner_code;
+                            }
+                        } else {
+                            k += 1;
+                        }
+                    }
+                    continue;
+                }
+                b'[' => {
+                    let preceded_by_bang = k > 0 && inner_bytes[k - 1] == b'!';
+                    image_stack.push(preceded_by_bang);
+                }
+                b']' => {
+                    if let Some(is_image) = image_stack.pop() {
+                        if image_stack.is_empty() && inner_bytes.get(k + 1) == Some(&b'(') {
+                            if !is_image {
+                                return None;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+    }
+
+    let url = &stripped[close_bracket + 2..close_paren];
+    Some((url.to_string(), inner.to_string()))
 }
 
 /// Split a grid body into cells on lines containing only `+++` (new
@@ -297,6 +595,8 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
     // Priority 1: `image=` attribute.
     if let Some(image_value) = parsed.get("image") {
         let (path, attrs_str) = crate::media::split_pipe(image_value);
+        let overlay_text = body.trim().to_string();
+        let overlay = parse_overlay_to_blocks(&overlay_text);
         return (
             HeroShortcode {
                 image: if path.trim().is_empty() {
@@ -306,7 +606,8 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
                 },
                 attrs: attrs_str.to_string(),
                 classes,
-                overlay_markdown: body.trim().to_string(),
+                overlay,
+                overlay_text,
                 width,
             },
             false,
@@ -318,6 +619,8 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
     // optional `|attrs` pipe suffix. Body becomes pure overlay markdown.
     if !positional.is_empty() {
         let (path, attrs_str) = crate::media::split_pipe(positional);
+        let overlay_text = body.trim().to_string();
+        let overlay = parse_overlay_to_blocks(&overlay_text);
         return (
             HeroShortcode {
                 image: if path.trim().is_empty() {
@@ -327,7 +630,8 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
                 },
                 attrs: attrs_str.to_string(),
                 classes,
-                overlay_markdown: body.trim().to_string(),
+                overlay,
+                overlay_text,
                 width,
             },
             false,
@@ -354,16 +658,33 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
         }
         overlay_lines.push(line);
     }
+    let overlay_text = overlay_lines.join("\n").trim().to_string();
+    let overlay = parse_overlay_to_blocks(&overlay_text);
     (
         HeroShortcode {
             image: image_path.map(Url::unresolved),
             attrs: image_attrs,
             classes,
-            overlay_markdown: overlay_lines.join("\n").trim().to_string(),
+            overlay,
+            overlay_text,
             width,
         },
         used_priority_3,
     )
+}
+
+/// Parse a hero overlay's raw markdown source into `Vec<Block>`.
+///
+/// Phase 4 PR4.5 (2026-05-28): mirrors `parse_cell_to_blocks` for the
+/// grid-cell path but without compound-link detection (an overlay is not
+/// a compound-link surface; the SoCiviC pattern is grid-cell-specific).
+/// Returns an empty vec when the overlay is empty.
+fn parse_overlay_to_blocks(raw: &str) -> Vec<Block> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let doc = super::parser::parse(raw);
+    doc.blocks
 }
 
 /// File extensions recognized as media for hero body-image fallback.
@@ -1273,25 +1594,34 @@ mod tests {
     #[test]
     fn extracts_grid_with_nested_buttons_via_arity() {
         // SoCiviC pattern: `::::buttons` (4-colon) nested inside `:::grid`
-        // (3-colon). After Step 2b both are typed; the OUTER grid wins
-        // first (matched at the first arity-3 closer), and the inner
-        // ::::buttons travels in the grid's body markdown as cell content.
-        // The renderer recursively extracts the buttons from each cell at
-        // render time (see render_grid_html_typed).
-        let md = ":::grid 2\n::::buttons\n[Tickets](go/)\n::::\n---\nfooter cell\n:::\n";
+        // (3-colon). Phase 4 PR4.5 (2026-05-28) promoted cells from raw
+        // markdown strings to `Vec<Vec<Block>>`. The inner `::::buttons`
+        // now extracts into a typed `Block::Shortcode(Buttons)` inside the
+        // cell at parse time (via the recursive `super::parser::parse` call
+        // in `parse_cell_to_blocks`), not at render time.
+        let md = ":::grid 2\n::::buttons\n[Tickets](go/)\n::::\n+++\nfooter cell\n:::\n";
         let result = extract_shortcodes(md);
-        // One typed entry: the outer Grid. The inner ::::buttons is in
-        // the grid's body, not in result.extracted.
         assert_eq!(result.extracted.len(), 1);
         match &result.extracted[0].shortcode {
             Shortcode::Grid(grid) => {
                 assert_eq!(grid.columns, 2);
                 assert_eq!(grid.cells.len(), 2);
-                // First cell contains the inner buttons block source.
-                assert!(grid.cells[0].contains("::::buttons"));
-                assert!(grid.cells[0].contains("[Tickets](go/)"));
-                // Second cell is the footer.
-                assert_eq!(grid.cells[1], "footer cell");
+                // First cell now carries a typed Shortcode::Buttons block.
+                let has_typed_buttons = grid.cells[0].iter().any(|b| matches!(
+                    b,
+                    Block::Shortcode(Shortcode::Buttons(args)) if args.items.len() == 1
+                        && args.items[0].text == "Tickets"
+                ));
+                assert!(has_typed_buttons, "expected typed Buttons in cell[0]; got {:?}", grid.cells[0]);
+                // Second cell is the footer paragraph.
+                let has_footer_para = grid.cells[1].iter().any(|b| matches!(
+                    b,
+                    Block::Paragraph(inlines) if inlines.iter().any(|i| matches!(
+                        i,
+                        super::super::node::Inline::Text(t) if t.contains("footer cell")
+                    ))
+                ));
+                assert!(has_footer_para, "expected footer paragraph in cell[1]; got {:?}", grid.cells[1]);
             }
             other => panic!("expected Grid, got {other:?}"),
         }
@@ -1744,6 +2074,9 @@ mod tests {
         // Legacy moss-releases form: `:::grid 2` (positional column count)
         // with `---` cell divider. Both the positional cols and the legacy
         // `---` divider are accepted during the migration window.
+        //
+        // Phase 4 PR4.5 (2026-05-28): cells are now typed Vec<Vec<Block>>.
+        // Each "cell A" / "cell B" parses to a single Paragraph block.
         let md = ":::grid 2\ncell A\n---\ncell B\n:::\n";
         let result = extract_shortcodes(md);
         assert_eq!(result.extracted.len(), 1);
@@ -1751,10 +2084,38 @@ mod tests {
             Shortcode::Grid(grid) => {
                 assert_eq!(grid.columns, 2);
                 assert!(grid.ratio.is_none());
-                assert_eq!(grid.cells, vec!["cell A".to_string(), "cell B".to_string()]);
+                assert_eq!(grid.cells.len(), 2);
+                assert_paragraph_text(&grid.cells[0], "cell A");
+                assert_paragraph_text(&grid.cells[1], "cell B");
             }
             other => panic!("expected Grid, got {other:?}"),
         }
+    }
+
+    /// Test helper: assert that `cell_blocks` is a single `Block::Paragraph`
+    /// whose inline text content (concatenated) equals `expected`.
+    ///
+    /// PR4.5 cells parse via pulldown-cmark; trivial cells like `"A"` yield
+    /// `[Block::Paragraph(vec![Inline::Text("A".into())])]`.
+    fn assert_paragraph_text(cell_blocks: &[Block], expected: &str) {
+        if cell_blocks.is_empty() && expected.is_empty() {
+            return;
+        }
+        let para = match cell_blocks {
+            [Block::Paragraph(inlines)] => inlines,
+            other => panic!(
+                "expected single Paragraph cell with text {expected:?}, got: {other:?}"
+            ),
+        };
+        let mut text = String::new();
+        for inline in para {
+            match inline {
+                super::super::node::Inline::Text(t) => text.push_str(t),
+                super::super::node::Inline::Code(c) => text.push_str(c),
+                _ => {}
+            }
+        }
+        assert_eq!(text, expected, "cell text mismatch");
     }
 
     #[test]
@@ -1777,7 +2138,10 @@ mod tests {
         match &result.extracted[0].shortcode {
             Shortcode::Grid(grid) => {
                 assert_eq!(grid.columns, 3);
-                assert_eq!(grid.cells, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+                assert_eq!(grid.cells.len(), 3);
+                assert_paragraph_text(&grid.cells[0], "A");
+                assert_paragraph_text(&grid.cells[1], "B");
+                assert_paragraph_text(&grid.cells[2], "C");
             }
             _ => panic!("expected Grid"),
         }
@@ -1801,7 +2165,11 @@ mod tests {
         let md = ":::grid 2\nA\n+++\nB\n:::\n";
         let result = extract_shortcodes(md);
         match &result.extracted[0].shortcode {
-            Shortcode::Grid(grid) => assert_eq!(grid.cells, vec!["A".to_string(), "B".to_string()]),
+            Shortcode::Grid(grid) => {
+                assert_eq!(grid.cells.len(), 2);
+                assert_paragraph_text(&grid.cells[0], "A");
+                assert_paragraph_text(&grid.cells[1], "B");
+            }
             _ => panic!("expected Grid"),
         }
     }
@@ -1826,7 +2194,8 @@ mod tests {
         match &result.extracted[0].shortcode {
             Shortcode::Grid(grid) => {
                 assert_eq!(grid.columns, 1);
-                assert_eq!(grid.cells, vec!["only cell".to_string()]);
+                assert_eq!(grid.cells.len(), 1);
+                assert_paragraph_text(&grid.cells[0], "only cell");
             }
             _ => panic!("expected Grid"),
         }
@@ -1836,15 +2205,16 @@ mod tests {
     fn extracts_grid_with_empty_middle_cell() {
         // Two consecutive `+++` dividers leave a middle cell empty.
         // Legacy behavior preserved this; verify the typed extractor
-        // does too.
+        // does too. PR4.5: empty cells are `Vec<Block>::new()` (the
+        // parser sees no content and emits zero blocks).
         let md = ":::grid 3\nA\n+++\n+++\nC\n:::\n";
         let result = extract_shortcodes(md);
         match &result.extracted[0].shortcode {
             Shortcode::Grid(grid) => {
                 assert_eq!(grid.cells.len(), 3);
-                assert_eq!(grid.cells[0], "A");
-                assert_eq!(grid.cells[1], "");
-                assert_eq!(grid.cells[2], "C");
+                assert_paragraph_text(&grid.cells[0], "A");
+                assert!(grid.cells[1].is_empty(), "empty cell should have no blocks");
+                assert_paragraph_text(&grid.cells[2], "C");
             }
             _ => panic!("expected Grid"),
         }
@@ -1883,22 +2253,41 @@ mod tests {
     }
 
     #[test]
-    fn extracts_grid_with_compound_link_cell_text_preserved() {
-        // moss-releases pattern: a cell whose entire body is a single
-        // markdown link wrapping multiple block children. The extractor
-        // captures it verbatim; src-tauri's render_card_html runs
-        // detect_compound_link to auto-promote to `.moss-grid-card`.
+    fn extracts_grid_with_compound_link_cell_typed_as_link_card() {
+        // SoCiviC pattern: a cell whose entire body is a single markdown
+        // link wrapping multiple block children. Phase 4 PR4.5
+        // (2026-05-28) detects this at the cell-string level (before
+        // pulldown-cmark, which can't represent `[heading](url)`) and
+        // emits a typed [`Block::LinkCard { url, children }`] with the
+        // inner content parsed as blocks. The second cell is a plain
+        // markdown link that fits the compound shape too (single line,
+        // no block children) — also typed as `Block::LinkCard`.
         let md = ":::grid 2 {.work-cards}\n[![[poster.jpg]]\n#### Title\nbody](/url)\n+++\n[Card 2](/url2)\n:::\n";
         let result = extract_shortcodes(md);
         match &result.extracted[0].shortcode {
             Shortcode::Grid(grid) => {
                 assert_eq!(grid.classes, "work-cards");
                 assert_eq!(grid.cells.len(), 2);
-                // Compound-link cell preserved verbatim for renderer.
-                assert!(grid.cells[0].contains("[![[poster.jpg]]"));
-                assert!(grid.cells[0].contains("#### Title"));
-                assert!(grid.cells[0].contains("body](/url)"));
-                assert_eq!(grid.cells[1], "[Card 2](/url2)");
+                match &grid.cells[0][..] {
+                    [Block::LinkCard { url, children }] => {
+                        match url {
+                            Url::Unresolved(u) => assert_eq!(u, "/url"),
+                            _ => panic!("expected Unresolved /url"),
+                        }
+                        // children should include a Paragraph (with image)
+                        // and a Heading (#### Title) — non-empty proves
+                        // the inner block-parse ran.
+                        assert!(!children.is_empty(), "compound-link inner blocks empty");
+                    }
+                    other => panic!("expected single LinkCard cell, got {other:?}"),
+                }
+                match &grid.cells[1][..] {
+                    [Block::LinkCard { url, .. }] => match url {
+                        Url::Unresolved(u) => assert_eq!(u, "/url2"),
+                        _ => panic!("expected Unresolved /url2"),
+                    },
+                    other => panic!("expected LinkCard for cell[1], got {other:?}"),
+                }
             }
             _ => panic!("expected Grid"),
         }
@@ -1934,7 +2323,7 @@ mod tests {
         match &result.extracted[0].shortcode {
             Shortcode::Hero(args) => {
                 assert!(args.image.is_none());
-                assert_eq!(args.overlay_markdown, "# A House of Daowu");
+                assert_eq!(args.overlay_text, "# A House of Daowu");
             }
             other => panic!("expected Hero, got {other:?}"),
         }
@@ -1953,7 +2342,7 @@ mod tests {
                     Some(Url::Unresolved(s)) => assert_eq!(s, "panorama.jpg"),
                     other => panic!("expected Unresolved url, got {other:?}"),
                 }
-                assert_eq!(args.overlay_markdown, "# Welcome");
+                assert_eq!(args.overlay_text, "# Welcome");
             }
             other => panic!("expected Hero, got {other:?}"),
         }
@@ -1969,7 +2358,7 @@ mod tests {
                     Some(Url::Unresolved(s)) => assert_eq!(s, "cover.jpg"),
                     other => panic!("expected Unresolved, got {other:?}"),
                 }
-                assert_eq!(args.overlay_markdown, "# Title");
+                assert_eq!(args.overlay_text, "# Title");
             }
             other => panic!("expected Hero, got {other:?}"),
         }
@@ -2055,7 +2444,7 @@ mod tests {
                     _ => panic!("expected Unresolved"),
                 }
                 assert_eq!(args.classes, "landing");
-                assert_eq!(args.overlay_markdown, "# Welcome");
+                assert_eq!(args.overlay_text, "# Welcome");
             }
             _ => panic!("expected Hero"),
         }

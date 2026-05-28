@@ -1,0 +1,395 @@
+//! Video embed synthesizer.
+//!
+//! Receives a [`TitleParams`] (Stage 2 dispatcher already parsed it), the
+//! source URL, and an [`AssetSnapshot`]. Emits final `<video>` HTML at the
+//! typed-data boundary — including every attribute the legacy
+//! `add_video_placeholder_attributes` regex used to inject.
+//!
+//! # Authoritative byte shape (Phase 2E parity)
+//!
+//! ```html
+//! <video class="moss-embed moss-embed-video" src="URL.mp4"
+//!        data-placeholder-src="URL.original" poster="URL.thumb.jpg"
+//!        data-thumb-src="URL.thumb.jpg" controls preload="metadata"
+//!        { width="W"}?{ height="H"}?></video>
+//! ```
+//!
+//! - Single `src=` attribute on `<video>` (no nested `<source>` child) —
+//!   load-bearing for the surviving `add_video_placeholder_attributes`
+//!   regex pass (preserved until PR3 of Phase 2E). The regex's skip guard
+//!   at `placeholder.rs:435` triggers on `data-placeholder-src`, making
+//!   the post-pass a no-op for synthesizer-emitted videos.
+//!   Source: moss-core pre-Phase-0 `VideoRenderer` at
+//!   `crates/moss-core/src/resolve/embed_renderer.rs:509-571` (commit `efb834a3e`).
+//! - `controls preload="metadata"` always emitted unconditionally — the
+//!   `controls` keyword is the historical default; the wikilink syntax
+//!   `![[clip.mp4]]` never had a "controls off" variant.
+//! - Width/height priority: (1) `TitleParams` `|WxH` sizing alias wins
+//!   when present (with units like `640px`). (2) `AssetSnapshot.dimensions`
+//!   lookup as fallback, emitted unitless (e.g. `width="1920"`). (3) Both
+//!   attributes omitted when the snapshot dims are `(0, 0)` — that is the
+//!   sentinel for "unknown," NOT a real dimension. Both omitted when no
+//!   entry is in the snapshot.
+//! - `data-placeholder-src` is the ORIGINAL src (e.g. `clip.mov`). The
+//!   iframe-bridge swaps `src` to the `.mp4` payload once the transcode
+//!   completes (`frontend/bridge/iframe-bridge.ts:666`).
+//! - `poster` and `data-thumb-src` both reference `to_thumb(original_src)`.
+//!   The iframe-bridge listens for `moss-thumb-ready` and swaps `poster`
+//!   in when the thumbnail lands.
+//!
+//! # `.mov` → `.mp4` source-extension swap (moved from placeholder.rs)
+//!
+//! moss converts `.mov` source files to `.mp4` during build, so a raw
+//! `.mov` reference in the rendered HTML would 404. Pre-Phase-0 this swap
+//! lived in `placeholder.rs::add_video_placeholder_attributes` as a regex
+//! post-pass. Phase 1's typed-data-boundary architecture moves it here:
+//! the synthesizer is the single source of truth for the URL that ends up
+//! in `<video src=>`.
+//!
+//! # Multi-source HLS form (NOT emitted here)
+//!
+//! This synthesizer never emits `<video><source src=…></video>` (multi-
+//! source / adaptive-bitrate form). That shape is reserved for HLS / DASH
+//! streams that don't need transcode-pending hydration. The regex pass
+//! also skips it (`video_re` requires `src="…"` directly on `<video>`),
+//! and the `data-placeholder-src` / `poster` / `data-thumb-src` injection
+//! only applies to the single-src form by design. If a future callsite
+//! wants the multi-source form, it must NOT route through this
+//! synthesizer.
+
+use crate::asset_paths::{to_mp4, to_thumb};
+use crate::asset_snapshot::AssetSnapshot;
+use crate::resolve::embed_renderer::html_escape_attr;
+use crate::resolve::title_params::TitleParams;
+use std::path::PathBuf;
+
+/// Synthesize video embed HTML for `Tag::Link` with `moss:kind=video` title.
+///
+/// Owns the `.mov` → `.mp4` source-extension swap at the typed-data
+/// boundary (moved from `placeholder.rs` per the unified-emission
+/// migration). Emits the full attribute set the surviving regex pass
+/// would have injected — `data-placeholder-src`, `poster`,
+/// `data-thumb-src`, and snapshot-derived `width`/`height` — so the
+/// post-pass becomes a no-op for synthesizer-emitted videos. See module
+/// docs for the authoritative byte-shape contract.
+pub fn synthesize_video_html(
+    params: &TitleParams,
+    src: &str,
+    assets: &AssetSnapshot,
+) -> String {
+    // .mov → .mp4 source-extension swap (idempotent for .mp4 / .webm).
+    // Pre-Phase-0 lived in placeholder.rs; moved here because the typed-
+    // data layer is the single source of truth for the served URL.
+    let converted_src = to_mp4(src);
+
+    // Thumbnail path — used for both `poster` (initial frame before
+    // transcode lands) and `data-thumb-src` (iframe-bridge swap target
+    // when `moss-thumb-ready` fires). Mirrors the regex behaviour at
+    // `placeholder.rs:444-446`.
+    let thumb = to_thumb(src);
+
+    // Width/height priority:
+    //   (1) TitleParams alias (e.g. `|640x360` → `width="640px" height="360px"`)
+    //   (2) AssetSnapshot.dimensions lookup (unitless ints)
+    //   (3) omit both
+    // `(0, 0)` from the snapshot is a sentinel for unknown — omit both
+    // when we see it, per the Phase 2E design (the regex emits `width="0"`
+    // in that case; the synthesizer corrects that long-standing bug).
+    let (width_attr, height_attr) = if let (Some(w), Some(h)) = (params.get("width"), params.get("height")) {
+        (
+            format!(r#" width="{}""#, html_escape_attr(w)),
+            format!(r#" height="{}""#, html_escape_attr(h)),
+        )
+    } else if let Some(w) = params.get("width") {
+        // Width-only alias is unusual but historically supported.
+        (
+            format!(r#" width="{}""#, html_escape_attr(w)),
+            String::new(),
+        )
+    } else {
+        match assets.dims(&PathBuf::from(src)) {
+            Some((w, h)) if w > 0 && h > 0 => (
+                format!(r#" width="{}""#, w),
+                format!(r#" height="{}""#, h),
+            ),
+            _ => (String::new(), String::new()),
+        }
+    };
+
+    format!(
+        r#"<video class="moss-embed moss-embed-video" src="{src}" data-placeholder-src="{orig}" poster="{thumb}" data-thumb-src="{thumb}" controls preload="metadata"{w}{h}></video>"#,
+        src = html_escape_attr(&converted_src),
+        orig = html_escape_attr(src),
+        thumb = html_escape_attr(&thumb),
+        w = width_attr,
+        h = height_attr,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_snapshot() -> AssetSnapshot {
+        AssetSnapshot::new()
+    }
+
+    fn params_with(kvs: &[(&str, &str)]) -> TitleParams {
+        let mut p = TitleParams::default();
+        for (k, v) in kvs {
+            p.insert(*k, *v);
+        }
+        p
+    }
+
+    // --- byte-shape parity with pre-Phase-0 VideoRenderer ---
+
+    #[test]
+    fn video_basic_shape() {
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains("<video"), "got: {}", out);
+        assert!(out.contains(r#"src="clip.mp4""#), "got: {}", out);
+    }
+
+    #[test]
+    fn video_emits_moss_embed_classes() {
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(
+            out.contains(r#"class="moss-embed moss-embed-video""#),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn video_emits_closing_tag() {
+        // Pre-Phase-0 VideoRenderer ended with `</video>` (not self-closing).
+        // The downstream rewriter regex matches `<video … src="…">` and
+        // expects a separate closing tag.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.ends_with("</video>"), "got: {}", out);
+    }
+
+    #[test]
+    fn video_emits_controls_unconditionally() {
+        // Pre-Phase-0 always emitted `controls preload="metadata"`. The
+        // wikilink syntax `![[clip.mp4]]` has no "no controls" form, so
+        // there is no `controls` param to consult; the synthesizer just
+        // emits the keyword.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(" controls "), "got: {}", out);
+    }
+
+    #[test]
+    fn video_emits_preload_metadata() {
+        // `preload="metadata"` is the historical default: browser fetches
+        // duration/dimensions but defers the full payload until play.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(r#"preload="metadata""#), "got: {}", out);
+    }
+
+    #[test]
+    fn video_single_src_no_nested_source() {
+        // Single src= on <video>, NOT a nested <source> child. Load-bearing:
+        // the surviving add_video_placeholder_attributes regex matches
+        // `<video\s+[^>]*?src="…">`. With a nested <source>, the regex
+        // no-ops and the entire post-pass silently drops. See pre-Phase-0
+        // VideoRenderer doc comment at embed_renderer.rs:519-545.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(!out.contains("<source"), "must not emit <source>: {}", out);
+    }
+
+    // --- .mov → .mp4 source-extension swap ---
+
+    #[test]
+    fn video_mov_extension_swaps_to_mp4() {
+        // moss transcodes .mov source files to .mp4 during build; the
+        // emitted URL must reference the .mp4 output. Pre-Phase-0 the
+        // regex pass in placeholder.rs owned this swap. Phase 1 moves it
+        // to the synthesizer at the typed-data boundary (Decision #6:
+        // zero carve-outs).
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mov", &empty_snapshot());
+        assert!(
+            out.contains(r#"src="clip.mp4""#),
+            "expected .mov swapped to .mp4, got: {}",
+            out
+        );
+        // The `src=` attribute (preceded by space, not `-src=` from
+        // data-placeholder-src) must point at the .mp4. Using a leading
+        // space disambiguates `src=` from `data-placeholder-src=`, where
+        // `.mov` legitimately survives as the original-src attribute that
+        // the iframe-bridge listens to (`iframe-bridge.ts:666`).
+        assert!(
+            !out.contains(r#" src="clip.mov""#),
+            "raw .mov must not appear in src= after swap, got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn video_uppercase_mov_extension_swaps_to_mp4() {
+        // .MOV (uppercase) is the macOS QuickTime export default and must
+        // also swap. Mirrors the to_mp4 helper's case-insensitive contract.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.MOV", &empty_snapshot());
+        assert!(
+            out.contains(r#"src="clip.mp4""#),
+            "expected .MOV swapped to .mp4, got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn video_mp4_extension_pass_through() {
+        // .mp4 is the served form; pass through unchanged.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "../assets/clip.mp4", &empty_snapshot());
+        assert!(
+            out.contains(r#"src="../assets/clip.mp4""#),
+            "got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn video_webm_extension_pass_through() {
+        // .webm is not transcoded; pass through.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.webm", &empty_snapshot());
+        assert!(out.contains(r#"src="clip.webm""#), "got: {}", out);
+    }
+
+    // --- width/height from TitleParams (Stage 1 lifted |WxH alias) ---
+
+    #[test]
+    fn video_emits_width_param_when_present() {
+        let p = params_with(&[("kind", "video"), ("width", "640px")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(r#"width="640px""#), "got: {}", out);
+    }
+
+    #[test]
+    fn video_emits_height_param_when_present() {
+        let p = params_with(&[("kind", "video"), ("width", "640px"), ("height", "360px")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(r#"width="640px""#), "got: {}", out);
+        assert!(out.contains(r#"height="360px""#), "got: {}", out);
+    }
+
+    #[test]
+    fn video_no_width_or_height_attrs_when_snapshot_empty() {
+        // Phase 2E: width/height priority is (1) TitleParams alias, then
+        // (2) AssetSnapshot.dims lookup, then (3) omit. With no alias and
+        // no snapshot entry, the synthesizer omits both — matching the
+        // "no fallback dims" decision in the Phase 2E design (the regex's
+        // 800x600 fallback was a long-standing band-aid; Phase 2E drops it).
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(!out.contains("width="), "got: {}", out);
+        assert!(!out.contains("height="), "got: {}", out);
+    }
+
+    // --- HTML-escape contract ---
+
+    #[test]
+    fn video_src_is_html_escaped() {
+        // & must escape to &amp; in attribute values. The URL Q&A is
+        // contrived but exercises the html_escape pass.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "q&a.mp4", &empty_snapshot());
+        assert!(out.contains(r#"src="q&amp;a.mp4""#), "got: {}", out);
+    }
+
+    // --- Phase 2E: regex-parity emission ---
+
+    #[test]
+    fn synth_video_mov_to_mp4() {
+        // `![[clip.mov]]` → `src="clip.mp4"` (transcoded payload) plus
+        // `data-placeholder-src="clip.mov"` (original src — what the
+        // iframe-bridge listens to when transcode-ready fires). Mirrors
+        // the regex contract at `placeholder.rs:440-490` so the post-pass
+        // becomes a no-op for synthesizer output.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mov", &empty_snapshot());
+        assert!(
+            out.contains(r#"src="clip.mp4""#),
+            "expected src= to point at transcoded mp4, got: {}",
+            out
+        );
+        assert!(
+            out.contains(r#"data-placeholder-src="clip.mov""#),
+            "expected data-placeholder-src= to point at original mov, got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn synth_video_poster_and_thumb() {
+        // `poster` carries the thumbnail URL so the first frame paints
+        // immediately; `data-thumb-src` is the iframe-bridge's swap-target
+        // when `moss-thumb-ready` fires (covers the case where the thumb
+        // arrives after the page renders). Both reference `to_thumb(src)`,
+        // mirroring `placeholder.rs:444-446`.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mov", &empty_snapshot());
+        assert!(
+            out.contains(r#"poster="clip.thumb.jpg""#),
+            "expected poster= from to_thumb(src), got: {}",
+            out
+        );
+        assert!(
+            out.contains(r#"data-thumb-src="clip.thumb.jpg""#),
+            "expected data-thumb-src= from to_thumb(src), got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn synth_video_dims_from_snapshot() {
+        // When TitleParams has no |WxH alias but the AssetSnapshot has
+        // (w, h) for the source path, the synthesizer emits unitless
+        // width/height. Matches the regex's `lookup.get(original_src)`
+        // behaviour (placeholder.rs:449).
+        let p = params_with(&[("kind", "video")]);
+        let mut snap = AssetSnapshot::new();
+        snap.dimensions.insert(PathBuf::from("clip.mov"), (1920, 1080));
+        let out = synthesize_video_html(&p, "clip.mov", &snap);
+        assert!(out.contains(r#"width="1920""#), "got: {}", out);
+        assert!(out.contains(r#"height="1080""#), "got: {}", out);
+    }
+
+    #[test]
+    fn synth_video_omits_zero_dims() {
+        // `(0, 0)` in AssetSnapshot.dimensions is a sentinel for "unknown"
+        // (e.g. probe failed). The regex emits `width="0" height="0"`
+        // which is invalid; the synthesizer corrects that by omitting both.
+        let p = params_with(&[("kind", "video")]);
+        let mut snap = AssetSnapshot::new();
+        snap.dimensions.insert(PathBuf::from("clip.mov"), (0, 0));
+        let out = synthesize_video_html(&p, "clip.mov", &snap);
+        assert!(
+            !out.contains("width="),
+            "(0, 0) sentinel must NOT produce width=, got: {}",
+            out
+        );
+        assert!(
+            !out.contains("height="),
+            "(0, 0) sentinel must NOT produce height=, got: {}",
+            out
+        );
+    }
+
+    // Phase 2E v5 PR5 (2026-05-26) retired the Stage 3 regex post-pass; the
+    // video synthesizer in this module is now the sole emitter of width /
+    // height / poster / data-thumb-src / .mov→.mp4 src rewriting for
+    // moss-emitted <video> tags. The two regex-parity tests at
+    // `src-tauri/tests/video_synth_regex_parity.rs` were deleted alongside
+    // the regex.
+}

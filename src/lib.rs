@@ -29,6 +29,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod ast;
+pub mod asset_paths;
 pub mod asset_snapshot;
 pub mod content_graph;
 pub mod contract;
@@ -42,6 +43,7 @@ pub mod heading_anchor;
 pub mod media;
 pub mod page_kind;
 pub use page_kind::PageKind;
+pub mod render;
 pub mod resolve;
 pub mod resolved;
 pub use resolved::{Resolved, ResolvedOrigin};
