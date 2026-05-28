@@ -167,9 +167,7 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
                 match &events[i] {
                     Event::End(TagEnd::List(_)) => break,
                     Event::Start(Tag::Item) => {
-                        let (item_blocks, end) = collect_blocks_until(events, i + 1, |e| {
-                            matches!(e, Event::End(TagEnd::Item))
-                        });
+                        let (item_blocks, end) = collect_item_blocks(events, i + 1);
                         items.push(item_blocks);
                         i = end + 1;
                     }
@@ -369,6 +367,87 @@ where
     (out, i)
 }
 
+/// Collect the children of a `Tag::Item` until the matching `End(Item)`.
+///
+/// Pulldown-cmark's **tight-list** mode emits item contents as inline
+/// events (Text/Code/SoftBreak/inline-tag Start...) DIRECTLY inside
+/// `Tag::Item` without wrapping in `Tag::Paragraph`. The plain
+/// [`collect_blocks_until`] dispatcher would route those events through
+/// [`parse_block`], which drops stray inlines — yielding empty `<li></li>`.
+///
+/// This helper preserves both modes:
+/// - Inline events accumulate into a synthesized [`Block::Paragraph`] that
+///   is flushed when a block-level event (Tag::Paragraph, Tag::List,
+///   nested Tag::Item, etc.) appears or at the end of the item.
+/// - Block-level events are parsed via [`parse_block_with_tag`] (the
+///   standard path).
+///
+/// The renderer recognises a single-paragraph item shape and emits
+/// `<li>...inline...</li>` without an inner `<p>`, matching production's
+/// tight-list output byte-for-byte.
+fn collect_item_blocks(events: &[Event<'_>], start: usize) -> (Vec<Block>, usize) {
+    let mut out: Vec<Block> = Vec::new();
+    let mut pending_inlines: Vec<Inline> = Vec::new();
+    let mut i = start;
+    while i < events.len() {
+        if matches!(&events[i], Event::End(TagEnd::Item)) {
+            flush_pending_paragraph(&mut out, &mut pending_inlines);
+            return (out, i);
+        }
+        if let Some((inline, advance)) = parse_inline_event(events, i) {
+            if let Some(node) = inline {
+                pending_inlines.push(node);
+            }
+            i += advance.max(1);
+            continue;
+        }
+        // Block-level event: flush any accumulated inlines, then parse
+        // through the standard dispatcher.
+        flush_pending_paragraph(&mut out, &mut pending_inlines);
+        let (block, advance) = parse_block(events, i);
+        if let Some(b) = block {
+            out.push(b);
+        }
+        i += advance.max(1);
+    }
+    flush_pending_paragraph(&mut out, &mut pending_inlines);
+    (out, i)
+}
+
+/// If `events[i]` is an inline-level event, parse it via the existing
+/// [`parse_inline`] machinery and return `(inline, advance)`. Returns
+/// `None` for block-level events, end tags, or anything the inline
+/// dispatcher doesn't own — letting the caller fall back to the block
+/// path.
+fn parse_inline_event(
+    events: &[Event<'_>],
+    i: usize,
+) -> Option<(Option<Inline>, usize)> {
+    match &events[i] {
+        Event::Text(_)
+        | Event::Code(_)
+        | Event::Html(_)
+        | Event::InlineHtml(_)
+        | Event::SoftBreak
+        | Event::HardBreak => Some(parse_inline(events, i)),
+        Event::Start(tag) => match tag {
+            Tag::Emphasis | Tag::Strong | Tag::Link { .. } | Tag::Image { .. } => {
+                Some(parse_inline(events, i))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Drain `pending_inlines` into a [`Block::Paragraph`] appended to `out`,
+/// unless it's empty. No-op when there are no pending inlines.
+fn flush_pending_paragraph(out: &mut Vec<Block>, pending_inlines: &mut Vec<Inline>) {
+    if !pending_inlines.is_empty() {
+        out.push(Block::Paragraph(std::mem::take(pending_inlines)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::node::Inline;
@@ -520,6 +599,117 @@ mod tests {
             Block::List { ordered, items } => {
                 assert!(!ordered);
                 assert_eq!(items.len(), 2);
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_handles_tight_list_items_with_inline_content() {
+        // Phase 4 PR0.6 regression — pulldown-cmark's tight-list mode emits
+        // inline events (Text/Strong/etc.) directly inside Tag::Item without
+        // wrapping in Tag::Paragraph. Previously `parse_block` dropped these
+        // stray inlines, producing empty <li></li> instead of the expected
+        // <li><strong>bold</strong> text</li>.
+        match first_block("- **bold** text\n- another item\n") {
+            Block::List { ordered, items } => {
+                assert!(!ordered);
+                assert_eq!(items.len(), 2, "expected two items, got {items:?}");
+                let first_item = &items[0];
+                assert_eq!(
+                    first_item.len(),
+                    1,
+                    "tight item should synthesize a single Paragraph, got {first_item:?}"
+                );
+                match &first_item[0] {
+                    Block::Paragraph(inlines) => {
+                        let has_strong = inlines.iter().any(|i| matches!(i, Inline::Strong(_)));
+                        let has_text = inlines.iter().any(|i| {
+                            matches!(i, Inline::Text(t) if t.contains("text"))
+                        });
+                        assert!(has_strong, "expected Inline::Strong inside item, got {inlines:?}");
+                        assert!(has_text, "expected ' text' Inline::Text, got {inlines:?}");
+                    }
+                    other => panic!("expected Paragraph inside tight item, got {other:?}"),
+                }
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tight_list_items_with_links_preserved() {
+        // Mirrors folder-note-site/obsidian/index.md — wikilinks + images
+        // inside list items. Today these parse as Inline::Link / Inline::Image;
+        // the contract is just that the inline content is NOT dropped.
+        match first_block("- [link](url)\n- ![alt](img.jpg)\n") {
+            Block::List { items, .. } => {
+                assert_eq!(items.len(), 2);
+                let first = &items[0];
+                assert_eq!(first.len(), 1, "expected one Block::Paragraph, got {first:?}");
+                match &first[0] {
+                    Block::Paragraph(inlines) => {
+                        assert!(
+                            inlines.iter().any(|i| matches!(i, Inline::Link { .. })),
+                            "expected Inline::Link, got {inlines:?}"
+                        );
+                    }
+                    other => panic!("expected Paragraph, got {other:?}"),
+                }
+                let second = &items[1];
+                match &second[0] {
+                    Block::Paragraph(inlines) => {
+                        assert!(
+                            inlines.iter().any(|i| matches!(i, Inline::Image { .. })),
+                            "expected Inline::Image, got {inlines:?}"
+                        );
+                    }
+                    other => panic!("expected Paragraph, got {other:?}"),
+                }
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loose_list_items_with_paragraphs_still_work() {
+        // Loose-list mode (blank lines between items) emits items as
+        // Tag::Paragraph-wrapped blocks. The fix must not break this path.
+        let md = "- first item\n\n- second item\n";
+        match first_block(md) {
+            Block::List { items, .. } => {
+                assert_eq!(items.len(), 2);
+                for item in &items {
+                    assert_eq!(item.len(), 1, "expected one block per item");
+                    assert!(
+                        matches!(&item[0], Block::Paragraph(_)),
+                        "expected Paragraph, got {:?}",
+                        item[0]
+                    );
+                }
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tight_list_items_with_nested_list_preserve_structure() {
+        // - first
+        //   - nested
+        // The outer item carries inline "first" + a nested Block::List.
+        let md = "- first\n  - nested\n";
+        match first_block(md) {
+            Block::List { items, .. } => {
+                assert_eq!(items.len(), 1);
+                let outer = &items[0];
+                assert!(
+                    outer.iter().any(|b| matches!(b, Block::Paragraph(_))),
+                    "expected outer item to carry a Paragraph for 'first', got {outer:?}"
+                );
+                assert!(
+                    outer.iter().any(|b| matches!(b, Block::List { .. })),
+                    "expected outer item to carry a nested List, got {outer:?}"
+                );
             }
             other => panic!("expected List, got {other:?}"),
         }
