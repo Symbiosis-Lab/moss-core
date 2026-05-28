@@ -52,6 +52,7 @@ use crate::resolve::{Diagnostic, OutgoingLink};
 use super::document::Document;
 use super::node::{Block, Inline};
 use super::parser::parse;
+use super::shortcode::Shortcode;
 use super::url::Url;
 
 /// Aggregated output of [`dispatch_wikilink_embeds`].
@@ -139,6 +140,12 @@ fn dispatch_in_block_children(
         }
 
         // Not a lone embed — descend into nested containers if any.
+        //
+        // PR7a-flip-core-C (2026-05-28): the recursion now matches the
+        // visitor pattern in `visit.rs` for `Grid.cells` and `Hero.overlay`
+        // (visit.rs:140, 145). Pre-flip, this visitor missed shortcode
+        // bodies — a wikilink embed inside a `:::grid` cell or `:::hero`
+        // overlay would not be dispatched.
         match &mut blocks[i] {
             Block::BlockQuote(children) | Block::Callout { children, .. } => {
                 dispatch_in_block_children(
@@ -162,9 +169,63 @@ fn dispatch_in_block_children(
                     );
                 }
             }
+            Block::LinkCard { children, .. } => {
+                // PR4.5 compound-link cell — descend into its block body so
+                // wikilinks inside a grid LinkCard render correctly.
+                dispatch_in_block_children(
+                    children,
+                    snapshot,
+                    graph,
+                    registry,
+                    source_path,
+                    result,
+                );
+            }
+            Block::Shortcode(sc) => {
+                dispatch_in_shortcode(sc, snapshot, graph, registry, source_path, result);
+            }
             _ => {}
         }
         i += 1;
+    }
+}
+
+/// Recurse into a shortcode's typed block bodies (Grid cells, Hero overlay).
+/// Matches `visit.rs::visit_urls_in_shortcode` so wikilink embeds inside
+/// shortcode bodies are dispatched alongside top-level ones.
+fn dispatch_in_shortcode(
+    sc: &mut Shortcode,
+    snapshot: &AssetSnapshot,
+    graph: &ContentGraph,
+    registry: &RendererRegistry,
+    source_path: &str,
+    result: &mut WikilinkDispatchResult,
+) {
+    match sc {
+        // Variants with no typed block body — nothing to descend into.
+        Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Gallery(_) => {}
+        Shortcode::Hero(args) => {
+            dispatch_in_block_children(
+                &mut args.overlay,
+                snapshot,
+                graph,
+                registry,
+                source_path,
+                result,
+            );
+        }
+        Shortcode::Grid(args) => {
+            for cell in args.cells.iter_mut() {
+                dispatch_in_block_children(
+                    cell,
+                    snapshot,
+                    graph,
+                    registry,
+                    source_path,
+                    result,
+                );
+            }
+        }
     }
 }
 
@@ -233,15 +294,14 @@ fn apply_emit(
             // `Block::Figure { image: Inline::Image { … }, … }`, which
             // routes through the standard image-render path (synth
             // `<picture>` for raster, etc.).
+            //
+            // The caller's loop advances by 1, so we leave it to step
+            // through any inserted blocks. The inserted blocks shouldn't
+            // themselves contain wikilink embeds (re-parse of a
+            // `![alt](url)` produces a plain markdown image), so a single
+            // advance is safe.
             let parsed = parse(&markdown);
-            let len = parsed.blocks.len();
             blocks.splice(i..=i, parsed.blocks);
-            // Caller's loop advances by 1 — we leave it to the loop to
-            // step through any inserted blocks. The inserted blocks
-            // shouldn't themselves contain wikilink embeds (re-parse of
-            // a `![alt](url)` produces a plain markdown image), so
-            // skipping them is safe.
-            let _ = len;
         }
     }
 }
@@ -401,7 +461,96 @@ mod tests {
             Block::List { items, .. } => items
                 .iter()
                 .any(|item| item.iter().any(block_has_wikilink_image)),
+            Block::LinkCard { children, .. } => children.iter().any(block_has_wikilink_image),
+            Block::Shortcode(sc) => shortcode_has_wikilink_image(sc),
             _ => false,
         }
+    }
+
+    fn shortcode_has_wikilink_image(sc: &super::super::shortcode::Shortcode) -> bool {
+        use super::super::shortcode::Shortcode;
+        match sc {
+            Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Gallery(_) => false,
+            Shortcode::Hero(args) => args.overlay.iter().any(block_has_wikilink_image),
+            Shortcode::Grid(args) => args
+                .cells
+                .iter()
+                .any(|cell| cell.iter().any(block_has_wikilink_image)),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // PR7a-flip-core-C (2026-05-28): shortcode-body recursion
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn grid_cell_wikilink_embed_is_dispatched() {
+        // A `:::grid` whose cell contains a lone wikilink embed paragraph.
+        // The visitor must descend into Grid.cells and dispatch the embed,
+        // replacing the paragraph in place. Before flip-core-C, the
+        // wikilink Inline::Image would survive in the cell.
+        use super::super::shortcode::{GridShortcode, Shortcode};
+
+        let cell = vec![Block::Paragraph(vec![Inline::Image {
+            src: Url::unresolved("photo.png"),
+            alt: String::new(),
+            title: None,
+            is_wikilink: true,
+            wikilink_pothole: None,
+        }])];
+        let mut doc = Document::from_blocks(vec![Block::Shortcode(Shortcode::Grid(
+            GridShortcode {
+                columns: 1,
+                ratio: None,
+                classes: String::new(),
+                cells: vec![cell],
+                width: None,
+            },
+        ))]);
+        let snap = empty_snapshot();
+        let graph = empty_graph();
+        let reg = empty_registry();
+        let _ = dispatch_wikilink_embeds(&mut doc, &snap, &graph, &reg, "post.md");
+        let has_wikilink_image = find_any_wikilink_image(&doc.blocks);
+        assert!(
+            !has_wikilink_image,
+            "dispatch should descend into Grid cells and remove the wikilink image"
+        );
+    }
+
+    #[test]
+    fn hero_overlay_wikilink_embed_is_dispatched() {
+        // A `:::hero` whose overlay contains a lone wikilink embed paragraph.
+        // The visitor must descend into Hero.overlay and dispatch the embed.
+        // SoCiviC's fixtures rely on this — hero overlays carry markdown
+        // that may include `![[...]]` references.
+        use super::super::shortcode::{HeroShortcode, Shortcode};
+
+        let overlay = vec![Block::Paragraph(vec![Inline::Image {
+            src: Url::unresolved("overlay.png"),
+            alt: String::new(),
+            title: None,
+            is_wikilink: true,
+            wikilink_pothole: None,
+        }])];
+        let mut doc = Document::from_blocks(vec![Block::Shortcode(Shortcode::Hero(
+            HeroShortcode {
+                image: None,
+                attrs: String::new(),
+                classes: String::new(),
+                overlay,
+                overlay_text: String::new(),
+                width: None,
+            },
+        ))]);
+        let snap = empty_snapshot();
+        let graph = empty_graph();
+        let reg = empty_registry();
+        let _ = dispatch_wikilink_embeds(&mut doc, &snap, &graph, &reg, "post.md");
+        let has_wikilink_image = find_any_wikilink_image(&doc.blocks);
+        assert!(
+            !has_wikilink_image,
+            "dispatch should descend into Hero overlay and remove the wikilink image"
+        );
     }
 }
