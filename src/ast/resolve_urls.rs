@@ -8,6 +8,12 @@
 //! intermediate URL scheme collapses at moss-core's output boundary —
 //! the visitor emits the final resolved internal href directly.
 //!
+//! Phase 4 PR7a (2026-05-28): `markdown_refs::resolve_markdown_refs` was
+//! deleted after its parity with this visitor was proven. The companion
+//! `markdown_links::resolve_markdown_links` pass survives because it still
+//! emits a `moss-resolved:` sentinel that production's `classify_url_prod`
+//! decoder consumes — see investigation notes for the deferred deletion.
+//!
 //! ## Why one function, not two
 //!
 //! Stage 1 split bare-image refs and standard-link refs into separate
@@ -946,24 +952,26 @@ mod tests {
     // Byte-equivalence: visitor OutgoingLink Vec matches Stage 1 output
     // -----------------------------------------------------------------
 
-    /// Run the Stage 1 passes (markdown_refs + markdown_links) in their
-    /// original sequence and concatenate their OutgoingLink Vecs — this
-    /// is the contract the visitor must match byte-for-byte.
+    /// Run the remaining Stage 1 pass (`markdown_links`) against the
+    /// source and return its `OutgoingLink` Vec — this is what the
+    /// visitor must match byte-for-byte for standard markdown links.
+    ///
+    /// Phase 4 PR7a (2026-05-28): the companion Stage 1 pass
+    /// `markdown_refs::resolve_markdown_refs` was deleted alongside the
+    /// matching `byte_equivalence_bare_image_filename` test — its parity
+    /// was already proven by `resolves_bare_filename_image_against_graph`
+    /// (which exercises the visitor directly without a Stage 1 baseline).
     fn stage1_outgoing(
         content: &str,
         graph: &crate::content_graph::ContentGraph,
         source_path: &str,
     ) -> Vec<OutgoingLink> {
-        let refs =
-            crate::resolve::markdown_refs::resolve_markdown_refs(content, graph, source_path);
-        let mut outgoing = refs.outgoing_links;
         let links = crate::resolve::markdown_links::resolve_markdown_links(
-            &refs.content,
+            content,
             graph,
             source_path,
         );
-        outgoing.extend(links.outgoing_links);
-        outgoing
+        links.outgoing_links
     }
 
     fn assert_outgoing_links_eq(a: &[OutgoingLink], b: &[OutgoingLink]) {
@@ -1001,20 +1009,12 @@ mod tests {
         assert_outgoing_links_eq(&visitor, &stage1);
     }
 
-    #[test]
-    fn byte_equivalence_bare_image_filename() {
-        let source = "articles/post.md";
-        let content = "![My Photo](photo.jpg)";
-        let mut b = ContentGraphBuilder::new();
-        b.add_file("assets/photo.jpg", "photo");
-        let graph = b.build();
-
-        let stage1 = stage1_outgoing(content, &graph, source);
-        let mut doc = parse(content);
-        let visitor = resolve_urls(&mut doc, &graph, source);
-
-        assert_outgoing_links_eq(&visitor, &stage1);
-    }
+    // Phase 4 PR7a (2026-05-28): `byte_equivalence_bare_image_filename`
+    // was removed alongside deletion of `crates/moss-core/src/resolve/
+    // markdown_refs.rs`. The visitor's bare-filename behavior is still
+    // covered by `resolves_bare_filename_image_against_graph` above (no
+    // Stage 1 baseline needed — the assertion checks the resolved URL
+    // directly).
 
     #[test]
     fn byte_equivalence_multiple_links_one_line() {

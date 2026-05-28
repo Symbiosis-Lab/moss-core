@@ -12,12 +12,10 @@ use crate::asset_snapshot::AssetSnapshot;
 use crate::content_graph::ContentGraph;
 
 pub mod block_refs;
-pub mod callouts;
 pub mod embed_renderer;
 pub mod embeds;
 pub mod fuzzy_path;
 pub mod markdown_links;
-pub mod markdown_refs;
 pub mod registry;
 pub mod title_params;
 pub mod wikilink_dispatch;
@@ -71,11 +69,13 @@ pub struct ResolveResult {
 /// 2. Resolve wikilinks (first pass) -- standard `[[…]]` and `![[…]]` to markdown links / embed markers
 /// 3. Resolve embed placeholders -- inline `<!-- moss-embed:… -->` markers with file content
 /// 4. Resolve wikilinks (second pass) -- catch wikilinks introduced by embedded content
-/// 4.5. Resolve bare filenames in standard markdown images -- `![](photo.jpg)` to resolved paths
 /// 4.6. Resolve standard markdown links -- `[text](target.md)` to resolved paths
 /// 5. Transform block references -- `^id` markers to HTML anchors
-/// 6. Transform callouts -- `> [!type]` to HTML divs
-/// 7. Rejoin frontmatter + resolved body
+/// 6. Rejoin frontmatter + resolved body
+///
+/// Phase 4 PR7a (2026-05-28) deleted Stage 1 callout transformation
+/// and bare-filename image resolution; both are now part of the typed
+/// AST (`crates/moss-core/src/ast/`).
 pub fn resolve_content(
     source_path: &str,
     raw_markdown: &str,
@@ -203,49 +203,38 @@ pub fn resolve_content_with_handlers_and_snapshot(
     let deferred_result = embeds::resolve_deferred_markers(&embed_result.content, handlers);
     diagnostics.extend(deferred_result.diagnostics);
 
-    // Step 4.5: Resolve bare filenames in standard markdown images.
-    let md_ref_result =
-        markdown_refs::resolve_markdown_refs(&deferred_result.content, graph, source_path);
-    let mut outgoing_links = outgoing_links;
-    outgoing_links.extend(md_ref_result.outgoing_links);
-    diagnostics.extend(md_ref_result.diagnostics);
-
     // Step 4.6: Resolve standard markdown link targets via ContentGraph.
+    //
+    // Phase 4 PR7a (2026-05-28) deleted the Stage 1 `resolve_markdown_refs`
+    // pass that handled bare-filename images (`![](photo.jpg)`). The typed
+    // AST visitor (`crates/moss-core/src/ast/resolve_urls.rs::resolve_image_urls`)
+    // now produces byte-equivalent results for both `is_bare_filename`
+    // detection and resolved-path output.
     let md_link_result =
-        markdown_links::resolve_markdown_links(&md_ref_result.content, graph, source_path);
+        markdown_links::resolve_markdown_links(&deferred_result.content, graph, source_path);
+    let mut outgoing_links = outgoing_links;
     outgoing_links.extend(md_link_result.outgoing_links);
     diagnostics.extend(md_link_result.diagnostics);
 
     // Step 5: Transform block references.
+    //
+    // Phase 4 PR7a (2026-05-28) deleted the Stage 1 `transform_callouts`
+    // pass that ran here. Obsidian-callout syntax is now handled by the
+    // typed AST parser (`crates/moss-core/src/ast/parser.rs`'s
+    // `Tag::BlockQuote` arm); the AST renderer emits the same canonical
+    // callout HTML (and additively handles foldable +/- suffixes and
+    // Obsidian aliases). See investigation notes referenced in the
+    // PR7a commit message for the byte-shape parity proof.
     let (block_result, block_ids) = block_refs::transform_block_refs(&md_link_result.content);
 
-    // Step 6: Transform callouts.
-    //
-    // Phase 4 PR4 (2026-05-27) added a typed `Block::Callout` to the
-    // moss-core AST (`crates/moss-core/src/ast/parser.rs`'s
-    // `Tag::BlockQuote` arm) with proper Obsidian-alias canonicalization
-    // and foldable-suffix support. The AST renderer (`render_document`)
-    // emits the same canonical callout HTML this Stage 1 pass produces.
-    //
-    // We keep this Stage 1 pass UNTIL PR7a flips production rendering to
-    // `render_document`. Removing Stage 1 before then would regress
-    // production output (`> [!note]` would render as plain `<blockquote>`
-    // because pulldown-cmark + `html::push_html` don't know callout
-    // syntax). PR7a deletes this call + the `callouts` module + the
-    // `pub mod callouts;` declaration above + regenerates the
-    // callouts-site snapshot fixtures atomically with the production
-    // flip. See `docs/plans/2026-05-27-phase4-typed-ast-completion.md`
-    // § PR7a for the coordinated removal.
-    let callout_result = callouts::transform_callouts(&block_result);
-
-    // Step 7: Resolve frontmatter wikilinks + rejoin with resolved body.
+    // Step 6: Resolve frontmatter wikilinks + rejoin with resolved body.
     let content_markdown = match frontmatter {
         Some(fm) => {
             let resolved_fm = resolve_frontmatter_wikilinks(fm, graph, source_path);
             diagnostics.extend(resolved_fm.diagnostics);
-            format!("{}{}", resolved_fm.content, callout_result)
+            format!("{}{}", resolved_fm.content, block_result)
         }
-        None => callout_result,
+        None => block_result,
     };
 
     ResolveResult {
@@ -821,17 +810,15 @@ mod tests {
         assert!(result.content_markdown.contains("<span id=\"my-block\"></span>"));
         assert_eq!(result.block_ids, vec!["my-block"]);
 
-        // Phase 4 PR4 (2026-05-27): typed Block::Callout was added to
-        // the AST parser (`ast/parser.rs`'s Tag::BlockQuote arm) WITH
-        // proper Obsidian-alias canonicalization. The Stage 1
-        // `resolve/callouts.rs` pass STAYS until PR7a flips production
-        // rendering to `render_document` (deleting Stage 1 before then
-        // would regress production output to a plain `<blockquote>`).
-        // So `resolve_content` still emits the canonical callout HTML
-        // here, matching the pre-PR4 behavior.
+        // Phase 4 PR7a (2026-05-28): Stage 1 `transform_callouts` is
+        // deleted. Callout transformation now lives in the typed AST
+        // parser (`ast/parser.rs`'s Tag::BlockQuote arm) and renderer.
+        // `resolve_content` returns raw markdown here — the `> [!warning]`
+        // syntax passes through verbatim for downstream parsing.
         assert!(
-            result.content_markdown.contains(r#"class="callout""#),
-            "Stage 1 callout transformation still active until PR7a flip"
+            result.content_markdown.contains("> [!warning] Watch Out"),
+            "Expected callout markdown to pass through verbatim post-PR7a, got: {}",
+            result.content_markdown
         );
     }
 
@@ -993,9 +980,14 @@ mod tests {
             input, &graph, &mock_reader(&files)
         );
 
+        // Phase 4 PR7a (2026-05-28): Stage 1 `resolve_markdown_refs` is
+        // deleted. Bare-filename image resolution now happens in the
+        // typed AST visitor (`ast/resolve_urls::resolve_image_urls`)
+        // downstream of `resolve_content`. The image src passes through
+        // verbatim here.
         assert!(
-            result.content_markdown.contains("../../assets/d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg"),
-            "Expected resolved path with ../../assets/, got: {}",
+            result.content_markdown.contains("![](d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg)"),
+            "Expected bare filename to pass through verbatim, got: {}",
             result.content_markdown
         );
     }
@@ -1003,7 +995,7 @@ mod tests {
     // ----- Integration test for markdown image bare-filename resolution -----
 
     #[test]
-    fn test_bare_filename_image_resolved_in_pipeline() {
+    fn test_bare_filename_image_passes_through_in_pipeline() {
         let mut b = ContentGraphBuilder::new();
         b.add_file("guide.md", "guide");
         b.add_file("note.md", "note");
@@ -1022,27 +1014,30 @@ mod tests {
         // Frontmatter preserved
         assert!(result.content_markdown.starts_with("---\ntitle: Test\n---\n"));
 
-        // Bare filename resolved to correct relative path
+        // Phase 4 PR7a (2026-05-28): Stage 1 `resolve_markdown_refs` is
+        // deleted. The bare filename now passes through `resolve_content`
+        // verbatim; the typed AST visitor
+        // (`ast/resolve_urls::resolve_image_urls`) resolves it later in
+        // `process_markdown_file`. The visitor has its own coverage in
+        // `resolve_urls.rs::tests::resolves_bare_filename_image_against_graph`.
         assert!(
-            result.content_markdown.contains("![My Image](../assets/photo.jpg)"),
-            "Expected resolved image path, got: {}",
+            result.content_markdown.contains("![My Image](photo.jpg)"),
+            "Expected bare filename to pass through verbatim, got: {}",
             result.content_markdown
         );
 
-        // Outgoing link tracked
+        // No Standard outgoing link from this layer either — the visitor
+        // emits them downstream.
         let standard_links: Vec<_> = result
             .outgoing_links
             .iter()
             .filter(|l| l.link_type == LinkType::Standard)
             .collect();
-        assert_eq!(
-            standard_links.len(),
-            1,
-            "Expected 1 standard outgoing link, got {}: {:?}",
-            standard_links.len(),
+        assert!(
+            standard_links.is_empty(),
+            "Expected zero standard outgoing links from resolve_content post-PR7a, got: {:?}",
             standard_links
         );
-        assert_eq!(standard_links[0].target_path, "assets/photo.jpg");
     }
 
     // ----- resolve_frontmatter_wikilinks unit tests -----

@@ -469,7 +469,14 @@ mod tests {
     fn shortcode_has_wikilink_image(sc: &super::super::shortcode::Shortcode) -> bool {
         use super::super::shortcode::Shortcode;
         match sc {
-            Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Gallery(_) => false,
+            // Variants with no typed block body — no wikilink images possible.
+            // (`Recent` carries `fallback_markdown: String`, not typed blocks;
+            // see `fix(ast): cover Shortcode::Recent in dispatch_wikilink_embeds`
+            // commit 747b8f2b0 for the production-side rationale.)
+            Shortcode::Subscribe(_)
+            | Shortcode::Buttons(_)
+            | Shortcode::Gallery(_)
+            | Shortcode::Recent(_) => false,
             Shortcode::Hero(args) => args.overlay.iter().any(block_has_wikilink_image),
             Shortcode::Grid(args) => args
                 .cells
