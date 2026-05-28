@@ -186,6 +186,15 @@ pub struct HeroShortcode {
     /// consumers read `overlay_text` for description-chain extraction.
     ///
     /// Empty when the author wrote no overlay body.
+    ///
+    /// TODO(phase4-cleanup): replace with a Vec<Block>-walking
+    /// `to_plain_text(blocks: &[Block]) -> String` helper in moss-core
+    /// + consume `overlay` directly in `meta.rs::extract_description`,
+    /// deleting this field. Carrying both `overlay: Vec<Block>` AND
+    /// `overlay_text: String` makes the AST non-canonical (which is the
+    /// source of truth?); per cross-SSG research, lossy or duplicate
+    /// state is Gatsby's mistake. This is transitional — flag if it
+    /// survives past PR7a. (Architecture review caveat 2026-05-28.)
     pub overlay_text: String,
     /// Spec § P9 width attribute: `body | wide | page | screen` (with
     /// `full` aliased to `screen`). `None` means the author did not set

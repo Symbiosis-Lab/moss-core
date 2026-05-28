@@ -209,11 +209,13 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
             // stays a plain blockquote. See shape-spec § 1.
             //
             // Detection works on the EVENT stream (not the parsed
-            // children) because pulldown-cmark converts `SoftBreak`
-            // events to `Inline::Text(" ")` during inline parsing,
-            // which would erase the "marker line vs body line"
-            // boundary. Working on events preserves the structural
-            // break (SoftBreak event).
+            // children) because pulldown-cmark's SoftBreak events
+            // become `Inline::Text("\n")` during inline parsing
+            // (PR4.5 aligned to CommonMark spec — see
+            // `parse_inline` SoftBreak handling). Working on events
+            // preserves the structural break before inline
+            // collapse, which is what the marker-line-vs-body-line
+            // boundary check needs.
             match detect_and_assemble_callout(events, start + 1) {
                 Some((block, body_end)) => (Some(block), body_end - start + 1),
                 None => {
