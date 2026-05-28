@@ -294,6 +294,21 @@ fn apply_emit(
             // `![alt](url)` produces a plain markdown image), so a single
             // advance is safe.
             let parsed = parse(&markdown);
+            // Latent invariant: caller (apply_emit) holds `&mut Document` and
+            // splices block_meta in lockstep if/when parsed.blocks.len() != 1.
+            // Today re-parse of an emit-rendered `![alt](url)` or `[text](url)`
+            // always yields exactly one block, so the parallel-vec invariant
+            // (blocks.len() == block_meta.len()) accidentally holds via this
+            // path. If a future EmitKind expansion emits a multi-block
+            // markdown fragment, this assert fails fast in debug builds
+            // before render_document's own debug_assert panics with a less
+            // helpful message.
+            debug_assert_eq!(
+                parsed.blocks.len(),
+                1,
+                "wikilink-emit re-parse must yield exactly one block; \
+                 block_meta lockstep update needed here if this changes"
+            );
             blocks.splice(i..=i, parsed.blocks);
         }
     }
