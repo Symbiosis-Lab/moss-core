@@ -94,10 +94,9 @@ pub fn resolve_urls(
     // anchors that fell through, edge cases), the caller is responsible
     // for one more classification pass before rendering. Callers that
     // need a complete classification can call
-    // [`classify_remaining_urls`] explicitly. The parity probe (which
-    // chains a second `visit_urls_mut` to apply `classify_url_for_probe`)
-    // does this in its own way; production paths after Stage 1 removal
-    // will likewise add their own final pass.
+    // [`classify_remaining_urls`] explicitly. The src-tauri host pipeline
+    // chains a second `visit_urls_mut` to apply its `classify_url_prod`
+    // for page_map-aware decoding of the three sentinel prefixes.
 
     outgoing
 }
@@ -257,11 +256,12 @@ fn resolve_link_urls(
         // Stage 1 / upstream state the visitor cannot decode in isolation
         // — the final pretty URL depends on the host's `page_map`, which
         // lives in src-tauri's pipeline context. Leave these as
-        // `Url::Unresolved` so the host's per-URL classifier (e.g.,
-        // `classify_url_for_probe`) can apply the page_map-aware decoding.
-        // This preserves the byte-equivalence contract (no OutgoingLink
-        // emitted for already-resolved targets — Stage 1 already counted
-        // them) while letting the host close the prefix-decoding loop.
+        // `Url::Unresolved` so the host's per-URL classifier
+        // (`classify_url_prod` in src-tauri's pipeline) can apply the
+        // page_map-aware decoding. This preserves the byte-equivalence
+        // contract (no OutgoingLink emitted for already-resolved targets
+        // — Stage 1 already counted them) while letting the host close
+        // the prefix-decoding loop.
         if raw.starts_with("moss-resolved:")
             || raw.starts_with("moss-newtab:")
             || raw.starts_with("wikilink:")
@@ -337,7 +337,7 @@ fn split_path_suffix(url: &str) -> (&str, Option<&str>) {
 /// `Inline::Link` variant added before its phase-2 arm is wired).
 ///
 /// Callers that follow [`resolve_urls`] with their own per-URL classifier
-/// (e.g., the parity probe applying `classify_url_for_probe` for
+/// (e.g., src-tauri's pipeline calling `classify_url_prod` for
 /// resolver-prefix decoding) should NOT call this — let the secondary
 /// classifier handle the remaining URLs. Callers that have no secondary
 /// pass should call this to maintain the render invariant.
