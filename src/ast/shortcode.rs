@@ -63,6 +63,13 @@ pub enum Shortcode {
     /// stores its raw markdown source; the renderer is responsible for any
     /// nested-shortcode extraction and markdown processing per cell.
     Grid(GridShortcode),
+    /// `:::recent since=... last=... count=...` — list of recent posts
+    /// scoped to the page's top-level folder (its scope).
+    ///
+    /// Body (between the opening and closing `:::`) is reserved for
+    /// fallback content rendered when the query returns zero matches.
+    /// Empty body means no fallback (the shortcode renders nothing).
+    Recent(RecentShortcode),
 }
 
 /// Arguments for [`Shortcode::Subscribe`].
@@ -169,6 +176,29 @@ pub struct HeroShortcode {
     pub width: Option<String>,
 }
 
+/// Arguments for [`Shortcode::Recent`].
+///
+/// Parameters parsed at shortcode-extract time; the query runs at render
+/// time against the full post set. Renderer lives in
+/// `src-tauri/src/build/markdown/recent.rs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentShortcode {
+    /// `since="YYYY-MM-DD"` — posts on or after this date. Stored as the
+    /// raw string here; the rendering layer parses it into a DateTime.
+    /// Mutually compatible with `last` — both set the cutoff, later wins.
+    pub since: Option<String>,
+    /// `last="week" | "month" | "Nd"` — relative window. The renderer
+    /// converts this to a duration and subtracts from now.
+    pub last: Option<String>,
+    /// `count="N"` — cap at N most recent posts. The renderer applies a
+    /// default of 10 when unset.
+    pub count: Option<u32>,
+    /// Body content rendered as fallback when zero posts match. Empty
+    /// string means no fallback. Lives in the AST so the renderer doesn't
+    /// need to re-read the source.
+    pub fallback_markdown: String,
+}
+
 /// Identifier for a shortcode kind, used for AST queries (e.g.
 /// `has_shortcode(&doc, ShortcodeKind::Subscribe)` to gate feature
 /// detection without scanning source files).
@@ -180,6 +210,7 @@ pub enum ShortcodeKind {
     Gallery,
     Hero,
     Grid,
+    Recent,
 }
 
 impl Shortcode {
@@ -191,6 +222,7 @@ impl Shortcode {
             Shortcode::Gallery(_) => ShortcodeKind::Gallery,
             Shortcode::Hero(_) => ShortcodeKind::Hero,
             Shortcode::Grid(_) => ShortcodeKind::Grid,
+            Shortcode::Recent(_) => ShortcodeKind::Recent,
         }
     }
 }
@@ -207,6 +239,7 @@ mod tests {
             ShortcodeKind::Gallery,
             ShortcodeKind::Hero,
             ShortcodeKind::Grid,
+            ShortcodeKind::Recent,
         ];
         let unique: std::collections::HashSet<_> = kinds.iter().collect();
         assert_eq!(unique.len(), kinds.len());
@@ -220,6 +253,7 @@ mod tests {
             ShortcodeKind::Gallery,
             ShortcodeKind::Hero,
             ShortcodeKind::Grid,
+            ShortcodeKind::Recent,
         ] {
             let s = serde_json::to_string(&kind).expect("serialize");
             let back: ShortcodeKind = serde_json::from_str(&s).expect("deserialize");
@@ -377,6 +411,36 @@ mod tests {
                 attrs: "1:1 contain".to_string(),
             }],
             width: None,
+        });
+        let s = serde_json::to_string(&sc).expect("serialize");
+        let back: Shortcode = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(sc, back);
+    }
+
+    // ---- Recent ----
+
+    #[test]
+    fn recent_kind_method_returns_recent() {
+        let sc = Shortcode::Recent(RecentShortcode::default());
+        assert_eq!(sc.kind(), ShortcodeKind::Recent);
+    }
+
+    #[test]
+    fn recent_default_has_none_params_empty_fallback() {
+        let args = RecentShortcode::default();
+        assert!(args.since.is_none());
+        assert!(args.last.is_none());
+        assert!(args.count.is_none());
+        assert!(args.fallback_markdown.is_empty());
+    }
+
+    #[test]
+    fn recent_round_trips_through_serde() {
+        let sc = Shortcode::Recent(RecentShortcode {
+            since: Some("2026-04-01".to_string()),
+            last: None,
+            count: Some(5),
+            fallback_markdown: "_No posts yet._".to_string(),
         });
         let s = serde_json::to_string(&sc).expect("serialize");
         let back: Shortcode = serde_json::from_str(&s).expect("deserialize");

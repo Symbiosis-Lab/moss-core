@@ -115,6 +115,7 @@ where
             // the resolver during per-cell rendering (the renderer calls
             // back into apply_typed_shortcodes + markdown_to_html_with).
         }
+        Shortcode::Recent(_) => {} // No URLs.
     }
 }
 
