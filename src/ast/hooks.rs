@@ -9,6 +9,25 @@
 //! method without touching the renderer or the AST. Defaults handle the
 //! ~80% case; overrides handle site-specific concerns (asset path
 //! rewriting, classname injection, etc).
+//!
+//! # Architectural prior art
+//!
+//! `RenderHooks` is moss's port of Hugo's render-hooks pattern
+//! ([`markup/goldmark/render_hooks.go`](https://github.com/gohugoio/hugo/blob/master/markup/goldmark/render_hooks.go)).
+//! In Hugo, `hookedRenderer` IS Goldmark's `NodeRenderer` — hooks fire
+//! during the AST walk, every CommonMark-native attribute reaches the hook
+//! (e.g. `linkContext.Title`), and the template owns rendering decisions.
+//!
+//! Cross-SSG research (2026-05-27) confirms this is the canonical shape:
+//! every AST-bearing SSG (Hugo, Markdoc, mdast/remark, Pandoc, comrak,
+//! recent mdBook) carries every parser-emitted attribute (including link
+//! title) through to the renderer. Dropping fields the parser saw is
+//! universally regarded as Gatsby's mistake — lossy AST forces consumers
+//! into a plugin ecosystem they wouldn't need if the AST were faithful.
+//!
+//! See [docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md](../../../../docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md)
+//! for the full research synthesis and [typed-body-ast.md](../../../../docs/architecture/typed-body-ast.md)
+//! for the design intent + 7 principles.
 
 use super::shortcode::Shortcode;
 use super::url::{ResolvedUrl, UrlKind};
@@ -25,6 +44,22 @@ pub trait RenderHooks {
     /// The default impl carries forward moss's existing post-render
     /// conventions: `class="wikilink"` for resolved wikilinks,
     /// `target="_blank" rel="noopener"` for asset-newtab links.
+    ///
+    /// # Title parameter (PR8 — scheduled)
+    ///
+    /// This signature is missing the `title: Option<&str>` parameter that
+    /// CommonMark links can carry (`[text](href "title")`). Title is
+    /// silently dropped today through the AST render path. Invisible
+    /// because production HTML still comes from `pulldown_cmark::html::push_html`
+    /// (events carry title natively); becomes a regression the moment
+    /// PR7a flips production to `render_document`.
+    ///
+    /// PR8 restores `title: Option<&str>` alongside other `RenderHooks`
+    /// signature changes (`ResolvedUrl` private-constructor lockdown).
+    /// Every comparable AST-bearing SSG passes title to its render hook
+    /// (Hugo's `linkContext.Title`, Markdoc, mdast's `Resource.title`,
+    /// comrak, Pandoc) — see
+    /// [docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md](../../../../docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md).
     fn render_link(&self, out: &mut String, url: &ResolvedUrl, content: &str) {
         match url.kind {
             UrlKind::Wikilink => {

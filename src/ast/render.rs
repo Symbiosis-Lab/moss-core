@@ -2,6 +2,47 @@
 //!
 //! Walks every variant; calls hooks at interceptable points. Debug-asserts
 //! on `Url::Unresolved` reaching the renderer — a missing visitor is a bug.
+//!
+//! # Phase 4: render_document IS the production rendering path (target)
+//!
+//! Today (2026-05-27) this function runs as a parallel observer via
+//! `observe_typed_ast` in `src-tauri/src/build/markdown/pipeline.rs`;
+//! production HTML still comes from `pulldown_cmark::html::push_html` over
+//! the event stream. Phase 4 PR7a flips this: `render_document` becomes
+//! the production renderer, `html::push_html` is no longer called in the
+//! main pipeline, and `transform_events` is reduced to a thin
+//! events-to-Document adapter (or deleted).
+//!
+//! # Why the AST renders (not pulldown-cmark)
+//!
+//! Cross-SSG research (2026-05-27) — see
+//! [docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md](../../../../docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md)
+//! — confirms every AST-bearing SSG with secondary consumers (link
+//! graphs, editors, validators, multi-target rendering) puts the AST at
+//! the rendering source:
+//!
+//! - **mdBook** (same parser as moss) recently migrated from
+//!   `html::push_html` to a typed `Tree<Node>` via `ego_tree`. Same
+//!   destination, same motivation.
+//! - **Hugo** dispatches NodeRenderer per AST node-kind; render hooks
+//!   fire during AST walk.
+//! - **Markdoc** ships `AstNode → RenderableTreeNode → HTML/React`.
+//! - **Pandoc** has been AST-first since 2006; output is a writer per
+//!   target format.
+//! - **Quarto 2** is mid-migration from Stage 1 pre-parsers to AST-first
+//!   for three reasons: performance, fragility, information loss.
+//!
+//! Streaming-only SSGs (Zola, markdown-it ecosystem) live without an AST,
+//! but pay the cost: structural reshape requires fragile token-window
+//! pattern matching; secondary consumers can't ride on event streams.
+//! moss has secondary consumers (#599 page threading, editor's
+//! `scan_shortcodes`, `has_shortcode_recursive`, future WASM editor,
+//! future LSP-style diagnostics) — AST is non-optional.
+//!
+//! See [docs/architecture/typed-body-ast.md](../../../../docs/architecture/typed-body-ast.md)
+//! for the design intent + 7 principles, and
+//! [docs/plans/2026-05-27-phase4-typed-ast-completion.md](../../../../docs/plans/2026-05-27-phase4-typed-ast-completion.md)
+//! for the Phase 4 execution plan.
 
 use super::document::Document;
 use super::hooks::{escape_attr, escape_text, RenderHooks};
