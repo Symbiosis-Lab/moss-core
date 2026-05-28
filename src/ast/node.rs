@@ -57,6 +57,26 @@ pub enum Block {
     Shortcode(Shortcode),
     /// `<hr>` thematic break.
     ThematicBreak,
+    /// Image-only paragraph promoted to a typed figure.
+    ///
+    /// Detected by the parser's `Tag::Paragraph` arm (Phase 4 PR3,
+    /// 2026-05-27): a paragraph that contains exactly one
+    /// [`Inline::Image`] modulo whitespace text and line breaks. The
+    /// renderer emits `<figure class="moss-image">…<figcaption>…</figcaption></figure>`,
+    /// wrapping the image hook's output and appending the caption when
+    /// present.
+    ///
+    /// `image` is constrained by the parser to be an [`Inline::Image`];
+    /// the renderer pattern-matches and falls back gracefully if the
+    /// variant is anything else.
+    ///
+    /// `caption` defaults to the image's alt text at parse time. `None`
+    /// means "figure wrap but no `<figcaption>`" — reserved for the
+    /// empty-alt case (omit caption when there is nothing to read).
+    Figure {
+        image: Inline,
+        caption: Option<Vec<Inline>>,
+    },
     /// Escape hatch: anything pulldown-cmark emits that the AST hasn't
     /// modeled. Carries the raw HTML so the renderer passes it through
     /// unchanged.
@@ -177,6 +197,47 @@ mod tests {
     fn block_thematic_break_is_unit_variant() {
         let b = Block::ThematicBreak;
         assert!(matches!(b, Block::ThematicBreak));
+    }
+
+    #[test]
+    fn block_figure_carries_image_and_optional_caption() {
+        // Phase 4 PR3: Block::Figure wraps a single Inline::Image and an
+        // optional caption (vector of inlines so emphasis/strong can ride
+        // through). Caption defaults to the image's alt text at parse time;
+        // None is reserved for the empty-alt case.
+        let image = Inline::Image {
+            src: Url::resolved("photo.jpg", UrlKind::Asset),
+            alt: "A photo".to_string(),
+            title: None,
+        };
+        let b = Block::Figure {
+            image: image.clone(),
+            caption: Some(vec![text("A photo")]),
+        };
+        match b {
+            Block::Figure { image: img, caption } => {
+                assert!(matches!(img, Inline::Image { .. }));
+                let cap = caption.expect("caption present");
+                assert_eq!(cap.len(), 1);
+            }
+            _ => panic!("expected Figure"),
+        }
+    }
+
+    #[test]
+    fn block_figure_without_caption_serializes() {
+        // Empty-alt case: caption: None means "no figcaption emission."
+        let b = Block::Figure {
+            image: Inline::Image {
+                src: Url::resolved("x.jpg", UrlKind::Asset),
+                alt: String::new(),
+                title: None,
+            },
+            caption: None,
+        };
+        let s = serde_json::to_string(&b).expect("serialize");
+        let back: Block = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(b, back);
     }
 
     #[test]

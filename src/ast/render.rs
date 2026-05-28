@@ -162,6 +162,64 @@ fn render_block<H: RenderHooks>(hooks: &H, out: &mut String, block: &Block) {
             out.push('\n');
         }
         Block::ThematicBreak => out.push_str("<hr />\n"),
+        Block::Figure { image, caption } => {
+            // Phase 4 PR3 (2026-05-27): image-only paragraphs promoted at
+            // parse time become Block::Figure. The render shape is a
+            // `<figure class="moss-image">` wrap around the image hook's
+            // output, optionally followed by `<figcaption>{caption}</figcaption>`.
+            //
+            // The inner image renders via `hooks.render_image` (the same
+            // path as Inline::Image — production wires this through
+            // `DefaultHooks::with_snapshot` / `PipelineHooks` which uses
+            // `ImageContext::MarkdownInline`, producing the bare
+            // `<picture><img></picture>` shape). The structural `<figure>`
+            // wrapper is the Figure renderer's responsibility — this keeps
+            // the byte shape contract with shape-spec § 1: the spec sample
+            // shows `<figure>` containing exactly the MarkdownInline inner.
+            //
+            // Caption omission: `caption: None` means "no figcaption" (the
+            // empty-alt case). Empty caption Vec is also treated as no
+            // figcaption — defensive, since `caption: Some(vec![])` would
+            // otherwise emit `<figcaption></figcaption>`.
+            out.push_str(r#"<figure class="moss-image">"#);
+            // Render the inner image. Pattern-match the constrained shape;
+            // any other inline falls back to the standard inline path so
+            // the renderer never panics on a malformed Figure.
+            match image {
+                Inline::Image { src, alt, title } => {
+                    match src {
+                        Url::Resolved(r) => {
+                            hooks.render_image(out, r, alt, title.as_deref());
+                        }
+                        Url::Unresolved(s) => {
+                            debug_assert!(
+                                false,
+                                "Url::Unresolved({s:?}) reached Block::Figure renderer — visit_urls_mut missing or buggy"
+                            );
+                            out.push_str(r#"<img src=""#);
+                            out.push_str(&escape_attr(s));
+                            out.push_str(r#"" alt=""#);
+                            out.push_str(&escape_attr(alt));
+                            out.push_str(r#"" />"#);
+                        }
+                    }
+                }
+                _ => {
+                    // Defensive: a non-Image inline in a Figure violates
+                    // the parser-enforced shape, but the renderer must
+                    // still emit something rather than crash.
+                    render_inline(hooks, out, image);
+                }
+            }
+            if let Some(cap_inlines) = caption {
+                if !cap_inlines.is_empty() {
+                    out.push_str("<figcaption>");
+                    render_inlines(hooks, out, cap_inlines);
+                    out.push_str("</figcaption>");
+                }
+            }
+            out.push_str("</figure>\n");
+        }
         Block::Other(html) => {
             out.push_str(html);
         }
@@ -422,6 +480,126 @@ mod tests {
         assert!(html.contains(r#"<h1 id="title">Title</h1>"#), "got: {html}");
         assert!(html.contains(r#"<a href="docs/">link</a>"#));
         assert!(html.contains("<em>em</em>"));
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 PR3 (2026-05-27): Block::Figure render
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn figure_renders_with_caption() {
+        // Canonical shape: <figure class="moss-image">{inner img}{figcaption}</figure>.
+        // DefaultHooks::new() has no snapshot, so inner is the bare <img>
+        // (test path). Production wires DefaultHooks::with_snapshot which
+        // routes inner through synth — same shape, richer attrs.
+        let html = render(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::resolved("logo.png", UrlKind::Asset),
+                alt: "A logo".into(),
+                title: None,
+            },
+            caption: Some(vec![Inline::Text("A logo".into())]),
+        }]);
+        assert!(
+            html.starts_with(r#"<figure class="moss-image">"#),
+            "expected figure wrap, got: {html}"
+        );
+        assert!(html.contains(r#"src="logo.png""#), "got: {html}");
+        assert!(html.contains(r#"alt="A logo""#), "got: {html}");
+        assert!(
+            html.contains("<figcaption>A logo</figcaption>"),
+            "got: {html}"
+        );
+        assert!(html.ends_with("</figure>\n"), "got: {html}");
+    }
+
+    #[test]
+    fn figure_renders_without_caption_when_none() {
+        // Empty-alt case: caption: None → no <figcaption> element.
+        let html = render(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::resolved("x.png", UrlKind::Asset),
+                alt: String::new(),
+                title: None,
+            },
+            caption: None,
+        }]);
+        assert!(html.contains("<figure"), "got: {html}");
+        assert!(
+            !html.contains("<figcaption"),
+            "expected no figcaption, got: {html}"
+        );
+        assert!(html.contains("</figure>"), "got: {html}");
+    }
+
+    #[test]
+    fn figure_renders_no_figcaption_for_empty_caption_vec() {
+        // Defensive: caption: Some(vec![]) is treated identically to None.
+        let html = render(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::resolved("x.png", UrlKind::Asset),
+                alt: "x".into(),
+                title: None,
+            },
+            caption: Some(vec![]),
+        }]);
+        assert!(!html.contains("<figcaption"), "got: {html}");
+    }
+
+    #[test]
+    fn figure_caption_escapes_html_unsafe_chars() {
+        // Caption is a Vec<Inline>; Inline::Text passes through
+        // escape_text. The figure renderer must NOT double-escape; the
+        // existing inline path is the single source of escaping.
+        let html = render(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::resolved("p.jpg", UrlKind::Asset),
+                alt: "a<b>c".into(),
+                title: None,
+            },
+            caption: Some(vec![Inline::Text("a<b>c".into())]),
+        }]);
+        assert!(
+            html.contains("<figcaption>a&lt;b&gt;c</figcaption>"),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn figure_end_to_end_from_parser_to_render() {
+        // Parse → visit (resolve URL) → render: covers the full path.
+        let md = "![A photo](photo.jpg)\n";
+        let mut doc = super::super::parser::parse(md);
+        super::super::visit::visit_urls_mut(&mut doc, |u| match u {
+            Url::Unresolved(s) => *u = Url::resolved(s.clone(), UrlKind::Asset),
+            _ => {}
+        });
+        let html = render_document(&doc, &DefaultHooks::new());
+        assert!(
+            html.contains(r#"<figure class="moss-image">"#),
+            "expected figure, got: {html}"
+        );
+        assert!(html.contains(r#"src="photo.jpg""#), "got: {html}");
+        assert!(html.contains("<figcaption>A photo</figcaption>"), "got: {html}");
+    }
+
+    #[test]
+    fn paragraph_with_image_and_text_does_not_become_figure() {
+        // End-to-end regression guard: ![img](u) caption text MUST stay
+        // as a paragraph (not get the figure wrap) so the prose isn't
+        // swallowed. Mirrors the parser-side guard `image_with_caption_text_does_not_promote`.
+        let md = "![alt](a.jpg) plain text\n";
+        let mut doc = super::super::parser::parse(md);
+        super::super::visit::visit_urls_mut(&mut doc, |u| match u {
+            Url::Unresolved(s) => *u = Url::resolved(s.clone(), UrlKind::Asset),
+            _ => {}
+        });
+        let html = render_document(&doc, &DefaultHooks::new());
+        assert!(
+            !html.contains("<figure"),
+            "image+text must not be wrapped in figure, got: {html}"
+        );
+        assert!(html.contains("plain text"), "got: {html}");
     }
 
     #[test]

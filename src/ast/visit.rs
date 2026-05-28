@@ -82,6 +82,18 @@ where
         Block::Shortcode(sc) => {
             visit_urls_in_shortcode(sc, callback);
         }
+        Block::Figure { image, caption } => {
+            // Descend into the image's src (the load-bearing URL); the
+            // caption is a Vec<Inline> that may itself carry links —
+            // unlikely in practice (captions default to alt text) but the
+            // visitor must not silently skip them.
+            visit_urls_in_inline(image, callback);
+            if let Some(cap_inlines) = caption {
+                for inline in cap_inlines {
+                    visit_urls_in_inline(inline, callback);
+                }
+            }
+        }
         Block::CodeBlock { .. } | Block::ThematicBreak | Block::Other(_) => {
             // No URLs in these.
         }
@@ -456,6 +468,78 @@ mod tests {
         });
         assert!(!result);
         assert_eq!(count, 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 PR3 (2026-05-27): Block::Figure URL descent
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn visits_url_inside_figure_image() {
+        let mut doc = Document::from_blocks(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::unresolved("fig.png"),
+                alt: "f".into(),
+                title: None,
+            },
+            caption: Some(vec![Inline::Text("f".into())]),
+        }]);
+        let mut seen: Vec<String> = Vec::new();
+        visit_urls_mut(&mut doc, |u| match u {
+            Url::Unresolved(s) => seen.push(s.clone()),
+            _ => {}
+        });
+        assert_eq!(seen, vec!["fig.png".to_string()]);
+    }
+
+    #[test]
+    fn figure_url_becomes_resolved_after_visit() {
+        // Critical contract: a single visit transitions the figure's
+        // image URL from Unresolved to Resolved (matching the
+        // visit_urls_mut bypass-prevention invariant).
+        let mut doc = Document::from_blocks(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::unresolved("p.jpg"),
+                alt: "".into(),
+                title: None,
+            },
+            caption: None,
+        }]);
+        visit_urls_mut(&mut doc, |u| {
+            *u = Url::resolved("p.jpg", UrlKind::Asset);
+        });
+        match &doc.blocks[0] {
+            Block::Figure { image, .. } => match image {
+                Inline::Image { src, .. } => assert!(src.is_resolved()),
+                _ => panic!("expected Image inside Figure"),
+            },
+            _ => panic!("expected Figure"),
+        }
+    }
+
+    #[test]
+    fn visits_url_inside_figure_caption_inlines() {
+        // Defensive: caption is Vec<Inline>; if it carries a Link (rare —
+        // captions default to alt-text Inline::Text), the URL must still
+        // be visited.
+        let mut doc = Document::from_blocks(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::unresolved("fig.png"),
+                alt: "".into(),
+                title: None,
+            },
+            caption: Some(vec![Inline::Link {
+                url: Url::unresolved("credit"),
+                title: None,
+                children: vec![Inline::Text("credit".into())],
+            }]),
+        }]);
+        let mut seen: Vec<String> = Vec::new();
+        visit_urls_mut(&mut doc, |u| match u {
+            Url::Unresolved(s) => seen.push(s.clone()),
+            _ => {}
+        });
+        assert_eq!(seen, vec!["fig.png".to_string(), "credit".to_string()]);
     }
 
     #[test]

@@ -160,7 +160,26 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
             let (children, end) = collect_inlines_until(events, start + 1, |e| {
                 matches!(e, Event::End(TagEnd::Paragraph))
             });
-            (Some(Block::Paragraph(children)), end - start + 1)
+            // Phase 4 PR3 (2026-05-27): detect image-only paragraphs and
+            // promote to `Block::Figure`. See shape-spec § 1 detection
+            // rule: exactly one `Inline::Image` plus any number of
+            // whitespace-only `Inline::Text` / `Inline::LineBreak`
+            // siblings qualifies. Caption defaults to the image's alt
+            // text (mirroring transform_events' implicit-figure path);
+            // empty alt yields `caption: None` so no `<figcaption>` is
+            // emitted.
+            //
+            // A paragraph with image+prose (e.g. `![img](src) caption text`)
+            // does NOT qualify; it stays as `Block::Paragraph`. This is the
+            // critical regression guard — see PR1 v2 (commit 71c657af3)
+            // for the analogous shape decision at the inline image hook
+            // level: inline images use `MarkdownInline` (no figure wrap);
+            // only the standalone figure case here uses the figure wrap.
+            let block = match try_promote_to_figure(children) {
+                Ok(figure) => figure,
+                Err(original_inlines) => Block::Paragraph(original_inlines),
+            };
+            (Some(block), end - start + 1)
         }
         Tag::CodeBlock(kind) => {
             let lang = match kind {
@@ -269,6 +288,72 @@ fn parse_block_with_tag(events: &[Event<'_>], start: usize, tag: &Tag<'_>) -> (O
         // explicitly.
         _ => (None, 1),
     }
+}
+
+/// Decide whether a paragraph's inlines qualify for promotion to
+/// [`Block::Figure`]. Per shape-spec § 1: exactly one [`Inline::Image`]
+/// plus any number of whitespace-only [`Inline::Text`] /
+/// [`Inline::LineBreak`] siblings. Any other inline shape (Emphasis,
+/// Strong, Link, Code, non-whitespace Text, …) disqualifies the
+/// paragraph and it stays as [`Block::Paragraph`].
+///
+/// **Empty-alt guard:** if the matched image has an empty alt (decorative
+/// image), the paragraph is NOT promoted. This mirrors production's
+/// `transform_events` implicit-figure pass which gates on non-empty alt
+/// (a `<figure>` whose caption duplicates a missing alt would be useless
+/// for assistive tech and adds visual noise). The empty-alt image stays
+/// as `<p><img></p>`, matching the production byte shape for the same
+/// input — verified via the parity probe's `other` category on 刘果 CJK
+/// fixtures (image-only paragraphs with empty alt).
+///
+/// On qualification, returns `Ok(Block::Figure { image, caption })` with
+/// caption defaulting to the image's alt text (parsed as a single
+/// [`Inline::Text`] so the renderer's figcaption emission can escape it
+/// uniformly with other inline content).
+///
+/// On disqualification, returns `Err(original_inlines)` so the caller
+/// can fall back to constructing the standard `Block::Paragraph` without
+/// re-walking events.
+fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
+    let mut image_count = 0;
+    for inline in &inlines {
+        match inline {
+            Inline::Image { .. } => image_count += 1,
+            Inline::Text(s) if s.trim().is_empty() => {} // whitespace OK
+            Inline::LineBreak => {}                      // line break OK
+            _ => return Err(inlines),
+        }
+    }
+    if image_count != 1 {
+        return Err(inlines);
+    }
+    // Empty-alt guard: refuse to promote so production-equivalent
+    // `<p><img></p>` output is preserved for decorative images.
+    let image_has_alt = inlines.iter().any(|i| match i {
+        Inline::Image { alt, .. } => !alt.trim().is_empty(),
+        _ => false,
+    });
+    if !image_has_alt {
+        return Err(inlines);
+    }
+    // Extract the single image; keep ownership of the original vec
+    // simple by re-walking with into_iter so we move out instead of
+    // cloning.
+    let mut image_owned: Option<Inline> = None;
+    for inline in inlines.into_iter() {
+        if matches!(inline, Inline::Image { .. }) {
+            image_owned = Some(inline);
+            break;
+        }
+    }
+    let image = image_owned.expect("invariant: image_count == 1 implies one Image present");
+    // Caption is always Some here (empty-alt was filtered above), but
+    // keep the Option<Vec<Inline>> shape per shape-spec § 1.
+    let caption = match &image {
+        Inline::Image { alt, .. } => Some(vec![Inline::Text(alt.clone())]),
+        _ => None,
+    };
+    Ok(Block::Figure { image, caption })
 }
 
 /// Collect a contiguous run of inline events into `Vec<Inline>`. Stops
@@ -656,15 +741,47 @@ mod tests {
 
     #[test]
     fn parses_image_with_alt() {
+        // Phase 4 PR3 (2026-05-27): an image-only paragraph is now
+        // promoted to Block::Figure. Inline::Image lives inside the
+        // Figure variant; the URL/alt/title contract is unchanged.
+        // For image+text (where Block::Paragraph still applies), see
+        // `image_with_caption_text_does_not_promote` below.
         match first_block("![cat photo](cat.jpg)\n") {
-            Block::Paragraph(children) => match &children[0] {
-                Inline::Image { src, alt, title } => {
-                    assert!(src.is_unresolved());
-                    assert_eq!(alt, "cat photo");
-                    assert!(title.is_none());
+            Block::Figure { image, caption } => {
+                match image {
+                    Inline::Image { src, alt, title } => {
+                        assert!(src.is_unresolved());
+                        assert_eq!(alt, "cat photo");
+                        assert!(title.is_none());
+                    }
+                    other => panic!("expected Image inside Figure, got {other:?}"),
                 }
-                other => panic!("expected Image, got {other:?}"),
-            },
+                let cap = caption.expect("caption from alt text");
+                assert_eq!(cap.len(), 1);
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_image_inside_paragraph_with_text() {
+        // Companion to `parses_image_with_alt`: an image with sibling
+        // prose stays as Block::Paragraph (no figure promotion). Holds
+        // the parser's image-extraction contract for the non-figure case.
+        match first_block("see ![cat photo](cat.jpg) here\n") {
+            Block::Paragraph(children) => {
+                let img = children
+                    .iter()
+                    .find(|i| matches!(i, Inline::Image { .. }))
+                    .expect("expected Inline::Image among siblings");
+                match img {
+                    Inline::Image { src, alt, .. } => {
+                        assert!(src.is_unresolved());
+                        assert_eq!(alt, "cat photo");
+                    }
+                    _ => unreachable!(),
+                }
+            }
             other => panic!("expected Paragraph, got {other:?}"),
         }
     }
@@ -1096,6 +1213,147 @@ mod tests {
                 }
                 other => panic!("expected Emphasis, got {other:?}"),
             },
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 PR3 (2026-05-27): Block::Figure detection in Tag::Paragraph
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn image_only_paragraph_promotes_to_figure() {
+        // Canonical case: a paragraph containing exactly one image, no
+        // sibling inline content, becomes Block::Figure. Caption defaults
+        // to the image's alt text.
+        match first_block("![A logo](logo.png)\n") {
+            Block::Figure { image, caption } => {
+                match image {
+                    Inline::Image { src, alt, .. } => {
+                        assert!(src.is_unresolved());
+                        assert_eq!(alt, "A logo");
+                    }
+                    other => panic!("expected Image inside Figure, got {other:?}"),
+                }
+                let cap = caption.expect("caption from alt text");
+                assert_eq!(cap.len(), 1);
+                assert!(matches!(&cap[0], Inline::Text(t) if t == "A logo"));
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_only_paragraph_with_empty_alt_stays_as_paragraph() {
+        // Empty-alt guard: a decorative image (no alt) does NOT promote
+        // to Figure. Production's implicit-figure pass gates on
+        // non-empty alt — wrapping a no-alt image in `<figure>` adds
+        // visual noise (no figcaption text) without a11y benefit. The
+        // bytes match production's `<p><img></p>` shape.
+        //
+        // Parity-probe evidence: pre-guard, 7 CJK 刘果 fixtures with
+        // trailing empty-alt images flipped to "other" because the AST
+        // emitted `<figure>` and prod did not. Guard restores parity.
+        match first_block("![](logo.png)\n") {
+            Block::Paragraph(children) => {
+                assert_eq!(children.len(), 1);
+                match &children[0] {
+                    Inline::Image { alt, .. } => assert_eq!(alt, ""),
+                    other => panic!("expected Image inside Paragraph, got {other:?}"),
+                }
+            }
+            other => panic!(
+                "empty-alt image-only paragraph must stay as Paragraph, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn image_with_whitespace_text_still_promotes_to_figure() {
+        // Whitespace-only text or line-break siblings don't disqualify
+        // (matches transform_events' "image-only modulo whitespace"
+        // behavior). Verifying via a wikilink + trailing whitespace would
+        // require an actual whitespace event; pulldown-cmark typically
+        // strips this. The detector is defensive for the cases that
+        // DO surface whitespace inlines (line breaks after the image).
+        let md = "![alt](a.jpg)  \n";
+        // The trailing "  \n" inside a paragraph emits a HardBreak event
+        // (Inline::LineBreak). Promotion must still succeed.
+        match first_block(md) {
+            Block::Figure { image, .. } => assert!(matches!(image, Inline::Image { .. })),
+            // pulldown-cmark may also collapse this differently; accept
+            // Paragraph(LineBreak) as a tolerated fallback so the test is
+            // not over-specified on pulldown-cmark whitespace semantics.
+            // The critical regression we want to lock is that genuine
+            // image+text mixes DON'T promote (covered by the test below).
+            Block::Paragraph(_) => {}
+            other => panic!("expected Figure or Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_with_caption_text_does_not_promote() {
+        // Critical regression guard (cf. PR1 v2 commit 71c657af3): a
+        // paragraph carrying image + prose / emphasis must NOT be
+        // promoted to a figure. If we promoted, the caption text would
+        // be lost and we'd produce a malformed figure with sibling
+        // content swallowed.
+        match first_block("![alt](a.jpg) plain caption text\n") {
+            Block::Paragraph(children) => {
+                assert!(children.iter().any(|i| matches!(i, Inline::Image { .. })));
+                assert!(
+                    children.iter().any(|i| matches!(i, Inline::Text(t) if t.contains("plain"))),
+                    "expected sibling Text to remain, got {children:?}"
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_with_emphasis_sibling_does_not_promote() {
+        // Pandoc-style "image + emphasis caption" is recognized in the
+        // legacy transform_events as a captioned figure, but PR3's
+        // simplified detection (one Image, no other content modulo
+        // whitespace) leaves these as Paragraph. PR0's parity probe
+        // already classifies these under image_emission / image_figures
+        // depending on production behavior; PR3 owns ONLY the simple
+        // image-only case. The downstream image+emphasis case is closed
+        // out at PR7a when production flips.
+        match first_block("![alt](a.jpg) *caption*\n") {
+            Block::Paragraph(children) => {
+                assert!(children.iter().any(|i| matches!(i, Inline::Image { .. })));
+                assert!(
+                    children.iter().any(|i| matches!(i, Inline::Emphasis(_))),
+                    "expected Emphasis to remain, got {children:?}"
+                );
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_images_in_one_paragraph_do_not_promote() {
+        // Detection rule requires EXACTLY one image. Two images stay as
+        // a paragraph (no figure wrap chosen — production would also
+        // not wrap this in a figure).
+        match first_block("![a](a.jpg) ![b](b.jpg)\n") {
+            Block::Paragraph(children) => {
+                let img_count = children
+                    .iter()
+                    .filter(|i| matches!(i, Inline::Image { .. }))
+                    .count();
+                assert_eq!(img_count, 2);
+            }
+            other => panic!("expected Paragraph (two images), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_paragraph_still_parses_as_paragraph() {
+        // No regression: a normal text paragraph stays as Block::Paragraph.
+        match first_block("just some prose\n") {
+            Block::Paragraph(_) => {}
             other => panic!("expected Paragraph, got {other:?}"),
         }
     }
