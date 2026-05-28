@@ -62,13 +62,22 @@ pub fn render_document<H: RenderHooks>(doc: &Document, hooks: &H) -> String {
     out
 }
 
-pub(super) fn render_blocks<H: RenderHooks>(hooks: &H, out: &mut String, blocks: &[Block]) {
+/// Render a sequence of blocks to HTML. Used by [`render_document`]
+/// and by src-tauri's `render_hero_html_typed` (Phase 4 PR4.5) to render
+/// a `Vec<Block>` that didn't come from a full `Document` (e.g. a hero
+/// overlay).
+///
+/// `H: ?Sized` so the function can be called with `&dyn RenderHooks` or
+/// with `self: &Self` from inside a trait default method (where `Self`
+/// is not statically `Sized`). The hook surface is a thin dispatch
+/// boundary; monomorphization across all concrete impls is not required.
+pub fn render_blocks<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, blocks: &[Block]) {
     for block in blocks {
         render_block(hooks, out, block);
     }
 }
 
-fn render_block<H: RenderHooks>(hooks: &H, out: &mut String, block: &Block) {
+fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Block) {
     match block {
         Block::Heading {
             level,
@@ -256,19 +265,61 @@ fn render_block<H: RenderHooks>(hooks: &H, out: &mut String, block: &Block) {
             }
             out.push_str("</figure>\n");
         }
+        Block::LinkCard { url, children } => {
+            // Phase 4 PR4.5 (2026-05-28): the compound-link grid-cell shape.
+            // External URLs render as a link-preview wrapper; internal URLs
+            // render as `data-kind="link"` grid-card.
+            //
+            // Production byte shape matches today's src-tauri
+            // `render_compound_link_cell` output (ported here so that
+            // shape was deleted from src-tauri in PR4.5). The wrapping
+            // `<div class="moss-grid">` chrome lives in the Grid render
+            // arm in hooks.rs; LinkCard is the per-cell shape.
+            let resolved = match url {
+                Url::Resolved(r) => r,
+                Url::Unresolved(s) => {
+                    debug_assert!(
+                        false,
+                        "Url::Unresolved({s:?}) reached Block::LinkCard renderer — visit_urls_mut missing or buggy"
+                    );
+                    out.push_str(r#"<a href=""#);
+                    out.push_str(&escape_attr(s));
+                    out.push_str(r#"" class="moss-grid-card" data-kind="link">"#);
+                    render_blocks(hooks, out, children);
+                    out.push_str("</a>");
+                    return;
+                }
+            };
+            use super::url::UrlKind;
+            let is_external = matches!(
+                resolved.kind,
+                UrlKind::External | UrlKind::AssetNewtab
+            );
+            if is_external {
+                out.push_str(r#"<a href=""#);
+                out.push_str(&escape_attr(&resolved.href));
+                out.push_str(r#"" class="moss-grid-card link-preview" target="_blank" rel="noopener">"#);
+            } else {
+                out.push_str(r#"<a href=""#);
+                out.push_str(&escape_attr(&resolved.href));
+                out.push_str(r#"" class="moss-grid-card" data-kind="link">"#);
+            }
+            render_blocks(hooks, out, children);
+            out.push_str("</a>");
+        }
         Block::Other(html) => {
             out.push_str(html);
         }
     }
 }
 
-pub(super) fn render_inlines<H: RenderHooks>(hooks: &H, out: &mut String, inlines: &[Inline]) {
+pub(super) fn render_inlines<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inlines: &[Inline]) {
     for inline in inlines {
         render_inline(hooks, out, inline);
     }
 }
 
-fn render_inline<H: RenderHooks>(hooks: &H, out: &mut String, inline: &Inline) {
+fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &Inline) {
     match inline {
         Inline::Text(t) => out.push_str(&escape_text(t)),
         Inline::Link {

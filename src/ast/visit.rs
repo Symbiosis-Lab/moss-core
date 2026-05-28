@@ -94,6 +94,14 @@ where
                 }
             }
         }
+        Block::LinkCard { url, children } => {
+            // Phase 4 PR4.5: the wrapping URL (compound-link href) +
+            // every URL inside the inner block content.
+            callback(url);
+            for nested in children {
+                visit_urls_in_block(nested, callback);
+            }
+        }
         Block::CodeBlock { .. } | Block::ThematicBreak | Block::Other(_) => {
             // No URLs in these.
         }
@@ -121,11 +129,24 @@ where
             if let Some(image) = args.image.as_mut() {
                 callback(image);
             }
+            // Phase 4 PR4.5 (2026-05-28): descend into the typed overlay
+            // blocks so URLs inside `:::hero` overlay markdown (e.g. a
+            // `[Read more](/x)` link in the overlay copy) get classified
+            // by the same visitor pass.
+            for block in &mut args.overlay {
+                visit_urls_in_block(block, callback);
+            }
         }
-        Shortcode::Grid(_) => {
-            // Cells are raw markdown source; URLs inside them flow through
-            // the resolver during per-cell rendering (the renderer calls
-            // back into apply_typed_shortcodes + markdown_to_html_with).
+        Shortcode::Grid(args) => {
+            // Phase 4 PR4.5 (2026-05-28): cells are now typed Vec<Block>;
+            // descend into each cell. Compound-link cells render through
+            // `Block::LinkCard { url, children }`, whose own visit arm
+            // walks both the wrapping href and the inner children.
+            for cell_blocks in &mut args.cells {
+                for block in cell_blocks {
+                    visit_urls_in_block(block, callback);
+                }
+            }
         }
     }
 }
@@ -195,10 +216,41 @@ where
                 }
             }
         }
-        // Headings, paragraphs, code blocks, tables, shortcodes (Phase A
-        // empty), thematic breaks, raw HTML — terminal at the block level.
-        // Inline children of headings/paragraphs are visited by inline
-        // visitors, not block visitors.
+        Block::LinkCard { children, .. } => {
+            // Phase 4 PR4.5: descend into the compound-link cell's inner
+            // block content (image + heading + paragraphs).
+            for nested in children {
+                if !visit_block(nested, callback) {
+                    return false;
+                }
+            }
+        }
+        Block::Shortcode(super::shortcode::Shortcode::Grid(args)) => {
+            // Phase 4 PR4.5: cells are typed Vec<Block>; descend so
+            // `has_shortcode_recursive(_, Subscribe)` etc. find shortcodes
+            // nested inside grid cells.
+            for cell_blocks in &args.cells {
+                for nested in cell_blocks {
+                    if !visit_block(nested, callback) {
+                        return false;
+                    }
+                }
+            }
+        }
+        Block::Shortcode(super::shortcode::Shortcode::Hero(args)) => {
+            // Phase 4 PR4.5: overlay is typed Vec<Block>; descend so
+            // `has_shortcode_recursive(_, Subscribe)` etc. find shortcodes
+            // nested inside `:::hero` overlays.
+            for nested in &args.overlay {
+                if !visit_block(nested, callback) {
+                    return false;
+                }
+            }
+        }
+        // Headings, paragraphs, code blocks, tables, other shortcode
+        // variants, thematic breaks, figures, raw HTML — terminal at the
+        // block level. Inline children of headings/paragraphs are visited
+        // by inline visitors, not block visitors.
         _ => {}
     }
     true

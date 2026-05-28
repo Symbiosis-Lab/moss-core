@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::node::Block;
 use super::url::Url;
 
 /// A typed shortcode block.
@@ -136,10 +137,19 @@ pub struct GridShortcode {
     pub ratio: Option<String>,
     /// Extra CSS classes for the wrapping `<div>` (from `{.foo .bar}`).
     pub classes: String,
-    /// Each cell's raw markdown source. The renderer processes each cell
-    /// through the markdown pipeline (including any nested typed
-    /// shortcodes such as `::::buttons` inside a `:::grid` cell).
-    pub cells: Vec<String>,
+    /// Each cell's parsed block content. Phase 4 PR4.5 (2026-05-28)
+    /// promoted this from `Vec<String>` (raw markdown source) to
+    /// `Vec<Vec<Block>>` (fully-typed AST). Nested shortcodes inside a
+    /// cell (`::::buttons` in `:::grid`) extract through
+    /// [`crate::ast::parser::parse`] recursion in
+    /// [`crate::ast::shortcode_extract::parse_grid`].
+    ///
+    /// Compound-link cells (the SoCiviC `[![[poster]] ### Title ...](/url)`
+    /// pattern, where the entire cell is wrapped in a markdown link that
+    /// spans block-level inner content) are represented as a single-element
+    /// `vec![Block::LinkCard { url, children }]`. See
+    /// [`Block::LinkCard`](crate::ast::Block::LinkCard) for the rationale.
+    pub cells: Vec<Vec<Block>>,
     /// Spec § P9 width attribute: `body | wide | page | screen` (with
     /// `full` aliased to `screen`). `None` means the author did not set
     /// a width — the emitter omits `data-width` so the HTML stays sparse.
@@ -159,9 +169,24 @@ pub struct HeroShortcode {
     pub attrs: String,
     /// Extra CSS classes for the wrapping `<section>` (from `{.foo .bar}`).
     pub classes: String,
-    /// Markdown source for the overlay content. Renderer processes this
-    /// via the surrounding markdown pipeline.
-    pub overlay_markdown: String,
+    /// Parsed block content for the overlay. Phase 4 PR4.5 (2026-05-28)
+    /// promoted this from `overlay_markdown: String` to `overlay: Vec<Block>`
+    /// (fully-typed AST). Nested shortcodes inside the overlay
+    /// (`::::buttons` inside `:::hero`) extract through
+    /// [`crate::ast::parser::parse`] recursion in
+    /// [`crate::ast::shortcode_extract::parse_hero`].
+    pub overlay: Vec<Block>,
+    /// Plain-text overlay source for downstream OG-fallback extraction.
+    ///
+    /// PR4.5 (2026-05-28): captured at parse time alongside the typed
+    /// `overlay` because `crate::build::page::meta::extract_description`
+    /// (the homepage-hero rung in the description chain) operates on
+    /// markdown source — round-tripping `Vec<Block>` to markdown would
+    /// invite drift. The renderer uses `overlay` for HTML; downstream
+    /// consumers read `overlay_text` for description-chain extraction.
+    ///
+    /// Empty when the author wrote no overlay body.
+    pub overlay_text: String,
     /// Spec § P9 width attribute: `body | wide | page | screen` (with
     /// `full` aliased to `screen`). `None` means the author did not set
     /// a width — the emitter omits `data-width` so the HTML stays sparse.

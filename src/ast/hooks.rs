@@ -29,6 +29,7 @@
 //! for the full research synthesis and [typed-body-ast.md](../../../../docs/architecture/typed-body-ast.md)
 //! for the design intent + 7 principles.
 
+use super::node::Block;
 use super::shortcode::Shortcode;
 use super::url::{ResolvedUrl, UrlKind};
 
@@ -358,9 +359,18 @@ pub trait RenderHooks {
                         crate::render::image::synthesize_image_html(&src, "", snap, ctx, &opts);
                     out.push_str(&img_html);
                 }
-                if !args.overlay_markdown.is_empty() {
+                if !args.overlay.is_empty() {
+                    // Phase 4 PR4.5 (2026-05-28): overlay is now typed
+                    // `Vec<Block>`. Render via `render_blocks` then
+                    // collapse tag-adjacent newlines so the byte shape
+                    // matches today's `render_markdown_to_html_with`
+                    // production (pulldown-cmark's `push_html` emits no
+                    // tag-adjacent newlines).
+                    let mut overlay_html = String::new();
+                    super::render::render_blocks(self, &mut overlay_html, &args.overlay);
+                    let collapsed = collapse_tag_adjacent_newlines(&overlay_html);
                     out.push_str(r#"<div class="moss-hero-content">"#);
-                    out.push_str(&escape_text(&args.overlay_markdown));
+                    out.push_str(collapsed.trim());
                     out.push_str("</div>");
                 }
                 out.push_str("</section>");
@@ -400,11 +410,30 @@ pub trait RenderHooks {
                     out.push('"');
                 }
                 out.push('>');
-                for cell in &args.cells {
-                    out.push_str(r#"<div class="moss-grid-card">"#);
-                    out.push_str(&escape_text(cell));
-                    out.push_str("</div>");
+                // Phase 4 PR4.5 (2026-05-28): cells are now typed
+                // `Vec<Block>`. Each cell renders into its own scratch
+                // buffer, gets tag-adjacent newlines collapsed (so the
+                // byte shape matches pulldown-cmark's `push_html`), then
+                // gets wrapped (or not, for `Block::LinkCard`) in the
+                // canonical card chrome. Cells are joined with `\n` to
+                // match production's `cards_html.join("\n")` from the
+                // (now-deleted) `render_grid_html_typed` byte shape.
+                let mut card_htmls: Vec<String> = Vec::with_capacity(args.cells.len());
+                for cell_blocks in &args.cells {
+                    let mut cell_html = String::new();
+                    super::render::render_blocks(self, &mut cell_html, cell_blocks);
+                    let collapsed = collapse_tag_adjacent_newlines(&cell_html);
+                    let trimmed = collapsed.trim();
+                    let wrapped = if let [Block::LinkCard { .. }] = cell_blocks.as_slice() {
+                        // LinkCard renders its own wrapping <a> tag; no
+                        // outer <div>.
+                        trimmed.to_string()
+                    } else {
+                        format!(r#"<div class="moss-grid-card">{}</div>"#, trimmed)
+                    };
+                    card_htmls.push(wrapped);
                 }
+                out.push_str(&card_htmls.join("\n"));
                 out.push_str("</div>");
             }
         }
@@ -564,6 +593,73 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
 // Internal escape helpers used by both DefaultHooks and the renderer.
 // ---------------------------------------------------------------------------
 
+/// Collapse `\n` that follows a heading or paragraph closing tag when the
+/// next character is `<` (the start of another block). Mirrors
+/// pulldown-cmark's `push_html` byte shape: heading and paragraph closes
+/// emit no trailing newline before the next block opens (`</h2><ul>`,
+/// `</p><div>`), but `</li>`, `</ul>`, `</ol>`, etc. keep their trailing
+/// `\n` (`<ul>\n<li>`, `</li>\n<li>`, `</li>\n</ul>`).
+///
+/// Phase 4 PR4.5 (2026-05-28): introduced for the Grid arm's per-cell
+/// rendering. The AST `render_block` emits trailing `\n` after every
+/// block-level child to keep top-level document HTML readable; inside a
+/// grid cell, that whitespace needs surgical removal to byte-match
+/// production.
+///
+/// The selectivity is necessary because production preserves list-internal
+/// newlines (`<ul>\n<li>...\n<li>...`) but collapses heading-to-block and
+/// paragraph-to-block boundaries (`</h2><ul>`, `</p><h3>`). Both shapes
+/// land in the same grid cell HTML, so a single rule won't do.
+pub fn collapse_tag_adjacent_newlines(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let chars: Vec<char> = html.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\n' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] == '\n' {
+                j += 1;
+            }
+            let next_is_open_tag = j < chars.len() && chars[j] == '<';
+            // Inspect the last few chars of `out` to determine the closing
+            // tag name. Only collapse if the closing tag is `</hN>`
+            // (N = 1..=6) or `</p>`.
+            let last = out.as_bytes();
+            let prev_is_close_tag = last.last() == Some(&b'>');
+            let collapse = prev_is_close_tag
+                && next_is_open_tag
+                && (ends_with_heading_close(&out) || ends_with_paragraph_close(&out));
+            if collapse {
+                i = j;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// True if `s` ends with `</h1>` ... `</h6>` (a heading close tag).
+fn ends_with_heading_close(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() < 5 {
+        return false;
+    }
+    // Look for the pattern `</hN>` at the end where N is 1-6.
+    let n = bytes.len();
+    bytes[n - 5] == b'<'
+        && bytes[n - 4] == b'/'
+        && bytes[n - 3] == b'h'
+        && matches!(bytes[n - 2], b'1' | b'2' | b'3' | b'4' | b'5' | b'6')
+        && bytes[n - 1] == b'>'
+}
+
+/// True if `s` ends with `</p>` (a paragraph close tag).
+fn ends_with_paragraph_close(s: &str) -> bool {
+    s.ends_with("</p>")
+}
+
 /// Escape `&"<>` for HTML attribute values.
 pub(super) fn escape_attr(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -721,6 +817,7 @@ mod tests {
     // emitted HTML stays sparse — themes target the absence via
     // `:not([data-width])`.
 
+    use super::super::node::Block;
     use super::super::shortcode::{
         GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode, Shortcode,
     };
@@ -796,10 +893,14 @@ mod tests {
 
     #[test]
     fn grid_with_width_wide_emits_data_width() {
+        // PR4.5: cells are Vec<Vec<Block>>; build trivial Paragraph cells.
         let sc = Shortcode::Grid(GridShortcode {
             columns: 2,
             width: Some("wide".to_string()),
-            cells: vec!["a".to_string(), "b".to_string()],
+            cells: vec![
+                vec![Block::Paragraph(vec![super::super::node::Inline::Text("a".into())])],
+                vec![Block::Paragraph(vec![super::super::node::Inline::Text("b".into())])],
+            ],
             ..Default::default()
         });
         let html = render_shortcode_html(&sc);
@@ -813,7 +914,9 @@ mod tests {
     fn grid_default_omits_data_width() {
         let sc = Shortcode::Grid(GridShortcode {
             columns: 1,
-            cells: vec!["solo".to_string()],
+            cells: vec![vec![Block::Paragraph(vec![
+                super::super::node::Inline::Text("solo".into()),
+            ])]],
             ..Default::default()
         });
         let html = render_shortcode_html(&sc);

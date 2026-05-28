@@ -230,6 +230,29 @@ pub enum Block {
         image: Inline,
         caption: Option<Vec<Inline>>,
     },
+    /// Compound-link grid cell: the entire cell is a single markdown
+    /// link `[inner](url)` whose `inner` is parsed as block-level content
+    /// (images, headings, paragraphs, emphasis). The SoCiviC Theatre
+    /// pattern: `[![[poster]] ### Title *date* description](/url)`.
+    ///
+    /// Phase 4 PR4.5 (2026-05-28): added because CommonMark restricts
+    /// `Inline::Link.children` to inline-level content; a markdown link
+    /// wrapping `### Heading` + paragraphs cannot round-trip through
+    /// pulldown-cmark's inline parser. The cell-string-level shape
+    /// (`[...](url)` with multi-paragraph inner content) is detected by
+    /// `crate::ast::shortcode_extract::parse_grid` BEFORE the cell flows
+    /// through `crate::ast::parser::parse`; the matched cell yields a
+    /// single-element `vec![Block::LinkCard { url, children }]` with the
+    /// inner markdown parsed into typed blocks.
+    ///
+    /// Render shape (matches today's `render_compound_link_cell` byte
+    /// shape):
+    /// - External URL (`http(s)://...`): `<a href=URL class="moss-grid-card link-preview" target="_blank" rel="noopener">children</a>`.
+    /// - Internal URL: `<a href=URL class="moss-grid-card" data-kind="link">children</a>`.
+    LinkCard {
+        url: Url,
+        children: Vec<Block>,
+    },
     /// Escape hatch: anything pulldown-cmark emits that the AST hasn't
     /// modeled. Carries the raw HTML so the renderer passes it through
     /// unchanged.

@@ -404,7 +404,15 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
     match &events[start] {
         Event::Text(t) => (Some(Inline::Text(t.to_string())), 1),
         Event::Code(c) => (Some(Inline::Code(c.to_string())), 1),
-        Event::SoftBreak => (Some(Inline::Text(" ".to_string())), 1),
+        // Phase 4 PR4.5 (2026-05-28): match pulldown-cmark's `push_html`
+        // byte shape — SoftBreak emits `\n` between inline siblings, not a
+        // space. The space form was a long-standing AST quirk surfaced
+        // by Grid cells now flowing through the AST renderer; production
+        // baselines (chps-site, SoCiviC, snapshot fixtures) preserve the
+        // newline (e.g. `Flamboyan Theater · The Clemente\n107 Suffolk
+        // Street`). Aligning here closes one row of the parity probe's
+        // `whitespace_attribute_order` category.
+        Event::SoftBreak => (Some(Inline::Text("\n".to_string())), 1),
         Event::HardBreak => (Some(Inline::LineBreak), 1),
         Event::Html(s) | Event::InlineHtml(s) => (Some(Inline::Other(s.to_string())), 1),
         Event::Start(tag) => match tag {
@@ -616,12 +624,13 @@ fn collect_item_blocks(events: &[Event<'_>], start: usize) -> (Vec<Block>, usize
 ///   is a Phase 4 followup — `validation::Diagnostic` is scoped to
 ///   frontmatter validation today.)
 ///
-/// Why detection runs on events (not parsed children): pulldown-cmark
-/// converts `SoftBreak` events to `Inline::Text(" ")` during the
-/// existing inline parsing, which erases the marker-line vs body-line
-/// boundary. Working at the event layer preserves the SoftBreak
-/// boundary so we can split "title" (before SoftBreak) from "body"
-/// (after SoftBreak) correctly.
+/// Why detection runs on events (not parsed children): the inline
+/// parser collapses `SoftBreak` events into `Inline::Text` (in PR4.5,
+/// emitting `"\n"` to match pulldown-cmark's `push_html`), which makes
+/// the marker-line vs body-line boundary an embedded `\n` rather than a
+/// distinct AST node. Working at the event layer preserves the
+/// SoftBreak boundary so we can split "title" (before SoftBreak) from
+/// "body" (after SoftBreak) correctly.
 fn detect_and_assemble_callout(
     events: &[Event<'_>],
     start: usize,
