@@ -15,7 +15,6 @@ pub mod block_refs;
 pub mod embed_renderer;
 pub mod embeds;
 pub mod fuzzy_path;
-pub mod markdown_links;
 pub mod registry;
 pub mod title_params;
 pub mod wikilink_dispatch;
@@ -69,13 +68,17 @@ pub struct ResolveResult {
 /// 2. Resolve wikilinks (first pass) -- standard `[[…]]` and `![[…]]` to markdown links / embed markers
 /// 3. Resolve embed placeholders -- inline `<!-- moss-embed:… -->` markers with file content
 /// 4. Resolve wikilinks (second pass) -- catch wikilinks introduced by embedded content
-/// 4.6. Resolve standard markdown links -- `[text](target.md)` to resolved paths
 /// 5. Transform block references -- `^id` markers to HTML anchors
 /// 6. Rejoin frontmatter + resolved body
 ///
-/// Phase 4 PR7a (2026-05-28) deleted Stage 1 callout transformation
-/// and bare-filename image resolution; both are now part of the typed
-/// AST (`crates/moss-core/src/ast/`).
+/// Phase 4 PR7a (2026-05-28) deleted Stage 1 callout transformation,
+/// bare-filename image resolution, AND standard markdown link
+/// resolution (`[text](target.md)`); all three are now part of the
+/// typed AST (`crates/moss-core/src/ast/`). For standard markdown
+/// links, the AST visitor (`ast/resolve_urls::resolve_link_urls`)
+/// emits the same `moss-resolved:` sentinel Stage 1 used to emit, so
+/// src-tauri's `classify_url_prod` decoder still drives page_map /
+/// external_url_map / wikilink-class decoding unchanged.
 pub fn resolve_content(
     source_path: &str,
     raw_markdown: &str,
@@ -203,18 +206,15 @@ pub fn resolve_content_with_handlers_and_snapshot(
     let deferred_result = embeds::resolve_deferred_markers(&embed_result.content, handlers);
     diagnostics.extend(deferred_result.diagnostics);
 
-    // Step 4.6: Resolve standard markdown link targets via ContentGraph.
-    //
-    // Phase 4 PR7a (2026-05-28) deleted the Stage 1 `resolve_markdown_refs`
-    // pass that handled bare-filename images (`![](photo.jpg)`). The typed
-    // AST visitor (`crates/moss-core/src/ast/resolve_urls.rs::resolve_image_urls`)
-    // now produces byte-equivalent results for both `is_bare_filename`
-    // detection and resolved-path output.
-    let md_link_result =
-        markdown_links::resolve_markdown_links(&deferred_result.content, graph, source_path);
-    let mut outgoing_links = outgoing_links;
-    outgoing_links.extend(md_link_result.outgoing_links);
-    diagnostics.extend(md_link_result.diagnostics);
+    // Step 4.6 (DELETED, Phase 4 PR7a-stage1b 2026-05-28):
+    // `markdown_links::resolve_markdown_links` is gone. The typed AST
+    // visitor (`crates/moss-core/src/ast/resolve_urls.rs::resolve_link_urls`)
+    // now produces byte-equivalent results — including the
+    // `moss-resolved:<path>` sentinel that src-tauri's `classify_url_prod`
+    // decoder consumes for `page_map` / `external_url_map` / wikilink-class
+    // decoding. `outgoing_links` remains empty at this layer; the AST
+    // visitor's OutgoingLink Vec is consumed downstream in
+    // `process_markdown_file`.
 
     // Step 5: Transform block references.
     //
@@ -225,7 +225,7 @@ pub fn resolve_content_with_handlers_and_snapshot(
     // callout HTML (and additively handles foldable +/- suffixes and
     // Obsidian aliases). See investigation notes referenced in the
     // PR7a commit message for the byte-shape parity proof.
-    let (block_result, block_ids) = block_refs::transform_block_refs(&md_link_result.content);
+    let (block_result, block_ids) = block_refs::transform_block_refs(&deferred_result.content);
 
     // Step 6: Resolve frontmatter wikilinks + rejoin with resolved body.
     let content_markdown = match frontmatter {
@@ -346,11 +346,8 @@ fn lower_transclusion_and_folder_wikilinks(
                     None => "",
                 };
                 let params = embed_renderer::folder_list::parse_params(pothole_raw);
-                let marker = embed_renderer::folder_list::emit_marker(
-                    file_part,
-                    source_path,
-                    &params,
-                );
+                let marker =
+                    embed_renderer::folder_list::emit_marker(file_part, source_path, &params);
                 rewritten.push_str(&marker);
                 rest = &rest[start + 3 + end + 2..];
                 continue;
@@ -359,8 +356,7 @@ fn lower_transclusion_and_folder_wikilinks(
             // Resolve via ContentGraph. Bail to no-rewrite if the
             // reference doesn't resolve — Stage 2's dispatcher will
             // emit the `[unresolved](moss-unresolved:…)` link form.
-            let resolved =
-                fuzzy_path::resolve_reference(file_part, graph, source_path);
+            let resolved = fuzzy_path::resolve_reference(file_part, graph, source_path);
             let target_path = match resolved {
                 fuzzy_path::ResolvedRef::Found(p) => p,
                 fuzzy_path::ResolvedRef::Unresolved => {
@@ -461,7 +457,8 @@ pub fn resolve_frontmatter_wikilinks(
         // Embed prefix `!` is consumed — both resolve to the same path.
         // For embeds `![[path|attrs]]`, pipe content = display params (preserved).
         // For links `[[path|alias]]`, pipe content = alias text (discarded per Obsidian convention).
-        let is_embed = i + 2 < len && bytes[i] == b'!' && bytes[i + 1] == b'[' && bytes[i + 2] == b'[';
+        let is_embed =
+            i + 2 < len && bytes[i] == b'!' && bytes[i + 1] == b'[' && bytes[i + 2] == b'[';
         let is_wikilink = !is_embed && i + 1 < len && bytes[i] == b'[' && bytes[i + 1] == b'[';
         if is_embed || is_wikilink {
             let bracket_start = if is_embed { i + 3 } else { i + 2 };
@@ -491,10 +488,7 @@ pub fn resolve_frontmatter_wikilinks(
                     }
                     None => {
                         diagnostics.push(Diagnostic {
-                            message: format!(
-                                "Unresolved frontmatter wikilink: [[{}]]",
-                                ref_part
-                            ),
+                            message: format!("Unresolved frontmatter wikilink: [[{}]]", ref_part),
                             source_path: source_path.to_string(),
                             reference: ref_part.to_string(),
                         });
@@ -675,10 +669,7 @@ mod tests {
         b.add_file("note.md", "note");
         b.add_file("disclaimer.md", "disclaimer");
         b.add_file("assets/photo.jpg", "photo");
-        b.add_headings(
-            "guide.md",
-            vec![("Setup".into(), "setup".into())],
-        );
+        b.add_headings("guide.md", vec![("Setup".into(), "setup".into())]);
         b.add_blocks("guide.md", vec!["key-point".into()]);
         b.build()
     }
@@ -798,7 +789,9 @@ mod tests {
         let result = resolve_content("note.md", input, &graph, &mock_reader(&files));
 
         // Frontmatter preserved
-        assert!(result.content_markdown.starts_with("---\ntitle: Test\n---\n"));
+        assert!(result
+            .content_markdown
+            .starts_with("---\ntitle: Test\n---\n"));
 
         // Phase 3 PR2: `resolve_content` no longer resolves body wikilinks
         // — that's the Stage 2 dispatcher's job in
@@ -807,7 +800,9 @@ mod tests {
         assert!(result.content_markdown.contains("[[guide#Setup]]"));
 
         // Block ref transformed
-        assert!(result.content_markdown.contains("<span id=\"my-block\"></span>"));
+        assert!(result
+            .content_markdown
+            .contains("<span id=\"my-block\"></span>"));
         assert_eq!(result.block_ids, vec!["my-block"]);
 
         // Phase 4 PR7a (2026-05-28): Stage 1 `transform_callouts` is
@@ -830,7 +825,9 @@ mod tests {
         let input = "---\ntitle: My Page\ntags:\n  - rust\n  - wasm\n---\nPlain body.";
         let result = resolve_content("note.md", input, &graph, &mock_reader(&files));
 
-        assert!(result.content_markdown.starts_with("---\ntitle: My Page\ntags:\n  - rust\n  - wasm\n---\n"));
+        assert!(result
+            .content_markdown
+            .starts_with("---\ntitle: My Page\ntags:\n  - rust\n  - wasm\n---\n"));
         assert!(result.content_markdown.ends_with("Plain body."));
     }
 
@@ -884,12 +881,12 @@ mod tests {
         // Phase 3 PR2: wikilink unresolved diagnostics now surface from
         // the Stage 2 dispatcher in src-tauri. `resolve_content` only
         // surfaces diagnostics from passes it still runs (transclusion
-        // / deferred markers / markdown_refs / markdown_links / block
-        // refs / callouts). `![[missing]]` with no extension resolves
-        // to Unresolved in the lowering pass — but the lowering pass
-        // leaves the raw `![[missing]]` for Stage 2 to handle and does
-        // NOT emit a diagnostic itself. So this test asserts the new
-        // contract: zero diagnostics for body wikilinks at this layer.
+        // / deferred markers / block refs). `![[missing]]` with no
+        // extension resolves to Unresolved in the lowering pass — but
+        // the lowering pass leaves the raw `![[missing]]` for Stage 2
+        // to handle and does NOT emit a diagnostic itself. So this
+        // test asserts the new contract: zero diagnostics for body
+        // wikilinks at this layer.
         let input = "[[nonexistent]] and ![[missing]]";
         let result = resolve_content("note.md", input, &graph, &mock_reader(&files));
 
@@ -911,9 +908,10 @@ mod tests {
 
         // Phase 3 PR2: body wikilink outgoing-links are populated by
         // the Stage 2 dispatcher in src-tauri (not by `resolve_content`).
-        // What this layer still populates: markdown_refs / markdown_links
-        // / block_refs / callouts results. The wikilink body links
-        // `[[guide]]` and `![[disclaimer]]` pass through to Stage 2.
+        // What this layer still populates: block_refs results. The
+        // wikilink body links `[[guide]]` and `![[disclaimer]]` pass
+        // through to Stage 2; standard markdown links pass through to
+        // the AST visitor (`ast/resolve_urls`).
         let input = "[[guide]]\n\n![[disclaimer]]";
         let result = resolve_content("note.md", input, &graph, &mock_reader(&files));
 
@@ -969,15 +967,23 @@ mod tests {
     #[test]
     fn test_deeply_nested_unicode_bare_filename() {
         let mut b = ContentGraphBuilder::new();
-        b.add_file("assets/d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg", "d9512f2d");
-        b.add_file("articles/\u{65e0}\u{7528}\u{4e4b}\u{65c5}/\u{771f}\u{6b63}\u{7684}\u{65c5}\u{7a0b}.md", "articles/\u{65e0}\u{7528}\u{4e4b}\u{65c5}/\u{771f}\u{6b63}\u{7684}\u{65c5}\u{7a0b}");
+        b.add_file(
+            "assets/d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg",
+            "d9512f2d",
+        );
+        b.add_file(
+            "articles/\u{65e0}\u{7528}\u{4e4b}\u{65c5}/\u{771f}\u{6b63}\u{7684}\u{65c5}\u{7a0b}.md",
+            "articles/\u{65e0}\u{7528}\u{4e4b}\u{65c5}/\u{771f}\u{6b63}\u{7684}\u{65c5}\u{7a0b}",
+        );
         let graph = b.build();
         let files = HashMap::new();
 
         let input = "---\ndate: 2025-12-03\n---\n![](d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg)\n\nSome text.";
         let result = resolve_content(
             "articles/\u{65e0}\u{7528}\u{4e4b}\u{65c5}/\u{771f}\u{6b63}\u{7684}\u{65c5}\u{7a0b}.md",
-            input, &graph, &mock_reader(&files)
+            input,
+            &graph,
+            &mock_reader(&files),
         );
 
         // Phase 4 PR7a (2026-05-28): Stage 1 `resolve_markdown_refs` is
@@ -986,7 +992,9 @@ mod tests {
         // downstream of `resolve_content`. The image src passes through
         // verbatim here.
         assert!(
-            result.content_markdown.contains("![](d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg)"),
+            result
+                .content_markdown
+                .contains("![](d9512f2d-fdcf-4a22-b1d5-340f74ddedae.jpg)"),
             "Expected bare filename to pass through verbatim, got: {}",
             result.content_markdown
         );
@@ -1000,10 +1008,7 @@ mod tests {
         b.add_file("guide.md", "guide");
         b.add_file("note.md", "note");
         b.add_file("assets/photo.jpg", "photo");
-        b.add_headings(
-            "guide.md",
-            vec![("Setup".into(), "setup".into())],
-        );
+        b.add_headings("guide.md", vec![("Setup".into(), "setup".into())]);
         b.add_blocks("guide.md", vec!["key-point".into()]);
         let graph = b.build();
         let files = HashMap::new();
@@ -1012,7 +1017,9 @@ mod tests {
         let result = resolve_content("articles/post.md", input, &graph, &mock_reader(&files));
 
         // Frontmatter preserved
-        assert!(result.content_markdown.starts_with("---\ntitle: Test\n---\n"));
+        assert!(result
+            .content_markdown
+            .starts_with("---\ntitle: Test\n---\n"));
 
         // Phase 4 PR7a (2026-05-28): Stage 1 `resolve_markdown_refs` is
         // deleted. The bare filename now passes through `resolve_content`
@@ -1148,7 +1155,10 @@ mod tests {
         // Simplified frontmatter (no opening ---)
         let fm = "sidebar: \"[[news]]\"\nchildren: false\n---\n";
         let result = resolve_frontmatter_wikilinks(fm, &graph, "index.md");
-        assert_eq!(result.content, "sidebar: \"news.md\"\nchildren: false\n---\n");
+        assert_eq!(
+            result.content,
+            "sidebar: \"news.md\"\nchildren: false\n---\n"
+        );
         assert!(result.diagnostics.is_empty());
     }
 
@@ -1251,7 +1261,9 @@ mod tests {
 
         // Frontmatter wikilink [[news]] resolved to path "news.md", quotes preserved.
         assert!(
-            result.content_markdown.starts_with("children: false\nsidebar: \"news.md\"\nuid: a48746ca\n---\n"),
+            result
+                .content_markdown
+                .starts_with("children: false\nsidebar: \"news.md\"\nuid: a48746ca\n---\n"),
             "Frontmatter wikilink not resolved to path: {}",
             result.content_markdown
         );
@@ -1280,7 +1292,9 @@ mod tests {
 
         // Should resolve to path without ! prefix
         assert!(
-            result.content_markdown.starts_with("cover: \"photos/hero.jpg\"\n---"),
+            result
+                .content_markdown
+                .starts_with("cover: \"photos/hero.jpg\"\n---"),
             "Embed wikilink ! prefix not stripped: {}",
             result.content_markdown
         );
@@ -1300,17 +1314,26 @@ mod tests {
 
         // Should resolve path and preserve attrs
         assert!(
-            result.content_markdown.starts_with("cover: \"photos/hero.jpg|cover left\"\n---"),
+            result
+                .content_markdown
+                .starts_with("cover: \"photos/hero.jpg|cover left\"\n---"),
             "Embed wikilink with attrs not resolved correctly: {}",
             result.content_markdown
         );
     }
 
     #[test]
-    fn standard_markdown_link_resolves_folder_note() {
-        // Graph contains only 文字/文字.md, not 文字.md.
-        // A link [文字](文字.md) from root index.md should resolve via
-        // ContentGraph::resolve_path's folder-note fallback.
+    fn standard_markdown_link_passes_through_in_pipeline() {
+        // Phase 4 PR7a-stage1b (2026-05-28): Stage 1
+        // `markdown_links::resolve_markdown_links` is deleted. The bare
+        // markdown link now passes through `resolve_content` verbatim;
+        // the typed AST visitor
+        // (`ast/resolve_urls::resolve_link_urls`) emits the
+        // `moss-resolved:文字/文字.md` sentinel later in
+        // `process_markdown_file`, and src-tauri's `classify_url_prod`
+        // decodes the sentinel into the final pretty URL. Visitor
+        // coverage lives in
+        // `resolve_urls.rs::tests::standard_markdown_link_emits_sentinel`.
         let mut b = ContentGraphBuilder::new();
         b.add_file("index.md", "index");
         b.add_file("文字/文字.md", "writings");
@@ -1324,10 +1347,10 @@ mod tests {
             &mock_reader(&files),
         );
 
-        // The resolver should have rewritten 文字.md to 文字/文字.md.
+        // resolve_content now passes the link through verbatim.
         assert!(
-            result.content_markdown.contains("文字/文字.md"),
-            "expected folder-note resolution; got: {}",
+            result.content_markdown.contains("[文字](文字.md)"),
+            "expected verbatim pass-through, got: {}",
             result.content_markdown
         );
     }
@@ -1346,7 +1369,9 @@ mod tests {
 
         // Should resolve path but discard alias (Obsidian convention: pipe = alias in [[...]])
         assert!(
-            result.content_markdown.starts_with("cover: \"photos/hero.jpg\"\n---"),
+            result
+                .content_markdown
+                .starts_with("cover: \"photos/hero.jpg\"\n---"),
             "Link wikilink alias should be discarded, got: {}",
             result.content_markdown
         );

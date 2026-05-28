@@ -4,15 +4,19 @@
 //! Phase 4 PR6 (2026-05-28): replaces the two Stage 1 passes
 //! (`markdown_refs::resolve_markdown_refs` for bare-filename image refs,
 //! `markdown_links::resolve_markdown_links` for standard `[text](url)`
-//! markdown links) with one typed visitor over the AST. The `moss-resolved:`
-//! intermediate URL scheme collapses at moss-core's output boundary —
-//! the visitor emits the final resolved internal href directly.
+//! markdown links) with one typed visitor over the AST.
 //!
 //! Phase 4 PR7a (2026-05-28): `markdown_refs::resolve_markdown_refs` was
-//! deleted after its parity with this visitor was proven. The companion
-//! `markdown_links::resolve_markdown_links` pass survives because it still
-//! emits a `moss-resolved:` sentinel that production's `classify_url_prod`
-//! decoder consumes — see investigation notes for the deferred deletion.
+//! deleted after its parity with this visitor was proven.
+//!
+//! Phase 4 PR7a-stage1b (2026-05-28): `markdown_links::resolve_markdown_links`
+//! was deleted in this PR. The visitor's `resolve_link_urls` now emits the
+//! same `moss-resolved:<path>` sentinel Stage 1 emitted, leaving the URL
+//! as `Url::Unresolved` so src-tauri's `classify_url_prod` decoder can
+//! apply `page_map` / `external_url_map` / wikilink-class-aware decoding
+//! unchanged. The sentinel IS the moss-core ↔ src-tauri layering seam:
+//! moss-core resolves filesystem paths, src-tauri owns the deployed URL
+//! space.
 //!
 //! ## Why one function, not two
 //!
@@ -32,20 +36,16 @@
 //! `Inline::Code` are not visited by [`visit_urls_mut`]. The visitor
 //! never sees a URL inside a code fence.
 //!
-//! ## OutgoingLink byte-equivalence contract
+//! ## OutgoingLink contract
 //!
-//! The returned `Vec<OutgoingLink>` must be byte-equivalent (same
-//! `target_path`, `display_text`, `link_type` per entry; same sequence)
-//! to the concatenation of today's Stage 1 outputs:
-//!
-//! ```text
-//! markdown_refs::resolve_markdown_refs(...).outgoing_links
-//!   ++
-//! markdown_links::resolve_markdown_links(rewritten, ...).outgoing_links
-//! ```
-//!
-//! Verified by [`tests::byte_equivalence`] which runs the legacy passes
-//! and the visitor against the same source and asserts identical Vecs.
+//! The returned `Vec<OutgoingLink>` carries the same load-bearing
+//! shape (target_path, link_type, document-order sequence) Stage 1's
+//! `markdown_refs::resolve_markdown_refs` + `markdown_links::
+//! resolve_markdown_links` produced before deletion. The visitor uses
+//! parsed inline text for `display_text`; Stage 1 used the raw source
+//! between `[` and `]`. Since `display_text` has no production
+//! consumer, this divergence is non-breaking — recorded as a known
+//! shape-spec deviation in `link_wrapping_image_target_path`.
 
 use super::document::Document;
 use super::node::{Block, Inline};
@@ -284,8 +284,18 @@ fn resolve_link_urls(
         }
 
         // Resolvable: split query/fragment, look up the path against the
-        // content graph, push OutgoingLink, emit the resolved internal
-        // href. Mirrors markdown_links::rewrite_line.
+        // content graph, push OutgoingLink, emit the `moss-resolved:`
+        // sentinel for the host classifier. Mirrors
+        // markdown_links::rewrite_line byte-for-byte: same sentinel shape
+        // (`moss-resolved:<path>[<suffix>]`), same suffix concatenation.
+        //
+        // Phase 4 PR7a-stage1b (2026-05-28): moss-core resolves the
+        // filesystem path; src-tauri's `classify_url_prod` decodes the
+        // sentinel into the final pretty / external / asset URL using
+        // `page_map`, `external_url_map`, and the wikilink-class signal.
+        // The sentinel IS the moss-core ↔ src-tauri layering seam — the
+        // visitor must NOT collapse it to a final `Url::Resolved` or
+        // page_map decoding silently breaks.
         let (path_part, suffix) = split_path_suffix(&raw);
         match resolve_reference(path_part, graph, source_path) {
             ResolvedRef::Found(resolved) => {
@@ -294,19 +304,17 @@ fn resolve_link_urls(
                     display_text: display_text.to_string(),
                     link_type: LinkType::Standard,
                 });
-                // The visitor's contract: produce final href, no moss-resolved
-                // prefix. The internal kind tells the renderer it's a
-                // markdown-target link.
-                let final_href = match suffix {
-                    Some(s) => format!("{}{}", resolved, s),
-                    None => resolved,
+                let sentinel = match suffix {
+                    Some(s) => format!("moss-resolved:{}{}", resolved, s),
+                    None => format!("moss-resolved:{}", resolved),
                 };
-                *link_url = Url::Resolved(ResolvedUrl::new(final_href, UrlKind::Internal));
+                *link_url = Url::Unresolved(sentinel);
             }
             ResolvedRef::Unresolved => {
                 // Mirrors Stage 1: leave the URL as-is in the rewritten
-                // source; Stage 1 emitted a diagnostic but we don't track
-                // those here (byte-equivalence is on OutgoingLink only).
+                // source — no `moss-resolved:` prefix, no diagnostic in
+                // the OutgoingLink Vec. Mark Internal so the renderer's
+                // `Url::Resolved` invariant holds.
                 *link_url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Internal));
             }
         }
@@ -739,14 +747,19 @@ mod tests {
         assert_eq!(outgoing[0].display_text, "文字");
         assert_eq!(outgoing[0].link_type, LinkType::Standard);
 
-        // The URL inside the doc must be Resolved.
+        // Phase 4 PR7a-stage1b (2026-05-28): the visitor emits a
+        // `moss-resolved:` sentinel for internal links (Url::Unresolved)
+        // so src-tauri's host classifier can decode it via page_map.
+        // The renderer doesn't see this state — the host's
+        // `classify_url_prod` pass replaces Unresolved before render.
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
                 Inline::Link { url, .. } => {
-                    assert!(url.is_resolved());
-                    let r = url.as_resolved();
-                    assert_eq!(r.kind, UrlKind::Internal);
-                    assert_eq!(r.href, "文字/文字.md");
+                    assert!(url.is_unresolved(), "expected sentinel, got: {url:?}");
+                    match url {
+                        Url::Unresolved(s) => assert_eq!(s, "moss-resolved:文字/文字.md"),
+                        Url::Resolved(_) => unreachable!(),
+                    }
                 }
                 _ => panic!("expected Link"),
             },
@@ -832,7 +845,10 @@ mod tests {
                     assert_eq!(r.href, "../assets/photo.jpg");
                     assert_eq!(r.kind, UrlKind::Asset);
                 }
-                Inline::Link { children: link_kids, .. } => {
+                Inline::Link {
+                    children: link_kids,
+                    ..
+                } => {
                     // pulldown-cmark may wrap an image-only paragraph in a
                     // figure or other structure depending on detection;
                     // accept either the direct image or one-level
@@ -896,7 +912,10 @@ mod tests {
         let mut doc = parse("```\n[link](inside.md)\n```\n");
         let graph = graph_with(&["index.md", "inside.md"]);
         let outgoing = resolve_urls(&mut doc, &graph, "index.md");
-        assert!(outgoing.is_empty(), "code block content must not produce OutgoingLink");
+        assert!(
+            outgoing.is_empty(),
+            "code block content must not produce OutgoingLink"
+        );
     }
 
     #[test]
@@ -908,12 +927,13 @@ mod tests {
         assert_eq!(outgoing.len(), 1);
         assert_eq!(outgoing[0].target_path, "文字/文字.md");
 
+        // Sentinel emit: suffix concatenated verbatim after the resolved path.
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
-                Inline::Link { url, .. } => {
-                    let r = url.as_resolved();
-                    assert_eq!(r.href, "文字/文字.md#sec");
-                }
+                Inline::Link { url, .. } => match url {
+                    Url::Unresolved(s) => assert_eq!(s, "moss-resolved:文字/文字.md#sec"),
+                    Url::Resolved(r) => panic!("expected sentinel, got Resolved({r:?})"),
+                },
                 _ => panic!("expected Link"),
             },
             _ => panic!("expected Paragraph"),
@@ -933,15 +953,16 @@ mod tests {
         assert_eq!(outgoing.len(), 1);
         assert_eq!(outgoing[0].target_path, "assets/scale-compare.html");
 
+        // Sentinel emit: suffix concatenated verbatim after the resolved path.
         match &doc.blocks[0] {
             Block::Paragraph(children) => match &children[0] {
-                Inline::Link { url, .. } => {
-                    let r = url.as_resolved();
-                    assert_eq!(
-                        r.href,
-                        "assets/scale-compare.html?a=major_pent&r=major_pent%3AD"
-                    );
-                }
+                Inline::Link { url, .. } => match url {
+                    Url::Unresolved(s) => assert_eq!(
+                        s,
+                        "moss-resolved:assets/scale-compare.html?a=major_pent&r=major_pent%3AD"
+                    ),
+                    Url::Resolved(r) => panic!("expected sentinel, got Resolved({r:?})"),
+                },
                 _ => panic!("expected Link"),
             },
             _ => panic!("expected Paragraph"),
@@ -949,135 +970,121 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Byte-equivalence: visitor OutgoingLink Vec matches Stage 1 output
+    // OutgoingLink + sentinel-shape coverage
     // -----------------------------------------------------------------
-
-    /// Run the remaining Stage 1 pass (`markdown_links`) against the
-    /// source and return its `OutgoingLink` Vec — this is what the
-    /// visitor must match byte-for-byte for standard markdown links.
-    ///
-    /// Phase 4 PR7a (2026-05-28): the companion Stage 1 pass
-    /// `markdown_refs::resolve_markdown_refs` was deleted alongside the
-    /// matching `byte_equivalence_bare_image_filename` test — its parity
-    /// was already proven by `resolves_bare_filename_image_against_graph`
-    /// (which exercises the visitor directly without a Stage 1 baseline).
-    fn stage1_outgoing(
-        content: &str,
-        graph: &crate::content_graph::ContentGraph,
-        source_path: &str,
-    ) -> Vec<OutgoingLink> {
-        let links = crate::resolve::markdown_links::resolve_markdown_links(
-            content,
-            graph,
-            source_path,
-        );
-        links.outgoing_links
-    }
-
-    fn assert_outgoing_links_eq(a: &[OutgoingLink], b: &[OutgoingLink]) {
-        assert_eq!(
-            a.len(),
-            b.len(),
-            "OutgoingLink count mismatch: {a:?} vs {b:?}"
-        );
-        for (idx, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-            assert_eq!(
-                x.target_path, y.target_path,
-                "OutgoingLink[{idx}] target_path differs: {x:?} vs {y:?}"
-            );
-            assert_eq!(
-                x.display_text, y.display_text,
-                "OutgoingLink[{idx}] display_text differs: {x:?} vs {y:?}"
-            );
-            assert_eq!(
-                x.link_type, y.link_type,
-                "OutgoingLink[{idx}] link_type differs: {x:?} vs {y:?}"
-            );
-        }
-    }
+    //
+    // Phase 4 PR7a-stage1b (2026-05-28): the Stage 1 pass
+    // `markdown_links::resolve_markdown_links` was deleted in this PR
+    // alongside the matching `byte_equivalence_*` baseline helpers. The
+    // visitor now emits the same `moss-resolved:<path>` sentinel Stage 1
+    // emitted, byte-for-byte — proven by the per-test sentinel
+    // assertions below. The companion Stage 1 pass
+    // `markdown_refs::resolve_markdown_refs` was already deleted in the
+    // prior PR; its parity is covered by
+    // `resolves_bare_filename_image_against_graph` above.
 
     #[test]
-    fn byte_equivalence_standard_markdown_link() {
+    fn standard_markdown_link_emits_sentinel() {
         let source = "index.md";
         let content = "[文字](文字.md)";
         let graph = graph_with(&["index.md", "文字/文字.md"]);
 
-        let stage1 = stage1_outgoing(content, &graph, source);
         let mut doc = parse(content);
         let visitor = resolve_urls(&mut doc, &graph, source);
 
-        assert_outgoing_links_eq(&visitor, &stage1);
+        assert_eq!(visitor.len(), 1);
+        assert_eq!(visitor[0].target_path, "文字/文字.md");
+        assert_eq!(visitor[0].display_text, "文字");
+        assert_eq!(visitor[0].link_type, LinkType::Standard);
+        // The sentinel shape is what `classify_url_prod` in src-tauri
+        // expects to decode via `page_map` / `external_url_map`.
+        match &doc.blocks[0] {
+            Block::Paragraph(children) => match &children[0] {
+                Inline::Link {
+                    url: Url::Unresolved(s),
+                    ..
+                } => {
+                    assert_eq!(s, "moss-resolved:文字/文字.md");
+                }
+                _ => panic!("expected Url::Unresolved sentinel, got {:?}", children[0]),
+            },
+            _ => panic!("expected Paragraph"),
+        }
     }
 
-    // Phase 4 PR7a (2026-05-28): `byte_equivalence_bare_image_filename`
-    // was removed alongside deletion of `crates/moss-core/src/resolve/
-    // markdown_refs.rs`. The visitor's bare-filename behavior is still
-    // covered by `resolves_bare_filename_image_against_graph` above (no
-    // Stage 1 baseline needed — the assertion checks the resolved URL
-    // directly).
-
     #[test]
-    fn byte_equivalence_multiple_links_one_line() {
+    fn multiple_links_one_line_emit_sentinels() {
         let source = "index.md";
         let content = "[a](foo.md) and [b](bar.md)";
         let graph = graph_with(&["index.md", "foo.md", "bar.md"]);
 
-        let stage1 = stage1_outgoing(content, &graph, source);
         let mut doc = parse(content);
         let visitor = resolve_urls(&mut doc, &graph, source);
 
-        assert_outgoing_links_eq(&visitor, &stage1);
+        assert_eq!(visitor.len(), 2);
+        assert_eq!(visitor[0].target_path, "foo.md");
+        assert_eq!(visitor[1].target_path, "bar.md");
     }
 
     #[test]
-    fn byte_equivalence_external_links_no_outgoing() {
+    fn external_links_no_outgoing() {
         let source = "index.md";
         let content = "[ext](https://example.com) [anchor](#top) [mail](mailto:a@b)";
         let graph = graph_with(&["index.md"]);
 
-        let stage1 = stage1_outgoing(content, &graph, source);
         let mut doc = parse(content);
         let visitor = resolve_urls(&mut doc, &graph, source);
 
-        assert_outgoing_links_eq(&visitor, &stage1);
         assert!(visitor.is_empty());
     }
 
     #[test]
-    fn byte_equivalence_unresolved_link() {
+    fn unresolved_link_no_outgoing() {
         let source = "index.md";
         let content = "[missing](missing.md)";
         let graph = graph_with(&["index.md"]);
 
-        let stage1 = stage1_outgoing(content, &graph, source);
         let mut doc = parse(content);
         let visitor = resolve_urls(&mut doc, &graph, source);
 
-        assert_outgoing_links_eq(&visitor, &stage1);
         assert!(visitor.is_empty());
+        // The unresolved URL stays as-is (no sentinel) but is marked
+        // Url::Resolved so the renderer's invariant holds.
+        match &doc.blocks[0] {
+            Block::Paragraph(children) => match &children[0] {
+                Inline::Link { url, .. } => {
+                    let r = url.as_resolved();
+                    assert_eq!(r.href, "missing.md");
+                    assert_eq!(r.kind, UrlKind::Internal);
+                }
+                _ => panic!("expected Link"),
+            },
+            _ => panic!("expected Paragraph"),
+        }
     }
 
     #[test]
-    fn byte_equivalence_code_block_skipped() {
+    fn code_block_urls_not_visited() {
         let source = "index.md";
-        let content = "Before\n\n```\n[link](inside.md)\n![](photo.jpg)\n```\n\nAfter [link](inside.md).";
+        let content =
+            "Before\n\n```\n[link](inside.md)\n![](photo.jpg)\n```\n\nAfter [link](inside.md).";
         let mut b = ContentGraphBuilder::new();
         b.add_file("index.md", "x");
         b.add_file("inside.md", "i");
         b.add_file("assets/photo.jpg", "p");
         let graph = b.build();
 
-        let stage1 = stage1_outgoing(content, &graph, source);
         let mut doc = parse(content);
         let visitor = resolve_urls(&mut doc, &graph, source);
 
-        // Stage 1 fence-skip: inside-fence URLs don't appear. Outside:
-        // only the trailing [link](inside.md) emits an OutgoingLink.
-        assert_outgoing_links_eq(&visitor, &stage1);
+        // Only the trailing `[link](inside.md)` (outside the fence) emits
+        // an OutgoingLink. URLs inside `Block::CodeBlock` are not visited.
+        assert_eq!(visitor.len(), 1);
+        assert_eq!(visitor[0].target_path, "inside.md");
     }
 
     #[test]
-    fn byte_equivalence_query_and_fragment() {
+    fn query_and_fragment_sentinel_shape() {
         let source = "index.md";
         let content = "[d](app.html?x=1#sec)";
         let mut b = ContentGraphBuilder::new();
@@ -1085,30 +1092,36 @@ mod tests {
         b.add_file("assets/app.html", "h");
         let graph = b.build();
 
-        let stage1 = stage1_outgoing(content, &graph, source);
         let mut doc = parse(content);
         let visitor = resolve_urls(&mut doc, &graph, source);
 
-        assert_outgoing_links_eq(&visitor, &stage1);
+        assert_eq!(visitor.len(), 1);
+        assert_eq!(visitor[0].target_path, "assets/app.html");
+        match &doc.blocks[0] {
+            Block::Paragraph(children) => match &children[0] {
+                Inline::Link {
+                    url: Url::Unresolved(s),
+                    ..
+                } => {
+                    assert_eq!(s, "moss-resolved:assets/app.html?x=1#sec");
+                }
+                _ => panic!("expected sentinel, got {:?}", children[0]),
+            },
+            _ => panic!("expected Paragraph"),
+        }
     }
 
     #[test]
-    fn link_wrapping_image_target_path_matches_stage1() {
-        // The shape produced by `[![[image.png]]](target.html?q)` after the
-        // wikilinks pass rewrites the embed to `![alt](path)`. PR6 visitor
-        // and Stage 1 agree on `target_path` and `link_type`; they DIVERGE
-        // on `display_text`:
-        //   - Stage 1 uses the raw markdown source between `[` and `]`
-        //     (literal `![scale-compare](assets/scale-compare.png)`).
-        //   - PR6 visitor uses parsed plain text (the alt text
-        //     `scale-compare`).
-        // The visitor's behavior is semantically more correct; Stage 1's
-        // raw-source string was a regex-rewriter artifact. Since
-        // OutgoingLink::display_text has no production consumer (verified
-        // via `git grep display_text` in src-tauri returning only types.rs
-        // doc strings), this divergence is non-breaking. Recorded as a
-        // known shape-spec deviation; the load-bearing fields
-        // (`target_path`, `link_type`) remain byte-equivalent.
+    fn link_wrapping_image_target_path() {
+        // Shape produced by `[![[image.png]]](target.html?q)` after the
+        // wikilinks pass rewrites the embed to `![alt](path)`.
+        // Pre-PR7a-stage1b this test compared to a Stage 1 baseline that
+        // used the raw markdown source between `[` and `]` for
+        // display_text; the visitor uses parsed plain text (alt text).
+        // That divergence was non-breaking (display_text has no
+        // production consumer). With Stage 1 deleted we assert on the
+        // visitor's behavior directly: load-bearing fields (target_path,
+        // link_type) plus the documented display_text.
         let source = "index.md";
         let content = "[![scale-compare](assets/scale-compare.png)](scale-compare.html?a=major_pent&r=major_pent%3AD)";
         let mut b = ContentGraphBuilder::new();
@@ -1117,20 +1130,13 @@ mod tests {
         b.add_file("assets/scale-compare.png", "p");
         let graph = b.build();
 
-        let stage1 = stage1_outgoing(content, &graph, source);
         let mut doc = parse(content);
         let visitor = resolve_urls(&mut doc, &graph, source);
 
-        assert_eq!(stage1.len(), 1);
         assert_eq!(visitor.len(), 1);
-        assert_eq!(visitor[0].target_path, stage1[0].target_path);
-        assert_eq!(visitor[0].link_type, stage1[0].link_type);
-        // display_text divergence is intentional and documented above.
+        assert_eq!(visitor[0].target_path, "assets/scale-compare.html");
+        assert_eq!(visitor[0].link_type, LinkType::Standard);
         assert_eq!(visitor[0].display_text, "scale-compare");
-        assert_eq!(
-            stage1[0].display_text,
-            "![scale-compare](assets/scale-compare.png)"
-        );
     }
 
     // -----------------------------------------------------------------
