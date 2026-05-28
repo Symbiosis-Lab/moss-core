@@ -38,6 +38,7 @@ pub mod hooks;
 pub mod node;
 pub mod parser;
 pub mod render;
+pub mod resolve_urls;
 pub mod shortcode;
 pub mod shortcode_extract;
 pub mod url;
@@ -48,6 +49,7 @@ pub use hooks::{DefaultHooks, RenderHooks};
 pub use node::{Block, CalloutKind, Fold, Inline};
 pub use parser::parse;
 pub use render::render_document;
+pub use resolve_urls::{classify_remaining_urls, resolve_urls};
 pub use shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
     Shortcode, ShortcodeKind, SubscribeShortcode,
