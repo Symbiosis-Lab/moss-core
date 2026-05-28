@@ -50,7 +50,7 @@ pub use parser::parse;
 pub use render::render_document;
 pub use shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
-    Shortcode, ShortcodeKind, SubscribeShortcode,
+    RecentShortcode, Shortcode, ShortcodeKind, SubscribeShortcode,
 };
 pub use url::{ResolvedUrl, Url, UrlKind};
 pub use visit::{has_shortcode_recursive, visit_blocks, visit_urls_mut};
