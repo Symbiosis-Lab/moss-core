@@ -22,11 +22,70 @@ use std::collections::HashMap;
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-use super::document::Document;
+use super::document::{BlockMeta, Document};
 use super::node::{Block, CalloutKind, Fold, Inline};
 use super::shortcode_extract::{extract_shortcodes, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
 use crate::heading_anchor::obsidian_heading_anchor;
+
+/// Parser configuration flags.
+///
+/// Threaded through [`parse_with_config`] to gate optional parser behaviors
+/// that the renderer needs to coordinate with (source-line tracking for
+/// preview scroll sync, implicit-figure promotion).
+///
+/// [`Default`] = "production preview off" — `emit_source_lines: false`,
+/// `implicit_figure: true`. The `implicit_figure` default mirrors today's
+/// always-on behavior of the parser before this config existed; flipping it
+/// off is opt-in for the small set of fragment-render call sites that need
+/// bare `<img>` (none today, but the flag exists for symmetry with the
+/// legacy `transform_events` API and the production `site_config` field).
+#[derive(Debug, Clone, Copy)]
+pub struct ParseConfig {
+    /// When true, populates [`BlockMeta::source_line`] for top-level
+    /// blocks. The renderer emits `data-source-line="N"` on the opening
+    /// tag for any block whose meta carries `Some(N)`.
+    ///
+    /// Production wires this from `process_markdown_file`'s
+    /// `emit_source_lines` argument (`true` during preview builds, `false`
+    /// during ship-stage publish builds — `data-source-line` is stripped
+    /// at ship time anyway, but emitting fewer attrs upstream is cheaper
+    /// and keeps published HTML clean from earlier stages).
+    pub emit_source_lines: bool,
+
+    /// When true (default), image-only paragraphs promote to
+    /// [`Block::Figure`] via [`try_promote_to_figure`]. When false, they
+    /// stay as [`Block::Paragraph`] containing one [`Inline::Image`].
+    ///
+    /// Production wires this from `site_config.implicit_figure` (default
+    /// `true`). The flag mirrors the legacy `transform_events`
+    /// implicit-figure pass: sites that prefer bare `<img>` (no `<figure>`
+    /// wrap) can opt out.
+    pub implicit_figure: bool,
+}
+
+impl Default for ParseConfig {
+    fn default() -> Self {
+        Self {
+            emit_source_lines: false,
+            // `true` matches today's always-on behavior of the parser
+            // before ParseConfig existed; the ~40 in-crate `parse()`
+            // callers all assume figure promotion happens.
+            implicit_figure: true,
+        }
+    }
+}
+
+/// Parse markdown into a typed [`Document`] using the default config.
+///
+/// Equivalent to `parse_with_config(markdown, &ParseConfig::default())`.
+/// This is the entry point for the ~40 in-crate callers that don't need
+/// per-parse configuration (URL resolution tests, frontmatter round-trip
+/// tests, etc.). Production paths that need source-line tracking or
+/// implicit-figure toggling call [`parse_with_config`].
+pub fn parse(markdown: &str) -> Document {
+    parse_with_config(markdown, &ParseConfig::default())
+}
 
 /// Parse markdown into a typed [`Document`].
 ///
@@ -41,7 +100,12 @@ use crate::heading_anchor::obsidian_heading_anchor;
 ///    sentinel comes back as a `Block::Other` raw HTML.
 /// 3. A final pass walks the AST and substitutes `Block::Other` sentinel
 ///    payloads with the corresponding typed [`Block::Shortcode`].
-pub fn parse(markdown: &str) -> Document {
+///
+/// When `config.emit_source_lines` is true, the parser walks events via
+/// `into_offset_iter()` so each top-level block carries the byte offset
+/// of its first event; a [`LineLookup`] converts the offset to a 1-based
+/// line number stored in [`BlockMeta::source_line`].
+pub fn parse_with_config(markdown: &str, config: &ParseConfig) -> Document {
     let extraction = extract_shortcodes(markdown);
 
     let mut options = Options::empty();
@@ -54,15 +118,65 @@ pub fn parse(markdown: &str) -> Document {
     // happens in the later `visit_urls_mut` pass.
     options.insert(Options::ENABLE_WIKILINKS);
 
-    let parser = Parser::new_ext(&extraction.markdown_with_placeholders, options);
-    let events: Vec<Event<'_>> = parser.collect();
+    // Source-line tracking requires the `into_offset_iter` form of the
+    // parser, which yields (Event, Range<usize>). When tracking is off,
+    // we use the plain iterator (no per-event offset overhead).
+    let (events, offsets): (Vec<Event<'_>>, Vec<Option<std::ops::Range<usize>>>) =
+        if config.emit_source_lines {
+            let mut evs = Vec::new();
+            let mut offs = Vec::new();
+            for (event, range) in
+                Parser::new_ext(&extraction.markdown_with_placeholders, options).into_offset_iter()
+            {
+                evs.push(event);
+                offs.push(Some(range));
+            }
+            (evs, offs)
+        } else {
+            let evs: Vec<Event<'_>> =
+                Parser::new_ext(&extraction.markdown_with_placeholders, options).collect();
+            let len = evs.len();
+            (evs, vec![None; len])
+        };
+
+    // Build the prefix-sum line table once (only when needed).
+    //
+    // CAVEAT: the markdown that the offsets index into is
+    // `extraction.markdown_with_placeholders`, NOT the original
+    // `markdown` passed in. Shortcode extraction may rewrite some bytes
+    // into sentinel HTML comments of a different length; line numbers
+    // would be off for blocks following an extracted shortcode if we
+    // built the lookup against the original. We build against the
+    // post-extraction string, so the line numbers match the
+    // post-extraction view — which is what users see in their editor
+    // before shortcode-block lines, and is "close enough" after (the
+    // sentinel preserves one line per extracted block, so line counts
+    // after the extracted block are within one of the source). See the
+    // architecture note in `shortcode_extract.rs` for the placeholder
+    // shape.
+    //
+    // For the source-line-off path, lookup is unused.
+    let line_lookup = if config.emit_source_lines {
+        Some(LineLookup::build(&extraction.markdown_with_placeholders))
+    } else {
+        None
+    };
 
     let mut blocks = Vec::new();
+    let mut block_meta: Vec<BlockMeta> = Vec::new();
     let mut i = 0;
     while i < events.len() {
+        let event_start_idx = i;
         let (block, advance) = parse_block(&events, i);
         if let Some(b) = block {
+            // Compute source_line from the first event's byte offset, if
+            // we collected offsets and a lookup is in scope.
+            let source_line = match (line_lookup.as_ref(), offsets.get(event_start_idx)) {
+                (Some(lookup), Some(Some(range))) => Some(lookup.line_at(range.start)),
+                _ => None,
+            };
             blocks.push(b);
+            block_meta.push(BlockMeta { source_line });
         }
         i += advance.max(1);
     }
@@ -70,13 +184,124 @@ pub fn parse(markdown: &str) -> Document {
     // Substitute sentinel placeholders with their typed Shortcode variants.
     substitute_shortcode_placeholders(&mut blocks, &extraction.nonce, &extraction.extracted);
 
+    // Implicit-figure gating: the per-paragraph `try_promote_to_figure`
+    // inside `parse_block_with_tag` always runs (so the figure promotion
+    // happens at parse time inside the Tag::Paragraph arm). When
+    // `config.implicit_figure` is false, we walk the assembled blocks
+    // and "undo" the promotion — converting `Block::Figure { image, ..}`
+    // back to `Block::Paragraph(vec![image])`.
+    //
+    // The unwinding-at-the-end approach was chosen over threading the
+    // flag into `parse_block_with_tag` because the latter would mean
+    // propagating `config` through ~14 inner parser functions whose
+    // signatures are already tight. The unwind is O(N) and only fires
+    // on the rare opt-out path; production keeps the default `true`.
+    if !config.implicit_figure {
+        for block in blocks.iter_mut() {
+            unwrap_implicit_figure(block);
+        }
+    }
+
     // Apply duplicate-suffix numbering to heading IDs in document order.
     // Each Tag::Heading arm computes the base slug; this pass disambiguates
     // collisions across the whole document, matching production's id_counts
     // HashMap behavior in pipeline.rs::transform_events.
     assign_heading_id_suffixes(&mut blocks);
 
-    Document::from_blocks(blocks)
+    Document::from_blocks_with_meta(blocks, block_meta)
+}
+
+/// Recursively undo implicit-figure promotion in `block` and its children.
+///
+/// Called when `ParseConfig::implicit_figure` is false. Walks the block
+/// tree (descending into containers — `BlockQuote`, `Callout`, `List`,
+/// `LinkCard`) and rewrites any `Block::Figure` back to
+/// `Block::Paragraph(vec![image])` with the original alt text preserved.
+/// The caption is discarded (matches the legacy bare-`<img>` shape).
+fn unwrap_implicit_figure(block: &mut Block) {
+    // Replace this block if it's a Figure.
+    if let Block::Figure { image, .. } = block {
+        let img = std::mem::replace(
+            image,
+            Inline::Text(String::new()), // placeholder, overwritten below
+        );
+        *block = Block::Paragraph(vec![img]);
+        return;
+    }
+    // Recurse into containers.
+    match block {
+        Block::BlockQuote(children) => {
+            for child in children.iter_mut() {
+                unwrap_implicit_figure(child);
+            }
+        }
+        Block::Callout { children, .. } => {
+            for child in children.iter_mut() {
+                unwrap_implicit_figure(child);
+            }
+        }
+        Block::List { items, .. } => {
+            for item in items.iter_mut() {
+                for child in item.iter_mut() {
+                    unwrap_implicit_figure(child);
+                }
+            }
+        }
+        Block::LinkCard { children, .. } => {
+            for child in children.iter_mut() {
+                unwrap_implicit_figure(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Prefix-sum line-number lookup for byte offsets in a source string.
+///
+/// Built once per parse (when `emit_source_lines` is on). Stores the byte
+/// offset of every `\n` in `source`; `line_at(offset)` returns the
+/// 1-based line number containing that offset via binary search.
+///
+/// Equivalent (slower) form: `source[..offset].matches('\n').count() + 1`
+/// — O(N) per call vs. O(log N) here. For documents with ~25 blocks the
+/// difference is negligible, but the binary-search form is the canonical
+/// pattern and is the cheaper hot-path shape.
+struct LineLookup {
+    /// Byte offsets of every `\n` in the source. Sorted ascending by
+    /// construction. `newline_offsets[i]` is the byte index of the i-th
+    /// newline (0-based).
+    newline_offsets: Vec<usize>,
+}
+
+impl LineLookup {
+    fn build(source: &str) -> Self {
+        let mut newline_offsets = Vec::new();
+        for (i, b) in source.bytes().enumerate() {
+            if b == b'\n' {
+                newline_offsets.push(i);
+            }
+        }
+        Self { newline_offsets }
+    }
+
+    /// 1-based line number containing `byte_offset`.
+    ///
+    /// Offset 0 (before any newline) → line 1. After the first newline →
+    /// line 2. Etc. Offsets past the end of the source clamp to the last
+    /// line + 1.
+    fn line_at(&self, byte_offset: usize) -> usize {
+        // Find the number of newlines strictly before `byte_offset`.
+        // That count + 1 is the 1-based line number.
+        match self.newline_offsets.binary_search(&byte_offset) {
+            // Exact match: offset IS a newline byte; the newline belongs
+            // to the line that ENDS at it, so line number = idx + 1.
+            // (The next byte starts line idx + 2; this matches the legacy
+            // count-and-add-1 semantics, which counts newlines BEFORE the
+            // offset.)
+            Ok(idx) => idx + 1,
+            Err(idx) => idx + 1,
+        }
+    }
 }
 
 /// Walk top-level blocks; replace any `Block::Other` whose payload is a
@@ -2086,5 +2311,113 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, vec!["h", "p", "sc", "p"]);
+    }
+
+    // -----------------------------------------------------------------
+    // 2026-05-28 (Phase 4 source-line wiring): ParseConfig threading
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parse_default_config_keeps_block_meta_empty() {
+        let doc = parse("# H1\n\npara one\n\npara two\n");
+        assert_eq!(doc.blocks.len(), 3);
+        assert_eq!(doc.block_meta.len(), doc.blocks.len());
+        for meta in &doc.block_meta {
+            assert!(
+                meta.source_line.is_none(),
+                "default parse should not populate source_line: {meta:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_with_source_lines_assigns_1_based_line_numbers() {
+        let md = "# H1\n\npara on line 3\n\n## H2 on line 5\n\npara on line 7\n";
+        let config = ParseConfig {
+            emit_source_lines: true,
+            implicit_figure: true,
+        };
+        let doc = parse_with_config(md, &config);
+        // Expected blocks: H1, P, H2, P (4 blocks).
+        assert_eq!(doc.blocks.len(), 4);
+        assert_eq!(doc.block_meta.len(), 4);
+        // Line numbers should track the markdown source.
+        assert_eq!(doc.block_meta[0].source_line, Some(1), "H1 on line 1");
+        assert_eq!(doc.block_meta[1].source_line, Some(3), "P on line 3");
+        assert_eq!(doc.block_meta[2].source_line, Some(5), "H2 on line 5");
+        assert_eq!(doc.block_meta[3].source_line, Some(7), "P on line 7");
+    }
+
+    #[test]
+    fn parse_with_source_lines_lists_and_blockquotes() {
+        let md = "- item one\n- item two\n\n> quote on line 4\n";
+        let config = ParseConfig {
+            emit_source_lines: true,
+            implicit_figure: true,
+        };
+        let doc = parse_with_config(md, &config);
+        assert_eq!(doc.blocks.len(), 2);
+        assert_eq!(doc.block_meta[0].source_line, Some(1), "ul on line 1");
+        assert_eq!(doc.block_meta[1].source_line, Some(4), "bq on line 4");
+    }
+
+    #[test]
+    fn parse_implicit_figure_default_promotes_image_only_paragraph() {
+        // Image-only paragraph with non-empty alt → promoted to Block::Figure.
+        let doc = parse("![alt](photo.jpg)\n");
+        assert_eq!(doc.blocks.len(), 1);
+        assert!(
+            matches!(doc.blocks[0], Block::Figure { .. }),
+            "default config (implicit_figure=true) should promote: got {:?}",
+            doc.blocks[0]
+        );
+    }
+
+    #[test]
+    fn parse_implicit_figure_off_leaves_image_paragraph_unpromoted() {
+        let config = ParseConfig {
+            emit_source_lines: false,
+            implicit_figure: false,
+        };
+        let doc = parse_with_config("![alt](photo.jpg)\n", &config);
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::Paragraph(inlines) => {
+                assert!(matches!(inlines[0], Inline::Image { .. }));
+            }
+            other => panic!("expected Paragraph with image, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // LineLookup unit tests (binary-search prefix-sum line table)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn line_lookup_offset_zero_is_line_one() {
+        let lookup = LineLookup::build("hello\nworld\n");
+        assert_eq!(lookup.line_at(0), 1);
+    }
+
+    #[test]
+    fn line_lookup_after_first_newline_is_line_two() {
+        let lookup = LineLookup::build("hello\nworld\n");
+        // Byte 6 is the 'w' of "world", which is on line 2.
+        assert_eq!(lookup.line_at(6), 2);
+    }
+
+    #[test]
+    fn line_lookup_handles_multiline_block_starts() {
+        let lookup = LineLookup::build("line1\nline2\nline3\n");
+        // First non-newline byte of each line.
+        assert_eq!(lookup.line_at(0), 1, "byte 0 → line 1");
+        assert_eq!(lookup.line_at(6), 2, "byte 6 → line 2");
+        assert_eq!(lookup.line_at(12), 3, "byte 12 → line 3");
+    }
+
+    #[test]
+    fn line_lookup_empty_source() {
+        let lookup = LineLookup::build("");
+        assert_eq!(lookup.line_at(0), 1, "empty source still has line 1");
     }
 }

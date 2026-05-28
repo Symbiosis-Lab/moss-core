@@ -44,7 +44,7 @@
 //! [docs/plans/2026-05-27-phase4-typed-ast-completion.md](../../../../docs/plans/2026-05-27-phase4-typed-ast-completion.md)
 //! for the Phase 4 execution plan.
 
-use super::document::Document;
+use super::document::{BlockMeta, Document};
 use super::hooks::{escape_attr, escape_text, RenderHooks};
 use super::node::{Block, Fold, Inline};
 use super::url::Url;
@@ -58,7 +58,17 @@ use super::url::Url;
 /// raw unresolved string is emitted as-is to avoid crashing on a bug.
 pub fn render_document<H: RenderHooks>(doc: &Document, hooks: &H) -> String {
     let mut out = String::new();
-    render_blocks(hooks, &mut out, &doc.blocks);
+    // Walk blocks + meta in lockstep. Invariant: block_meta.len() ==
+    // blocks.len() (asserted in debug, defensive in release).
+    debug_assert_eq!(
+        doc.blocks.len(),
+        doc.block_meta.len(),
+        "Document invariant: blocks.len() == block_meta.len()"
+    );
+    for (i, block) in doc.blocks.iter().enumerate() {
+        let meta = doc.block_meta.get(i).copied().unwrap_or_default();
+        render_block(hooks, &mut out, block, &meta);
+    }
     out
 }
 
@@ -67,17 +77,36 @@ pub fn render_document<H: RenderHooks>(doc: &Document, hooks: &H) -> String {
 /// a `Vec<Block>` that didn't come from a full `Document` (e.g. a hero
 /// overlay).
 ///
+/// **Source-line caveat:** this entry point has no per-block meta vec, so
+/// every block renders without `data-source-line`. Callers that need
+/// source-line annotations must walk meta-block pairs themselves (see
+/// [`render_document`]). Today only [`render_document`] consumes meta;
+/// nested-block walks (list items, callout bodies, blockquotes) are
+/// also meta-free — `data-source-line` is a top-level-block-only
+/// concern, matching the legacy `transform_events` emit shape.
+///
 /// `H: ?Sized` so the function can be called with `&dyn RenderHooks` or
 /// with `self: &Self` from inside a trait default method (where `Self`
 /// is not statically `Sized`). The hook surface is a thin dispatch
 /// boundary; monomorphization across all concrete impls is not required.
 pub fn render_blocks<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, blocks: &[Block]) {
     for block in blocks {
-        render_block(hooks, out, block);
+        // Nested blocks render without source-line annotations (the
+        // legacy transform_events emitted `data-source-line` on the
+        // outer `<ul>`/`<ol>`/`<blockquote>` and inner `<li>` only —
+        // top-level + list-item depth. We omit the `<li>` annotation
+        // for now; the iframe-bridge consumer picks the outer wrapper
+        // when no inner annotation exists.
+        render_block(hooks, out, block, &BlockMeta::default());
     }
 }
 
-fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Block) {
+fn render_block<H: RenderHooks + ?Sized>(
+    hooks: &H,
+    out: &mut String,
+    block: &Block,
+    meta: &BlockMeta,
+) {
     match block {
         Block::Heading {
             level,
@@ -86,11 +115,13 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
         } => {
             let mut content = String::new();
             render_inlines(hooks, &mut content, children);
-            hooks.render_heading(out, *level, id.as_deref(), &content);
+            hooks.render_heading(out, *level, id.as_deref(), meta.source_line, &content);
             out.push('\n');
         }
         Block::Paragraph(children) => {
-            out.push_str("<p>");
+            out.push_str("<p");
+            push_source_line_attr(out, meta.source_line);
+            out.push('>');
             render_inlines(hooks, out, children);
             out.push_str("</p>\n");
         }
@@ -108,9 +139,17 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
             // </div>`. The `data-fold` attribute is new in PR4 (Obsidian
             // foldable callouts); absent on non-foldable callouts so
             // existing fixtures remain byte-identical.
+            //
+            // `data-source-line` injected when meta carries it; matches the
+            // legacy `transform_events` shape on the blockquote-promoted
+            // callout (the legacy emit was for `<blockquote>` since
+            // callouts hadn't moved to a typed `<div>` shape yet at the
+            // time; downstream consumer (iframe-bridge) accepts the attr
+            // on any wrapper element).
             out.push_str(r#"<div class="callout" data-type=""#);
             out.push_str(kind.as_slug());
             out.push_str(r#"""#);
+            push_source_line_attr(out, meta.source_line);
             if let Some(fold_state) = fold {
                 let fold_attr = match fold_state {
                     Fold::Open => "open",
@@ -140,9 +179,13 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
         }
         Block::List { ordered, items } => {
             if *ordered {
-                out.push_str("<ol>\n");
+                out.push_str("<ol");
+                push_source_line_attr(out, meta.source_line);
+                out.push_str(">\n");
             } else {
-                out.push_str("<ul>\n");
+                out.push_str("<ul");
+                push_source_line_attr(out, meta.source_line);
+                out.push_str(">\n");
             }
             for item_blocks in items {
                 out.push_str("<li>");
@@ -163,19 +206,24 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
             }
         }
         Block::CodeBlock { lang, value } => {
+            out.push_str("<pre");
+            push_source_line_attr(out, meta.source_line);
+            out.push('>');
             match lang {
                 Some(l) => {
-                    out.push_str(r#"<pre><code class="language-"#);
+                    out.push_str(r#"<code class="language-"#);
                     out.push_str(&escape_attr(l));
                     out.push_str(r#"">"#);
                 }
-                None => out.push_str("<pre><code>"),
+                None => out.push_str("<code>"),
             }
             out.push_str(&escape_text(value));
             out.push_str("</code></pre>\n");
         }
         Block::Table { header, rows } => {
-            out.push_str("<table>\n<thead>\n<tr>");
+            out.push_str("<table");
+            push_source_line_attr(out, meta.source_line);
+            out.push_str(">\n<thead>\n<tr>");
             for cell in header {
                 out.push_str("<th>");
                 render_inlines(hooks, out, cell);
@@ -198,7 +246,9 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
             out.push_str("</table>\n");
         }
         Block::BlockQuote(children) => {
-            out.push_str("<blockquote>\n");
+            out.push_str("<blockquote");
+            push_source_line_attr(out, meta.source_line);
+            out.push_str(">\n");
             render_blocks(hooks, out, children);
             out.push_str("</blockquote>\n");
         }
@@ -206,7 +256,11 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
             hooks.render_shortcode(out, sc);
             out.push('\n');
         }
-        Block::ThematicBreak => out.push_str("<hr />\n"),
+        Block::ThematicBreak => {
+            out.push_str("<hr");
+            push_source_line_attr(out, meta.source_line);
+            out.push_str(" />\n");
+        }
         Block::Figure { image, caption } => {
             // Phase 4 PR3 (2026-05-27): image-only paragraphs promoted at
             // parse time become Block::Figure. The render shape is a
@@ -226,7 +280,9 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
             // empty-alt case). Empty caption Vec is also treated as no
             // figcaption — defensive, since `caption: Some(vec![])` would
             // otherwise emit `<figcaption></figcaption>`.
-            out.push_str(r#"<figure class="moss-image">"#);
+            out.push_str(r#"<figure class="moss-image""#);
+            push_source_line_attr(out, meta.source_line);
+            out.push('>');
             // Render the inner image. Pattern-match the constrained shape;
             // any other inline falls back to the standard inline path so
             // the renderer never panics on a malformed Figure.
@@ -310,6 +366,26 @@ fn render_block<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block: &Bl
         Block::Other(html) => {
             out.push_str(html);
         }
+    }
+}
+
+/// Append ` data-source-line="N"` to `out` when `source_line` is `Some`.
+/// No-op otherwise.
+///
+/// Used at every top-level block's opening tag arm so the preview's
+/// `cm-scroll-sync` (in `frontend/bridge/iframe-bridge.ts`) can locate
+/// the DOM element that corresponds to a given editor source line.
+///
+/// Matches the legacy `transform_events` emit byte shape — leading space,
+/// double-quoted attribute value, decimal integer — verified against
+/// `src-tauri/src/build/ship.rs::apply_strip_removes_data_source_line`
+/// which scrubs this exact pattern from the ship-stage output.
+fn push_source_line_attr(out: &mut String, source_line: Option<usize>) {
+    if let Some(n) = source_line {
+        use std::fmt::Write as _;
+        // unwrap_or: writing into a String never fails, but the API
+        // returns Result. Keep this honest.
+        let _ = write!(out, r#" data-source-line="{}""#, n);
     }
 }
 
@@ -846,5 +922,153 @@ mod tests {
             children: vec![],
             is_wikilink: false,
         }])]);
+    }
+
+    // -----------------------------------------------------------------
+    // 2026-05-28 (Phase 4 source-line wiring): BlockMeta → data-source-line
+    // emission.
+    // -----------------------------------------------------------------
+
+    /// Render with explicit per-block meta. Helper for the source-line tests.
+    fn render_with_meta(blocks: Vec<Block>, meta: Vec<BlockMeta>) -> String {
+        let doc = Document::from_blocks_with_meta(blocks, meta);
+        render_document(&doc, &DefaultHooks::new())
+    }
+
+    #[test]
+    fn paragraph_emits_data_source_line_when_meta_set() {
+        let html = render_with_meta(
+            vec![Block::Paragraph(vec![Inline::Text("hi".into())])],
+            vec![BlockMeta {
+                source_line: Some(7),
+            }],
+        );
+        assert_eq!(html, "<p data-source-line=\"7\">hi</p>\n");
+    }
+
+    #[test]
+    fn heading_emits_data_source_line_through_hook() {
+        let html = render_with_meta(
+            vec![Block::Heading {
+                level: 2,
+                children: vec![Inline::Text("Setup".into())],
+                id: Some("setup".into()),
+            }],
+            vec![BlockMeta {
+                source_line: Some(3),
+            }],
+        );
+        assert!(
+            html.contains(r#"<h2 id="setup" data-source-line="3">Setup</h2>"#),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn list_blockquote_codeblock_table_hr_emit_data_source_line() {
+        // Each block type that the legacy transform_events annotated
+        // must emit `data-source-line` when meta carries it. Single
+        // smoke test covering every top-level block kind.
+        let blocks = vec![
+            Block::BlockQuote(vec![Block::Paragraph(vec![Inline::Text("q".into())])]),
+            Block::List {
+                ordered: false,
+                items: vec![vec![Block::Paragraph(vec![Inline::Text("a".into())])]],
+            },
+            Block::List {
+                ordered: true,
+                items: vec![vec![Block::Paragraph(vec![Inline::Text("b".into())])]],
+            },
+            Block::CodeBlock {
+                lang: Some("rust".into()),
+                value: "x".into(),
+            },
+            Block::Table {
+                header: vec![vec![Inline::Text("H".into())]],
+                rows: vec![vec![vec![Inline::Text("c".into())]]],
+            },
+            Block::ThematicBreak,
+        ];
+        let meta = vec![
+            BlockMeta { source_line: Some(1) },
+            BlockMeta { source_line: Some(2) },
+            BlockMeta { source_line: Some(3) },
+            BlockMeta { source_line: Some(4) },
+            BlockMeta { source_line: Some(5) },
+            BlockMeta { source_line: Some(6) },
+        ];
+        let html = render_with_meta(blocks, meta);
+        assert!(html.contains(r#"<blockquote data-source-line="1">"#), "blockquote missing: {html}");
+        assert!(html.contains(r#"<ul data-source-line="2">"#), "ul missing: {html}");
+        assert!(html.contains(r#"<ol data-source-line="3">"#), "ol missing: {html}");
+        assert!(html.contains(r#"<pre data-source-line="4">"#), "pre missing: {html}");
+        assert!(html.contains(r#"<table data-source-line="5">"#), "table missing: {html}");
+        assert!(html.contains(r#"<hr data-source-line="6" />"#), "hr missing: {html}");
+    }
+
+    #[test]
+    fn figure_emits_data_source_line_on_outer_tag() {
+        let blocks = vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::resolved("p.jpg", UrlKind::Asset),
+                alt: "A".into(),
+                title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
+            },
+            caption: Some(vec![Inline::Text("A".into())]),
+        }];
+        let meta = vec![BlockMeta { source_line: Some(9) }];
+        let html = render_with_meta(blocks, meta);
+        assert!(
+            html.contains(r#"<figure class="moss-image" data-source-line="9">"#),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn no_data_source_line_when_meta_none() {
+        // Default `Document::from_blocks` creates meta vec of all
+        // `BlockMeta::default()`; nothing should leak.
+        let html = render(vec![
+            Block::Paragraph(vec![Inline::Text("hi".into())]),
+            Block::ThematicBreak,
+        ]);
+        assert!(
+            !html.contains("data-source-line"),
+            "default render must NOT emit data-source-line, got: {html}"
+        );
+    }
+
+    #[test]
+    fn end_to_end_parse_with_config_emits_data_source_line() {
+        // The full path: parse_with_config → visit_urls_mut → render_document.
+        let md = "# Title\n\nfirst paragraph\n\n## Sub\n\nsecond paragraph\n";
+        let config = super::super::parser::ParseConfig {
+            emit_source_lines: true,
+            implicit_figure: true,
+        };
+        let mut doc = super::super::parser::parse_with_config(md, &config);
+        super::super::visit::visit_urls_mut(&mut doc, |u| match u {
+            Url::Unresolved(s) => *u = Url::resolved(s.clone(), UrlKind::Internal),
+            _ => {}
+        });
+        let html = render_document(&doc, &DefaultHooks::new());
+        assert!(
+            html.contains(r#"<h1 id="title" data-source-line="1">Title</h1>"#),
+            "H1 should carry data-source-line=1: {html}"
+        );
+        assert!(
+            html.contains(r#"<p data-source-line="3">first paragraph</p>"#),
+            "first paragraph should carry data-source-line=3: {html}"
+        );
+        assert!(
+            html.contains(r#"<h2 id="sub" data-source-line="5">Sub</h2>"#),
+            "H2 should carry data-source-line=5: {html}"
+        );
+        assert!(
+            html.contains(r#"<p data-source-line="7">second paragraph</p>"#),
+            "second paragraph should carry data-source-line=7: {html}"
+        );
     }
 }

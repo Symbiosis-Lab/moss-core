@@ -75,8 +75,13 @@ pub fn extract_hero(doc: &mut Document, hooks: &dyn RenderHooks) -> Option<HeroE
         matches!(b, Block::Shortcode(Shortcode::Hero(_)))
     })?;
 
-    // Pop the block from the document.
+    // Pop the block from the document. Keep `block_meta` in sync — both
+    // vecs must remain the same length per the Document invariant
+    // asserted in `render_document`.
     let hero_block = doc.blocks.remove(hero_idx);
+    if hero_idx < doc.block_meta.len() {
+        doc.block_meta.remove(hero_idx);
+    }
 
     // Pattern-match again to access the typed HeroShortcode for OG-fallback
     // field capture.

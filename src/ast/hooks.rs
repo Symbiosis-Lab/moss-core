@@ -478,7 +478,26 @@ pub trait RenderHooks {
     ///
     /// `id` is the heading anchor id (slug). When `Some`, the rendered
     /// tag carries `id="..."` so anchor links work.
-    fn render_heading(&self, out: &mut String, level: u8, id: Option<&str>, content: &str) {
+    ///
+    /// `source_line` is the 1-based source line where the heading appears
+    /// in the markdown. When `Some`, the rendered tag carries
+    /// `data-source-line="N"` for the preview's editor↔preview scroll
+    /// sync (see `frontend/bridge/iframe-bridge.ts`'s `scrollToSourceLine`
+    /// RPC). When `None` (default config / fragment-render paths), no
+    /// attr is emitted — byte-identical to the pre-source-line shape.
+    ///
+    /// Source-line wiring added 2026-05-28 (Phase 4 cleanup): restores
+    /// the preview-scroll paragraph-precision feature that PR7a's
+    /// `transform_events` deletion removed. See
+    /// `docs/plans/2026-05-28-phase4-source-lines.md` for the design.
+    fn render_heading(
+        &self,
+        out: &mut String,
+        level: u8,
+        id: Option<&str>,
+        source_line: Option<usize>,
+        content: &str,
+    ) {
         out.push('<');
         out.push('h');
         out.push((b'0' + level) as char);
@@ -486,6 +505,10 @@ pub trait RenderHooks {
             out.push_str(r#" id=""#);
             out.push_str(&escape_attr(id));
             out.push('"');
+        }
+        if let Some(n) = source_line {
+            use std::fmt::Write as _;
+            let _ = write!(out, r#" data-source-line="{}""#, n);
         }
         out.push('>');
         out.push_str(content);
@@ -744,7 +767,7 @@ mod tests {
     fn default_hooks_render_heading_emits_id() {
         let hooks = DefaultHooks::new();
         let mut out = String::new();
-        hooks.render_heading(&mut out, 2, Some("setup"), "Setup");
+        hooks.render_heading(&mut out, 2, Some("setup"), None, "Setup");
         assert_eq!(out, r#"<h2 id="setup">Setup</h2>"#);
     }
 
@@ -752,8 +775,24 @@ mod tests {
     fn default_hooks_render_heading_without_id() {
         let hooks = DefaultHooks::new();
         let mut out = String::new();
-        hooks.render_heading(&mut out, 3, None, "Sub");
+        hooks.render_heading(&mut out, 3, None, None, "Sub");
         assert_eq!(out, "<h3>Sub</h3>");
+    }
+
+    #[test]
+    fn default_hooks_render_heading_emits_source_line() {
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_heading(&mut out, 2, Some("setup"), Some(42), "Setup");
+        assert_eq!(out, r#"<h2 id="setup" data-source-line="42">Setup</h2>"#);
+    }
+
+    #[test]
+    fn default_hooks_render_heading_source_line_without_id() {
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_heading(&mut out, 1, None, Some(1), "Top");
+        assert_eq!(out, r#"<h1 data-source-line="1">Top</h1>"#);
     }
 
     #[test]

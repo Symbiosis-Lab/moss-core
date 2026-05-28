@@ -4,6 +4,29 @@ use serde::{Deserialize, Serialize};
 
 use super::node::Block;
 
+/// Per-top-level-block metadata.
+///
+/// Holds parse-time annotations that don't belong on the `Block` enum
+/// itself (which is shape-only). Lives in a parallel `Vec<BlockMeta>` on
+/// [`Document`] so existing pattern matches over `Block` don't need to
+/// unwrap a meta wrapper.
+///
+/// Today the only field is `source_line` (set by the parser when
+/// [`crate::ast::ParseConfig::emit_source_lines`] is true). Additional
+/// per-block annotations (block IDs, custom attrs, etc.) land here too
+/// when needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct BlockMeta {
+    /// 1-based source line where this block begins, or `None` when source
+    /// tracking is off (or the block was synthesized — e.g. shortcode
+    /// substitution — and has no faithful source position).
+    ///
+    /// Consumed by the renderer to emit `data-source-line="N"` on the
+    /// opening tag, which the preview's `cm-scroll-sync` consumes for
+    /// paragraph-level editor↔preview scroll sync.
+    pub source_line: Option<usize>,
+}
+
 /// A parsed markdown document body.
 ///
 /// Wraps `Vec<Block>` with document-level flags. The frontmatter sits in
@@ -13,6 +36,17 @@ use super::node::Block;
 pub struct Document {
     /// Body content as a flat list of block-level nodes.
     pub blocks: Vec<Block>,
+    /// Parallel-to-`blocks` metadata. **Invariant:** `block_meta.len() ==
+    /// blocks.len()`. The renderer asserts this in debug builds and
+    /// gracefully degrades (treats missing entries as `BlockMeta::default()`)
+    /// in release builds.
+    ///
+    /// Defaults to an all-`BlockMeta::default()` vec sized to match
+    /// `blocks` when constructed via [`Document::from_blocks`]; only the
+    /// parser populates `source_line` (under
+    /// [`crate::ast::ParseConfig::emit_source_lines`]).
+    #[serde(default)]
+    pub block_meta: Vec<BlockMeta>,
     /// True if this document is a slot file (e.g. `footer.md`) — its
     /// content fills a layout slot rather than being rendered as an
     /// article. The renderer suppresses auto-injected article chrome
@@ -31,10 +65,29 @@ impl Document {
         Self::default()
     }
 
-    /// Construct a document from a list of blocks.
+    /// Construct a document from a list of blocks. All `block_meta` entries
+    /// are default (no source-line tracking). Use
+    /// [`Document::from_blocks_with_meta`] when meta is known.
     pub fn from_blocks(blocks: Vec<Block>) -> Self {
+        let block_meta = vec![BlockMeta::default(); blocks.len()];
         Self {
             blocks,
+            block_meta,
+            slot_only: false,
+        }
+    }
+
+    /// Construct a document from blocks + parallel meta. Panics in debug if
+    /// the two slices have different lengths.
+    pub fn from_blocks_with_meta(blocks: Vec<Block>, block_meta: Vec<BlockMeta>) -> Self {
+        debug_assert_eq!(
+            blocks.len(),
+            block_meta.len(),
+            "Document::from_blocks_with_meta: blocks and block_meta must be equal length"
+        );
+        Self {
+            blocks,
+            block_meta,
             slot_only: false,
         }
     }
