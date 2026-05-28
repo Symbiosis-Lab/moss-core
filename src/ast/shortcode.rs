@@ -4,7 +4,7 @@
 //! Variants land per-shortcode in Phase B (one variant per migration
 //! commit) of the typed-AST migration.
 //!
-//! Migration order (Phase B): Subscribe, Buttons, Gallery, Hero, Grid.
+//! Migration order (Phase B): Subscribe, Buttons, Gallery, Hero, Grid, Recent.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,10 @@ use super::url::Url;
 /// Variants:
 /// - [`Shortcode::Subscribe`] — inline subscribe form (description + button)
 /// - [`Shortcode::Buttons`] — list of action buttons with markdown links
+/// - [`Shortcode::Gallery`] — image gallery with optional column count
+/// - [`Shortcode::Hero`] — full-width hero section with media + overlay
+/// - [`Shortcode::Grid`] — flexible multi-cell layout
+/// - [`Shortcode::Recent`] — recent-posts query with fallback markdown
 ///
 /// Phase B migrations add one variant per commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
