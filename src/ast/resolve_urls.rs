@@ -77,16 +77,19 @@ pub fn resolve_urls(
     source_path: &str,
 ) -> Vec<OutgoingLink> {
     // Phase 1: walk asset URLs (image refs) and accumulate their
-    // OutgoingLink entries. This pass mirrors today's
-    // `markdown_refs::resolve_markdown_refs` — it only touches asset URLs
-    // and produces OutgoingLink for resolved bare-filename images.
+    // OutgoingLink entries. This pass replaces the deleted Stage 1
+    // `resolve::markdown_refs::resolve_markdown_refs` — it only touches
+    // asset URLs and produces OutgoingLink for resolved bare-filename
+    // images. The companion AST visitor lives at `resolve_image_urls`
+    // below.
     let mut outgoing: Vec<OutgoingLink> = Vec::new();
     resolve_image_urls(doc, graph, source_path, &mut outgoing);
 
     // Phase 2: walk link URLs and accumulate their OutgoingLink entries.
-    // Mirrors today's `markdown_links::resolve_markdown_links` — only
-    // touches link URLs and produces OutgoingLink for resolved cross-page
-    // links.
+    // Replaces the deleted Stage 1
+    // `resolve::markdown_links::resolve_markdown_links` — only touches
+    // link URLs and produces OutgoingLink for resolved cross-page links.
+    // The AST visitor lives at `resolve_link_urls` below.
     //
     // Two-pass ordering matches Stage 1's resolve.rs sequence (refs first,
     // then links). The image-URL display_text comes from alt; the link-URL
@@ -113,7 +116,8 @@ pub fn resolve_urls(
 
 /// Walk every `Inline::Image::src` URL and resolve bare-filename references.
 ///
-/// Mirrors `markdown_refs::resolve_markdown_refs`:
+/// Replaces the deleted Stage 1 `resolve::markdown_refs::resolve_markdown_refs`
+/// (Phase 4 PR7a, 2026-05-28). Contract:
 /// - Only touches Inline::Image::src URLs (not Link URLs).
 /// - Bare filename + has-extension + no-path-separators → graph lookup.
 /// - On `Found`: rewrite to relative asset path; push OutgoingLink.
@@ -172,7 +176,9 @@ fn resolve_image_urls(
     });
 }
 
-/// Bare-filename detection — mirrors `markdown_refs::is_bare_filename`.
+/// Bare-filename detection — inherited shape from the deleted Stage 1
+/// `resolve::markdown_refs::is_bare_filename` (preserved verbatim during
+/// the PR7a migration).
 ///
 /// A URL is a "bare filename" when it has no path separator, no protocol,
 /// no fragment-only `#`, no relative `./` `../` prefix, and carries a
@@ -322,8 +328,14 @@ fn resolve_link_urls(
 }
 
 /// Split a URL into (path, suffix) where `suffix` is `?query` and/or
-/// `#fragment` in source order. Mirrors
-/// `markdown_links::split_path_suffix`.
+/// `#fragment` in source order. Suffix is opaque — round-trip parity with
+/// `crate::build::markdown::pipeline::classify_url_prod` (the src-tauri
+/// decoder) is the contract; this function must not reorder, normalize,
+/// or escape the suffix bytes.
+///
+/// The parallel src-tauri implementation lives at
+/// `src-tauri/src/build/markdown/pipeline.rs::split_path_suffix` and must
+/// share this exact shape.
 fn split_path_suffix(url: &str) -> (&str, Option<&str>) {
     let q = url.find('?');
     let h = url.find('#');
