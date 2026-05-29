@@ -1,8 +1,15 @@
 [package]
 name = "moss-core"
 version = "0.1.0"
-edition = "2021"
-description = "Pure Rust content processing for moss — zero I/O, zero async"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pure-Rust content engine for moss: AST, render, resolve, validate, frontmatter, schema."
+repository = "https://github.com/Symbiosis-Lab/moss-core"
+readme = "README.md"
+keywords = ["static-site", "markdown", "ast"]
+categories = ["text-processing"]
+publish = true
 
 [dependencies]
 unicode-normalization = "0.1"
