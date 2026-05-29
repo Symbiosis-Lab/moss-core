@@ -1851,6 +1851,41 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Syntax-highlight diff token: removed-line background.",
     },
+    ComponentEntry {
+        class: "moss-recent",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<ul class="moss-recent">
+  <li><a href="/posts/spring-notes/">Spring notes</a><div class="moss-recent__date">2026-04-12</div><div class="moss-recent__desc">A walk through the garden.</div></li>
+</ul>"#,
+        example_markdown: ":::recent count=5 since=2026-01-01\n",
+        status: Status::Emerging,
+        since: "0",
+        description: "Auto-generated list of recent posts emitted by the `:::recent` shortcode. Sorted newest-first; date and description slots are filled per child. No default CSS in the bundled theme — theme authors style it freely.",
+    },
+    ComponentEntry {
+        class: "moss-recent__date",
+        kind: "instance",
+        parent: "moss-recent",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-recent__date">2026-04-12</div>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Per-entry date slot inside `.moss-recent` (BEM child). Format is `YYYY-MM-DD`, derived from frontmatter `date`. Empty string when the post lacks a parseable date.",
+    },
+    ComponentEntry {
+        class: "moss-recent__desc",
+        kind: "instance",
+        parent: "moss-recent",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-recent__desc">A walk through the garden.</div>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Per-entry description slot inside `.moss-recent` (BEM child). Sourced from frontmatter `description`; empty when unset.",
+    },
 ];
 
 /// Iterator over class names with `Status::Retired`. Used by the build
