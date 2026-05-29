@@ -401,6 +401,7 @@ mod tests {
     fn visits_urls_inside_list_items() {
         let mut doc = Document::from_blocks(vec![Block::List {
             ordered: false,
+            start: None,
             items: vec![
                 vec![paragraph_with_link("a")],
                 vec![paragraph_with_link("b")],
@@ -515,6 +516,7 @@ mod tests {
     fn visit_blocks_descends_into_list_items() {
         let doc = Document::from_blocks(vec![Block::List {
             ordered: false,
+            start: None,
             items: vec![vec![Block::ThematicBreak], vec![Block::ThematicBreak]],
             item_source_lines: vec![],
         }]);

@@ -213,6 +213,19 @@ pub enum Block {
     /// this reason; the typed-AST renderer now matches.
     List {
         ordered: bool,
+        /// Explicit ordered-list start number (pulldown-cmark's
+        /// `Tag::List(Option<u64>)` payload). `Some(N)` when the source
+        /// is `N. item` and the renderer should emit `<ol start="N">`;
+        /// `None` for unordered lists and for ordered lists where N is
+        /// the implicit default `1`. CommonMark only honors the FIRST
+        /// item's number as the list start; subsequent numbers are
+        /// re-derived. Phase 4 followup B (2026-05-28): added because
+        /// `<ol>` was previously emitted for any ordered list,
+        /// silently dropping the explicit start number — `3. foo`
+        /// rendered as `<ol><li>foo</li></ol>` instead of
+        /// `<ol start="3"><li>foo</li></ol>`.
+        #[serde(default)]
+        start: Option<u64>,
         items: Vec<Vec<Block>>,
         #[serde(default)]
         item_source_lines: Vec<Option<usize>>,
@@ -404,6 +417,7 @@ mod tests {
     fn block_list_each_item_is_block_vec() {
         let b = Block::List {
             ordered: false,
+            start: None,
             items: vec![
                 vec![Block::Paragraph(vec![text("first")])],
                 vec![Block::Paragraph(vec![text("second")])],
@@ -411,9 +425,40 @@ mod tests {
             item_source_lines: vec![],
         };
         match b {
-            Block::List { ordered, items, .. } => {
+            Block::List {
+                ordered,
+                start,
+                items,
+                ..
+            } => {
                 assert!(!ordered);
+                assert!(start.is_none());
                 assert_eq!(items.len(), 2);
+            }
+            _ => panic!("expected List"),
+        }
+    }
+
+    #[test]
+    fn block_list_carries_explicit_start_number() {
+        // Phase 4 followup B (2026-05-28): ordered lists with an
+        // explicit non-default start number round-trip through the AST.
+        let b = Block::List {
+            ordered: true,
+            start: Some(3),
+            items: vec![vec![Block::Paragraph(vec![text("foo")])]],
+            item_source_lines: vec![],
+        };
+        match b {
+            Block::List {
+                ordered,
+                start,
+                items,
+                ..
+            } => {
+                assert!(ordered);
+                assert_eq!(start, Some(3));
+                assert_eq!(items.len(), 1);
             }
             _ => panic!("expected List"),
         }

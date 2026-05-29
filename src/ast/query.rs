@@ -310,6 +310,7 @@ mod tests {
     fn finds_image_inside_list_item() {
         let doc = Document::from_blocks(vec![Block::List {
             ordered: false,
+            start: None,
             items: vec![vec![img_block("list.png")]],
             item_source_lines: vec![],
         }]);
