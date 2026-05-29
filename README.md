@@ -1,47 +1,38 @@
 # moss-core
 
-Pure-Rust content engine for moss: AST, render, resolve, validate, frontmatter, schema. Zero I/O, zero async.
+> Pure-Rust content engine that powers moss.
 
-> **Read-only mirror** of `crates/moss-core/` in the private moss monorepo. Issues accepted here; PRs cannot be merged — see [CONTRIBUTING.md](CONTRIBUTING.md). PRs against the monorepo are the route for changes.
+[![crates.io](https://img.shields.io/crates/v/moss-core.svg)](https://crates.io/crates/moss-core)
+[![downloads](https://img.shields.io/crates/d/moss-core.svg)](https://crates.io/crates/moss-core)
+[![docs.rs](https://docs.rs/moss-core/badge.svg)](https://docs.rs/moss-core)
+[![license](https://img.shields.io/crates/l/moss-core)](./LICENSE)
+[![MSRV](https://img.shields.io/crates/msrv/moss-core.svg)](./Cargo.toml)
+[![status](https://img.shields.io/badge/status-experimental-orange)](#stability)
+[![discussions](https://img.shields.io/github/discussions/Symbiosis-Lab/moss-core)](https://github.com/Symbiosis-Lab/moss-core/discussions)
 
-## Installation
+> **Read-only mirror.** Source lives in the private moss monorepo. PRs cannot be merged here — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```sh
-cargo add moss-core
-```
+[moss](https://mosspub.com) is a desktop publishing app; this crate is its content engine. Pure Rust, no I/O — takes data in (strings, structs), returns data out (parsed AST, frontmatter, rendered HTML).
 
-## Example
+- [Quickstart](#quickstart)
+- [Stability](#stability)
+- [API docs on docs.rs](https://docs.rs/moss-core)
+- [Discussions](https://github.com/Symbiosis-Lab/moss-core/discussions) · [Issues](https://github.com/Symbiosis-Lab/moss-core/issues) · [moss.pub](https://mosspub.com)
+
+## Quickstart
 
 ```rust
 use moss_core::frontmatter;
 
-fn main() {
-    let source = "---\ntitle: Hello\ndate: 2026-01-01\n---\n\nBody text here.";
-
-    let doc = frontmatter::parse(source);
-
-    if let Some(title) = doc.frontmatter.get("title") {
-        println!("Title: {title}");
-    }
-    println!("Body: {}", doc.body.trim());
-}
+let raw = "---\ntitle: Hello\n---\n\nBody text";
+let doc = frontmatter::parse(raw)?;
+println!("{:?}", doc.frontmatter);
 ```
 
-`frontmatter::parse` is zero-allocation on the happy path: it splits at the `---` delimiters and deserializes only the YAML block. The body is preserved byte-for-byte.
+## Stability
 
-## Modules
-
-- **`frontmatter`** — YAML frontmatter parsing with body preservation and byte-offset tracking for surgical replacement.
-- **`content_graph`** — In-memory index of all content files, headings, and block IDs. Supports Obsidian-style fuzzy path resolution.
-- **`resolve`** — Transforms Obsidian syntax (wikilinks, embeds, callouts, block references) to standard Markdown before rendering.
-- **`schema`** — Content model definition with UI widget hints. The built-in schema is the single source of truth for all frontmatter fields.
-- **`validation`** — Schema-driven diagnostics: type checks, required fields, date format validation, enum constraints.
-- **`heading_anchor`** — Obsidian-compatible heading-to-anchor conversion.
-- **`ast`** — Markdown AST utilities built on `pulldown-cmark`.
-
-## Documentation
-
-Full API reference at <https://docs.rs/moss-core>.
+This crate is 0.x. The API may change between minor versions until 1.0.
+Breaking changes are documented in [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 
