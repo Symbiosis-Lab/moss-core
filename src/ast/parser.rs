@@ -497,6 +497,19 @@ fn parse_block_with_tag(
         }
         Tag::List(start_num) => {
             let ordered = start_num.is_some();
+            // Preserve explicit ordered-list start number when it's not
+            // the implicit default `1`. `3. foo` → `Some(3)` so the
+            // renderer can emit `<ol start="3">`. pulldown-cmark
+            // normalizes `1. foo` to `Some(1)`, which we collapse to
+            // `None` because `<ol>` and `<ol start="1">` are
+            // semantically identical and we prefer the cleaner attr-free
+            // shape for the common case. Bound name is `list_start` to
+            // avoid shadowing the outer `start: usize` event-index
+            // parameter.
+            let list_start = match start_num {
+                Some(n) if *n != 1 => Some(*n),
+                _ => None,
+            };
             let mut items: Vec<Vec<Block>> = Vec::new();
             // Parallel-to-`items` per-`<li>` source-line annotations.
             // Empty when `line_ctx` is None; otherwise tracks each
@@ -522,6 +535,7 @@ fn parse_block_with_tag(
             (
                 Some(Block::List {
                     ordered,
+                    start: list_start,
                     items,
                     item_source_lines,
                 }),
@@ -2574,6 +2588,71 @@ mod tests {
                 assert!(row_source_lines.is_empty());
             }
             other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // 2026-05-28 (Phase 4 followup B): ordered-list explicit start
+    // number captured from pulldown-cmark's `Tag::List(Option<u64>)`
+    // payload and round-tripped to the renderer as `<ol start="N">`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn parse_ordered_list_start_3_captures_start_number() {
+        // `3. foo` should capture `start: Some(3)` so the renderer can
+        // emit `<ol start="3">`. CommonMark only honors the first
+        // item's number — subsequent items are re-derived.
+        let doc = parse("3. foo\n4. bar\n");
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::List {
+                ordered,
+                start,
+                items,
+                ..
+            } => {
+                assert!(ordered, "ordered list");
+                assert_eq!(*start, Some(3), "explicit start number captured");
+                assert_eq!(items.len(), 2);
+            }
+            other => panic!("expected ordered List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_ordered_list_default_start_collapses_to_none() {
+        // pulldown-cmark normalizes `1. foo` to `Tag::List(Some(1))`,
+        // but the AST canonicalizes this to `start: None` (semantically
+        // identical to `<ol>` without a `start=` attribute, but cleaner).
+        let doc = parse("1. foo\n2. bar\n");
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::List { ordered, start, .. } => {
+                assert!(ordered);
+                assert!(
+                    start.is_none(),
+                    "implicit start=1 must collapse to None, got {start:?}"
+                );
+            }
+            other => panic!("expected ordered List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unordered_list_has_no_start() {
+        // `- foo` is unordered (`Tag::List(None)`). `start` must always
+        // be `None` regardless of any subsequent reasoning.
+        let doc = parse("- foo\n- bar\n");
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::List { ordered, start, .. } => {
+                assert!(!ordered, "unordered list");
+                assert!(
+                    start.is_none(),
+                    "unordered list must have start=None, got {start:?}"
+                );
+            }
+            other => panic!("expected unordered List, got {other:?}"),
         }
     }
 

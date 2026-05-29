@@ -179,11 +179,23 @@ fn render_block<H: RenderHooks + ?Sized>(
         }
         Block::List {
             ordered,
+            start,
             items,
             item_source_lines,
         } => {
             if *ordered {
                 out.push_str("<ol");
+                // Emit `start="N"` when the parser captured an explicit
+                // non-default start number (`3. foo` → `Some(3)`).
+                // `None` for the default `1. foo` case keeps the
+                // shorter `<ol>` shape. Attribute order mirrors other
+                // typed-AST blocks: existing tag attrs first, then
+                // `data-source-line`. Phase 4 followup B (2026-05-28).
+                if let Some(n) = start {
+                    out.push_str(" start=\"");
+                    out.push_str(&n.to_string());
+                    out.push('"');
+                }
                 push_source_line_attr(out, meta.source_line);
                 out.push_str(">\n");
             } else {
@@ -606,6 +618,7 @@ mod tests {
     fn renders_unordered_list_tight() {
         let html = render(vec![Block::List {
             ordered: false,
+            start: None,
             items: vec![
                 vec![Block::Paragraph(vec![Inline::Text("one".into())])],
                 vec![Block::Paragraph(vec![Inline::Text("two".into())])],
@@ -619,10 +632,64 @@ mod tests {
     fn renders_ordered_list() {
         let html = render(vec![Block::List {
             ordered: true,
+            start: None,
             items: vec![vec![Block::Paragraph(vec![Inline::Text("a".into())])]],
             item_source_lines: vec![],
         }]);
         assert!(html.starts_with("<ol>"));
+    }
+
+    #[test]
+    fn render_ordered_list_emits_start_attribute_when_non_default() {
+        // `3. foo` should produce `<ol start="3">…</ol>`. The attribute
+        // appears immediately after `<ol`, before any `data-source-line`
+        // (Phase 4 followup B contract).
+        let html = render(vec![Block::List {
+            ordered: true,
+            start: Some(3),
+            items: vec![vec![Block::Paragraph(vec![Inline::Text("a".into())])]],
+            item_source_lines: vec![],
+        }]);
+        assert!(
+            html.starts_with(r#"<ol start="3">"#),
+            "expected start attr immediately after <ol, got: {html}"
+        );
+    }
+
+    #[test]
+    fn render_ordered_list_omits_start_when_default_1() {
+        // `start: None` is the canonical shape for "default 1." lists.
+        // The renderer must NOT emit `start="1"` (semantically
+        // identical to omitting the attr, but noisier).
+        let html = render(vec![Block::List {
+            ordered: true,
+            start: None,
+            items: vec![vec![Block::Paragraph(vec![Inline::Text("a".into())])]],
+            item_source_lines: vec![],
+        }]);
+        assert!(html.starts_with("<ol>"), "expected bare <ol>, got: {html}");
+        assert!(
+            !html.contains("start="),
+            "ordered list with default start should not emit start attr, got: {html}"
+        );
+    }
+
+    #[test]
+    fn render_unordered_list_emits_no_start() {
+        // Even if `start: Some(N)` were somehow set on an unordered
+        // list (shouldn't happen via the parser, but defense in depth),
+        // `<ul>` must never carry `start=`.
+        let html = render(vec![Block::List {
+            ordered: false,
+            start: Some(5),
+            items: vec![vec![Block::Paragraph(vec![Inline::Text("a".into())])]],
+            item_source_lines: vec![],
+        }]);
+        assert!(html.starts_with("<ul>"), "expected bare <ul>, got: {html}");
+        assert!(
+            !html.contains("start="),
+            "unordered list must never carry start attr, got: {html}"
+        );
     }
 
     #[test]
@@ -1005,11 +1072,13 @@ mod tests {
             Block::BlockQuote(vec![Block::Paragraph(vec![Inline::Text("q".into())])]),
             Block::List {
                 ordered: false,
+                start: None,
                 items: vec![vec![Block::Paragraph(vec![Inline::Text("a".into())])]],
                 item_source_lines: vec![],
             },
             Block::List {
                 ordered: true,
+                start: None,
                 items: vec![vec![Block::Paragraph(vec![Inline::Text("b".into())])]],
                 item_source_lines: vec![],
             },
@@ -1082,6 +1151,7 @@ mod tests {
         // BlockMeta.source_line separately.
         let blocks = vec![Block::List {
             ordered: false,
+            start: None,
             items: vec![
                 vec![Block::Paragraph(vec![Inline::Text("one".into())])],
                 vec![Block::Paragraph(vec![Inline::Text("two".into())])],
@@ -1119,6 +1189,7 @@ mod tests {
         // pre-followup renderer.
         let blocks = vec![Block::List {
             ordered: false,
+            start: None,
             items: vec![
                 vec![Block::Paragraph(vec![Inline::Text("a".into())])],
                 vec![Block::Paragraph(vec![Inline::Text("b".into())])],
