@@ -182,6 +182,19 @@ fn render_block<H: RenderHooks + ?Sized>(
             items,
             item_source_lines,
         } => {
+            // Parallel-vec invariant: when the parser populated per-item
+            // source lines, the vector must align 1:1 with `items` so the
+            // `idx`-keyed lookup at `item_source_lines.get(idx)` is
+            // well-defined. Empty (default) means "parser ran without
+            // `emit_source_lines`" — that's the legitimate skip case.
+            // Mirrors the document-level `blocks.len() == block_meta.len()`
+            // invariant asserted at the top of `render_document`.
+            debug_assert!(
+                item_source_lines.is_empty() || item_source_lines.len() == items.len(),
+                "Block::List invariant: item_source_lines.len() ({}) must equal items.len() ({}) when populated",
+                item_source_lines.len(),
+                items.len()
+            );
             if *ordered {
                 out.push_str("<ol");
                 push_source_line_attr(out, meta.source_line);
@@ -239,6 +252,17 @@ fn render_block<H: RenderHooks + ?Sized>(
             header_source_line,
             row_source_lines,
         } => {
+            // Parallel-vec invariant: when the parser populated per-row
+            // source lines, the vector must align 1:1 with `rows`.
+            // Empty (default) means "parser ran without
+            // `emit_source_lines`" — that's the legitimate skip case.
+            // Mirrors the `Block::List` and document-level invariants.
+            debug_assert!(
+                row_source_lines.is_empty() || row_source_lines.len() == rows.len(),
+                "Block::Table invariant: row_source_lines.len() ({}) must equal rows.len() ({}) when populated",
+                row_source_lines.len(),
+                rows.len()
+            );
             out.push_str("<table");
             push_source_line_attr(out, meta.source_line);
             out.push_str(">\n<thead>\n<tr");
