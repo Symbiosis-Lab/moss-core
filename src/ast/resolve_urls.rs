@@ -136,44 +136,146 @@ fn resolve_image_urls(
             Inline::Image { src, alt, .. } => (src, alt.clone()),
             _ => return,
         };
-
-        let raw = match src {
-            Url::Unresolved(s) => s.clone(),
-            Url::Resolved(_) => return,
-        };
-
-        // Pipe-bearing URLs pass through unchanged (Phase 3 PR3): authors
-        // use `![[file.jpg|attrs]]` for typed params; pipe in standard
-        // markdown URL is literal and intentionally 404s.
-        if raw.contains('|') {
-            *src = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
-            return;
-        }
-
-        if !is_bare_filename(&raw) {
-            // Pass through unchanged — external, anchor, data, relative-prefix,
-            // path-with-separator. Mark as Asset kind for image URLs.
-            *src = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
-            return;
-        }
-
-        match resolve_reference(&raw, graph, source_path) {
-            ResolvedRef::Found(target_path) => {
-                let resolved_url = relative_asset_path(source_path, &target_path);
-                outgoing.push(OutgoingLink {
-                    target_path,
-                    display_text: alt,
-                    link_type: LinkType::Standard,
-                });
-                *src = Url::Resolved(ResolvedUrl::new(resolved_url, UrlKind::Asset));
-            }
-            ResolvedRef::Unresolved => {
-                // Leave as-is (matches Stage 1 behavior: pass through, no
-                // diagnostic). Mark Asset so render invariant holds.
-                *src = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
-            }
-        }
+        resolve_asset_url(src, &alt, graph, source_path, outgoing);
     });
+    // Hero/Gallery shortcodes carry image URLs as typed fields on the
+    // shortcode args (not as `Inline::Image`). Walk those structural
+    // URLs through the same bare-filename resolver so wikilink targets
+    // like `![[hero.jpg]]` resolve to `assets/hero.jpg` against the
+    // graph, mirroring the `Inline::Image` path. Regression fix for
+    // the chps-site home hero (2026-05-29): the previous skip left
+    // `args.image` as `Url::Unresolved("hero.jpg")` → the renderer
+    // emitted `<img src="hero.jpg">` instead of the depth-correct
+    // `assets/hero.jpg`.
+    for block in &mut doc.blocks {
+        resolve_shortcode_image_urls(block, graph, source_path, outgoing);
+    }
+}
+
+/// Resolve one image-kind `Url` field against the content graph.
+///
+/// Extracted from `resolve_image_urls`'s per-`Inline::Image` body so the
+/// same logic can apply to structural image URLs that live on shortcode
+/// args (Hero, Gallery). Behavior:
+/// - Already `Url::Resolved` → no-op.
+/// - Pipe-bearing → pass through verbatim (Phase 3 PR3 contract).
+/// - Not a bare filename (external/anchor/data/has separator) → pass through.
+/// - Bare filename + graph hit → rewrite to `relative_asset_path`,
+///   push an OutgoingLink for the dependency edge.
+/// - Bare filename + graph miss → leave as authored, mark Asset.
+fn resolve_asset_url(
+    url: &mut Url,
+    alt: &str,
+    graph: &ContentGraph,
+    source_path: &str,
+    outgoing: &mut Vec<OutgoingLink>,
+) {
+    let raw = match url {
+        Url::Unresolved(s) => s.clone(),
+        Url::Resolved(_) => return,
+    };
+
+    // Pipe-bearing URLs pass through unchanged (Phase 3 PR3): authors
+    // use `![[file.jpg|attrs]]` for typed params; pipe in standard
+    // markdown URL is literal and intentionally 404s.
+    if raw.contains('|') {
+        *url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
+        return;
+    }
+
+    if !is_bare_filename(&raw) {
+        // Pass through unchanged — external, anchor, data, relative-prefix,
+        // path-with-separator. Mark as Asset kind for image URLs.
+        *url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
+        return;
+    }
+
+    match resolve_reference(&raw, graph, source_path) {
+        ResolvedRef::Found(target_path) => {
+            let resolved_url = relative_asset_path(source_path, &target_path);
+            outgoing.push(OutgoingLink {
+                target_path,
+                display_text: alt.to_string(),
+                link_type: LinkType::Standard,
+            });
+            *url = Url::Resolved(ResolvedUrl::new(resolved_url, UrlKind::Asset));
+        }
+        ResolvedRef::Unresolved => {
+            // Leave as-is (matches Stage 1 behavior: pass through, no
+            // diagnostic). Mark Asset so render invariant holds.
+            *url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
+        }
+    }
+}
+
+/// Recursively descend into shortcode-bearing blocks and resolve any
+/// structural image `Url` fields (HeroShortcode::image, GalleryItem::src).
+/// Container shortcodes (Grid, Hero overlay) may nest other shortcodes —
+/// recurse through their inner blocks. Skips Inline::Image-bearing
+/// blocks because the `walk_inline_images_mut` pass above already
+/// handled them.
+fn resolve_shortcode_image_urls(
+    block: &mut Block,
+    graph: &ContentGraph,
+    source_path: &str,
+    outgoing: &mut Vec<OutgoingLink>,
+) {
+    match block {
+        Block::Shortcode(sc) => match sc {
+            Shortcode::Hero(args) => {
+                if let Some(image_url) = args.image.as_mut() {
+                    resolve_asset_url(image_url, "", graph, source_path, outgoing);
+                }
+                // Overlay may itself contain shortcodes (e.g. `::::buttons`
+                // inside `:::hero`); recurse so any nested Hero/Gallery
+                // structural image URLs resolve too.
+                for nested in &mut args.overlay {
+                    resolve_shortcode_image_urls(nested, graph, source_path, outgoing);
+                }
+            }
+            Shortcode::Gallery(args) => {
+                for item in &mut args.items {
+                    let alt = item.alt.clone();
+                    resolve_asset_url(&mut item.src, &alt, graph, source_path, outgoing);
+                }
+            }
+            Shortcode::Grid(args) => {
+                for cell in &mut args.cells {
+                    for nested in cell {
+                        resolve_shortcode_image_urls(nested, graph, source_path, outgoing);
+                    }
+                }
+            }
+            Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) => {}
+        },
+        // Container blocks: recurse so nested shortcodes (Hero inside a
+        // Callout, Grid inside a list, etc.) are reached.
+        Block::Callout { children, .. } | Block::BlockQuote(children) => {
+            for nested in children {
+                resolve_shortcode_image_urls(nested, graph, source_path, outgoing);
+            }
+        }
+        Block::List { items, .. } => {
+            for item_blocks in items {
+                for nested in item_blocks {
+                    resolve_shortcode_image_urls(nested, graph, source_path, outgoing);
+                }
+            }
+        }
+        Block::LinkCard { children, .. } => {
+            for nested in children {
+                resolve_shortcode_image_urls(nested, graph, source_path, outgoing);
+            }
+        }
+        // Leaf / inline-only blocks: nothing structural to resolve here.
+        Block::Heading { .. }
+        | Block::Paragraph(_)
+        | Block::Table { .. }
+        | Block::Figure { .. }
+        | Block::CodeBlock { .. }
+        | Block::ThematicBreak
+        | Block::Other(_) => {}
+    }
 }
 
 /// Bare-filename detection — inherited shape from the deleted Stage 1
@@ -480,17 +582,18 @@ where
     match sc {
         Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) => {}
         Shortcode::Gallery(args) => {
-            // Gallery items are not Inline::Image (they carry Url directly
-            // in GalleryItem::src). Skip — gallery URLs are handled by
-            // the generic classify_remaining_urls phase. Today's Stage 1
-            // didn't process gallery srcs either.
+            // Gallery items carry their src as a structural `Url` on
+            // GalleryItem, not as an `Inline::Image`. The Inline-image
+            // walker has nothing to do here; the structural URL is
+            // resolved by `resolve_shortcode_image_urls` instead.
             let _ = args;
         }
         Shortcode::Hero(args) => {
-            // Hero's image: a Url::Unresolved wrapped directly, not in an
-            // Inline::Image. Skip — handled by classify_remaining_urls.
-            // The overlay blocks may contain Inline::Images; descend.
-            let _ = &args.image;
+            // Hero's image is a structural `Url` field, not an
+            // `Inline::Image` — resolved by `resolve_shortcode_image_urls`.
+            // The overlay blocks may still contain `Inline::Image`s
+            // (e.g. inside markdown paragraphs); descend so those reach
+            // the inline walker.
             for block in &mut args.overlay {
                 walk_images_in_block(block, f);
             }
@@ -1225,5 +1328,92 @@ mod tests {
             },
             _ => panic!("expected Paragraph"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Hero / Gallery shortcode image resolution
+    // -----------------------------------------------------------------
+    //
+    // Regression coverage for the chps-site home hero regression
+    // (2026-05-29): `:::hero` with a body-image fallback `![[hero.jpg]]`
+    // (or `image=hero.jpg` attribute) stores the wikilink target as a
+    // `Url::Unresolved("hero.jpg")` on `HeroShortcode::image`. Before the
+    // fix, `walk_images_in_shortcode`'s Hero arm explicitly skipped that
+    // field, deferring to `classify_remaining_urls` — but the fallback
+    // classifier only assigns a `UrlKind`, never consulting the
+    // ContentGraph. Result: the renderer emitted `<img src="hero.jpg">`
+    // instead of the depth-correct `assets/hero.jpg`. The fix routes
+    // `args.image` (Hero) and `item.src` (Gallery) through the same
+    // bare-filename graph lookup that `Inline::Image` already uses.
+
+    fn extract_hero_image_href(doc: &Document) -> Option<String> {
+        for block in &doc.blocks {
+            if let Block::Shortcode(Shortcode::Hero(args)) = block {
+                if let Some(Url::Resolved(r)) = &args.image {
+                    return Some(r.href.clone());
+                }
+                return None;
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn hero_body_wikilink_resolves_against_graph_at_depth_0() {
+        // chps-site home page shape: `:::hero` with `![[hero.jpg]]`
+        // wikilink as the body-image fallback. The asset lives at
+        // `assets/hero.jpg` on disk. From depth-0 (home), the emitted
+        // href must be `assets/hero.jpg`, not the bare wikilink target.
+        let mut doc = parse(":::hero\n![[hero.jpg]]\n# Welcome\n:::\n");
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "home");
+        b.add_file("assets/hero.jpg", "hero");
+        let graph = b.build();
+        let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+
+        let href = extract_hero_image_href(&doc).expect("hero image must be Resolved");
+        assert_eq!(
+            href, "assets/hero.jpg",
+            "hero body-wikilink must resolve to depth-0 asset path, got {href:?}"
+        );
+        // OutgoingLink registers the discovered dependency edge.
+        assert!(
+            outgoing.iter().any(|o| o.target_path == "assets/hero.jpg"),
+            "expected OutgoingLink to assets/hero.jpg, got {outgoing:?}"
+        );
+    }
+
+    #[test]
+    fn hero_body_wikilink_resolves_with_relative_prefix_at_depth_1() {
+        // Source one directory deep (e.g. `articles/post.md`) must emit
+        // a `../assets/hero.jpg` href so it resolves from the deployed
+        // pretty-URL `/articles/post/index.html`. Mirrors the
+        // `resolves_bare_filename_image_against_graph` test's relative-
+        // path assertion for `Inline::Image`.
+        let mut doc = parse(":::hero\n![[hero.jpg]]\n:::\n");
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("articles/post.md", "post");
+        b.add_file("assets/hero.jpg", "hero");
+        let graph = b.build();
+        let _ = resolve_urls(&mut doc, &graph, "articles/post.md");
+
+        let href = extract_hero_image_href(&doc).expect("hero image must be Resolved");
+        assert_eq!(
+            href, "../assets/hero.jpg",
+            "hero body-wikilink at source-depth 1 must resolve with `../` prefix, got {href:?}"
+        );
+    }
+
+    #[test]
+    fn hero_unresolved_wikilink_passes_through() {
+        // If the wikilink target isn't in the graph, leave the URL as
+        // the author wrote it (Resolved Asset kind, so the renderer
+        // invariant holds). Mirrors `unresolved_bare_filename_passes_through`.
+        let mut doc = parse(":::hero\n![[missing.jpg]]\n:::\n");
+        let graph = graph_with(&["index.md"]);
+        let _ = resolve_urls(&mut doc, &graph, "index.md");
+
+        let href = extract_hero_image_href(&doc).expect("hero image must be Resolved");
+        assert_eq!(href, "missing.jpg");
     }
 }
