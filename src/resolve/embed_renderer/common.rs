@@ -6,6 +6,8 @@
 
 use super::Sizing;
 
+pub(super) use crate::path_ext::path_extension_lower;
+
 /// Build a `src` URL for embed elements: `path?query#fragment` (URL order,
 /// independent of authoring order).
 ///
@@ -95,20 +97,6 @@ pub fn file_stem(path: &str) -> String {
     }
 }
 
-/// Lowercase the filename extension (no leading dot). Returns empty string
-/// if the path has no extension.
-///
-/// Note: does NOT strip `?query` or `#fragment` from the input — callers
-/// passing URL-shaped strings (e.g. `track.mp3?v=2`) need to split first.
-/// `render/audio.rs` has a private query-stripping variant for that case.
-#[allow(dead_code)]
-pub(super) fn path_extension_lower(path: &str) -> String {
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    match filename.rsplit_once('.') {
-        Some((_stem, ext)) => ext.to_ascii_lowercase(),
-        None => String::new(),
-    }
-}
 
 #[cfg(test)]
 mod tests {

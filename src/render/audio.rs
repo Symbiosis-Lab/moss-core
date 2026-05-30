@@ -23,6 +23,7 @@
 //! future param plumbing without changing the dispatcher contract.
 
 use crate::asset_snapshot::AssetSnapshot;
+use crate::path_ext::path_extension_lower;
 use crate::resolve::embed_renderer::html_escape_attr;
 use crate::resolve::title_params::TitleParams;
 
@@ -55,18 +56,6 @@ pub fn synthesize_audio_html(
     )
 }
 
-/// Lowercased extension for `src`. Returns `""` if the URL has no extension.
-///
-/// Strips any trailing `?query` / `#fragment` before extracting so URLs like
-/// `track.mp3?v=2` still resolve to `mp3`.
-fn path_extension_lower(src: &str) -> String {
-    let path = src.split(['?', '#']).next().unwrap_or(src);
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    match filename.rsplit_once('.') {
-        Some((_, ext)) if !ext.is_empty() => ext.to_ascii_lowercase(),
-        _ => String::new(),
-    }
-}
 
 /// Map a lowercased audio extension to the MIME emitted on `<source type="…">`.
 ///

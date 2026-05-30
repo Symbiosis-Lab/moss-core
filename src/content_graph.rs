@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::path_ext::path_extension;
+
 // ---------------------------------------------------------------------------
 // Path normalization helpers
 // ---------------------------------------------------------------------------
@@ -46,21 +48,6 @@ fn filename_with_ext(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Extract a path's extension, lowercased. Returns `None` when the filename
-/// has no extension (no `.` or only a leading dot like `.gitignore`).
-///
-/// Used by the stem-collision tiebreaker to honor the wikilink author's
-/// extension intent: `![[scale-compare.png]]` should win over a `.html`
-/// sibling registered later.
-fn path_extension_lower(path: &str) -> Option<String> {
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    let (stem, ext) = filename.rsplit_once('.')?;
-    // Skip dotfiles like `.gitignore` (empty stem before the dot).
-    if stem.is_empty() {
-        return None;
-    }
-    Some(ext.to_ascii_lowercase())
-}
 
 /// Return the directory prefix components of a path as a Vec.
 fn dir_components(path: &str) -> Vec<&str> {
@@ -84,7 +71,7 @@ fn common_prefix_len(a: &[&str], b: &[&str]) -> usize {
 /// keep their existing tiebreaker behavior.
 fn ext_match_score(ref_ext: Option<&str>, candidate: &str) -> u8 {
     let Some(want) = ref_ext else { return 0 };
-    match path_extension_lower(candidate) {
+    match path_extension(candidate) {
         Some(have) if have == want => 1,
         _ => 0,
     }
@@ -258,7 +245,7 @@ impl ContentGraph {
     pub fn resolve_path(&self, reference: &str, from_path: &str) -> Option<String> {
         let norm_ref = normalize_path(reference);
         let norm_from = normalize_path(from_path);
-        let ref_ext = path_extension_lower(&norm_ref);
+        let ref_ext = path_extension(&norm_ref);
 
         // Language-tree prefix of the source file, if any.
         // E.g. "zh-hans/about.md" -> Some("zh-hans").  Used to prefer

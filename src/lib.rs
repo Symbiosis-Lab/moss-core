@@ -30,6 +30,7 @@
 
 pub mod ast;
 pub mod asset_paths;
+pub(crate) mod path_ext;
 pub mod asset_snapshot;
 pub mod content_graph;
 pub mod contract;

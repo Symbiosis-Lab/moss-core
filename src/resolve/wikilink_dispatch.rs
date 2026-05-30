@@ -41,6 +41,7 @@
 
 use crate::asset_snapshot::AssetSnapshot;
 use crate::content_graph::ContentGraph;
+use crate::path_ext::path_extension;
 use crate::media::{
     extract_width_from_alias, parse_media_attrs, AlignSide, Fit, MediaAttrs, Position,
 };
@@ -445,7 +446,7 @@ fn dispatch_embed_form(
             // per-kind synthesizer. Image embeds keep their inline-
             // markdown emission so `<picture>` / `<figure>` wrap stays
             // in the markdown round-trip path that already worked.
-            let ext = path_extension(&target_path).map(|s| s.to_ascii_lowercase());
+            let ext = path_extension(&target_path);
             let url = relative_asset_path(from_path, &target_path);
             if let Some(synth_kind) = ext.as_deref().and_then(synth_kind_for_ext) {
                 let params = build_synth_params(synth_kind, &parsed, &pothole);
@@ -821,13 +822,6 @@ fn synthesize_image_with_media_attrs(
             extra_attrs: if extra.is_empty() { None } else { Some(&extra) },
         },
     )
-}
-
-fn path_extension(path: &str) -> Option<String> {
-    let filename = path.rsplit('/').next().unwrap_or(path);
-    let pos = filename.rfind('.')?;
-    #[allow(clippy::string_slice)]
-    Some(filename[pos + 1..].to_string())
 }
 
 /// Discriminant for the per-kind HTML synthesizer the dispatcher routes to
