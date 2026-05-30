@@ -363,7 +363,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Excerpt / description paragraph inside a list-layout `.moss-card`.",
+        description: "Excerpt / description paragraph inside a `.moss-card` — below the title in both grid- and list-layout cards.",
     },
     ComponentEntry {
         class: "moss-card-count",
