@@ -238,6 +238,17 @@ pub fn split_dest_url(dest_url: &str) -> SplitDestUrl<'_> {
 
 /// Build the anchor fragment (e.g. `#getting-started` or `#block-id`) from a
 /// section reference. Mirrors [`super::wikilinks`]'s `build_anchor`.
+///
+/// # Live-build scope (read before relying on this)
+///
+/// `build_anchor` is reached ONLY from [`dispatch_wikilink_form`] (the
+/// `is_embed: false` branch). That branch is DORMANT in production: the sole
+/// runtime caller of this dispatcher — the AST visitor
+/// [`crate::ast::dispatch_wikilink_embeds`] — hard-codes `is_embed: true`
+/// (it walks only `![[…]]` image embeds). The user-facing
+/// `[[Page#Heading]]` text-link fragment slugging is performed instead by
+/// `crate::ast::resolve_urls::slug_wikilink_suffix`, which this function
+/// mirrors. Keep the two in sync; the resolve_urls tests are the real guards.
 fn build_anchor(section: Option<&str>) -> String {
     use crate::heading_anchor::obsidian_heading_anchor;
     match section {
@@ -564,6 +575,14 @@ fn dispatch_embed_form(
 
 /// Dispatch for `[[…]]` (plain wikilink). Mirrors `resolve_wikilink`'s body
 /// (the non-embed case).
+///
+/// DORMANT in the live build: the only production caller
+/// ([`crate::ast::dispatch_wikilink_embeds`]) always passes `is_embed: true`,
+/// so plain `[[…]]` text links never route here. They reach the typed AST as
+/// `Inline::Link { is_wikilink: true }` and are resolved by
+/// `crate::ast::resolve_urls` instead. This function remains as a tested
+/// helper (and for any future plugin/CLI caller that passes `is_embed:
+/// false`).
 fn dispatch_wikilink_form(
     split: &SplitDestUrl<'_>,
     pothole: PotholeContent,
@@ -1224,11 +1243,47 @@ mod tests {
         }
     }
 
+    // --- build_anchor / dispatch_wikilink_form (`[[…]]` text-link) -------
+    //
+    // SCOPE WARNING — read before trusting these as link-path coverage.
+    //
+    // The three tests below drive `dispatch_wikilink_embed(..., is_embed:
+    // false, ..)`, i.e. the `dispatch_wikilink_form` branch and its
+    // `build_anchor` helper. That branch is the ONLY caller of `build_anchor`,
+    // and in the LIVE build it is DORMANT: the sole production caller of this
+    // dispatcher — the AST visitor `crate::ast::dispatch_wikilink_embeds`
+    // (`ast/dispatch_wikilink_embeds.rs`) — hard-codes `is_embed: true`
+    // (it only walks `![[…]]` image-embed `Inline::Image` nodes). Plain
+    // `[[Page#Heading]]` TEXT links never reach this function in production;
+    // they arrive as `Inline::Link { is_wikilink: true }` and are resolved
+    // by `crate::ast::resolve_urls`, whose `slug_wikilink_suffix` performs
+    // the user-facing `#Heading → #heading` slugging.
+    //
+    // ==> The REAL guards for `[[Page#Heading]]` text-link slugging live in
+    //     `crates/moss-core/src/ast/resolve_urls.rs`:
+    //       - wikilink_cross_page_fragment_is_slugged
+    //       - wikilink_same_page_fragment_is_slugged
+    //       - markdown_link_fragment_stays_raw_not_slugged
+    //       - wikilink_block_ref_keeps_id_raw
+    //       - wikilink_cjk_fragment_preserved
+    //       - slug_wikilink_suffix_preserves_query
+    //
+    // These three tests are kept because `build_anchor` is real code worth
+    // locking (it mirrors `slug_wikilink_suffix`, and a plugin/CLI caller
+    // could pass `is_embed: false`), NOT because they cover the live link
+    // path. Their names are deliberately `build_anchor_*` so a future reader
+    // is not misled into thinking text-link resolution is guarded here.
+
     #[test]
-    fn wikilink_section_fragment_is_slugged() {
-        // `[[notes#My Heading]]` slugs the section fragment via
-        // `build_anchor` → `obsidian_heading_anchor` → `#my-heading`.
-        // Real emitted output: `[notes > My Heading](moss-resolved:notes.md#my-heading)`.
+    fn build_anchor_slugs_section_fragment() {
+        // Helper-path test (NOT the live `[[…]]` link path — see SCOPE
+        // WARNING above; the live guard is
+        // `resolve_urls::wikilink_cross_page_fragment_is_slugged`).
+        //
+        // `dispatch_wikilink_form("notes#My Heading")` slugs the section
+        // fragment via `build_anchor` → `obsidian_heading_anchor` →
+        // `#my-heading`.
+        // Emitted output: `[notes > My Heading](moss-resolved:notes.md#my-heading)`.
         let graph = build_graph(&["notes.md"]);
         let emit = dispatch_wikilink_embed(
             "notes#My Heading",
@@ -1248,11 +1303,14 @@ mod tests {
     }
 
     #[test]
-    fn same_page_section_wikilink_emits_bare_anchor() {
-        // Same-page `[[#My Heading]]` resolves to a bare slugged anchor with
-        // no `moss-resolved:` prefix (the file part is empty, so the link
-        // target is just the fragment).
-        // Real emitted output: `[My Heading](#my-heading)`.
+    fn build_anchor_same_page_emits_bare_anchor() {
+        // Helper-path test (NOT the live `[[…]]` link path — see SCOPE
+        // WARNING above; the live guard is
+        // `resolve_urls::wikilink_same_page_fragment_is_slugged`).
+        //
+        // `dispatch_wikilink_form("#My Heading")` (empty file part) resolves
+        // to a bare slugged anchor with no `moss-resolved:` prefix.
+        // Emitted output: `[My Heading](#my-heading)`.
         let graph = build_graph(&["notes.md"]);
         let emit = dispatch_wikilink_embed(
             "#My Heading",
@@ -1272,13 +1330,17 @@ mod tests {
     }
 
     #[test]
-    fn wikilink_block_ref_is_not_slugged() {
+    fn build_anchor_block_ref_is_not_slugged() {
+        // Helper-path test (NOT the live `[[…]]` link path — see SCOPE
+        // WARNING above; the live guard is
+        // `resolve_urls::wikilink_block_ref_keeps_id_raw`).
+        //
         // Block refs (^id) are emitted RAW — NOT run through
         // obsidian_heading_anchor. Use a block-id with a space + uppercase
         // so slugging (which would yield "#block-id") is observably
         // different from the raw form ("#Block Id"). This fails loudly if
         // the `^` short-circuit in build_anchor regresses.
-        // Real emitted output: `[notes > ^Block Id](moss-resolved:notes.md#Block Id)`.
+        // Emitted output: `[notes > ^Block Id](moss-resolved:notes.md#Block Id)`.
         let graph = build_graph(&["notes.md"]);
         let emit = dispatch_wikilink_embed(
             "notes#^Block Id",

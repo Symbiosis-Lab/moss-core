@@ -914,10 +914,22 @@ mod tests {
 
     #[test]
     fn markdown_link_fragment_preserved_raw_not_slugged() {
-        // Design decision: a markdown link is a literal URL. We do NOT slug
-        // its #fragment (would break #L42 / hand-authored ids / external
-        // anchors). Authoring correctness comes from editor autocomplete,
-        // not silent rewriting.
+        // Unit test of `split_path_suffix` PURITY: it splits path from
+        // suffix but never slugs — the returned suffix is byte-identical to
+        // the source. (Slugging, when it happens, is layered on top by
+        // `slug_wikilink_suffix`, exercised separately.)
+        //
+        // Design split (corrected): a MARKDOWN link (`[t](page#Heading)`) is
+        // a literal URL — its `#fragment` stays RAW by design, so authored
+        // `#L42` / hand-authored ids / external anchors survive untouched.
+        // A WIKILINK (`[[page#Heading]]`) is NOT a literal URL: its fragment
+        // IS slugged to match the rendered heading id — `resolve_link_urls`
+        // routes wikilinks through `slug_wikilink_suffix` (see the
+        // end-to-end guard `markdown_link_fragment_stays_raw_not_slugged`
+        // and the `wikilink_*_fragment_is_slugged` tests below). The earlier
+        // claim that "authoring correctness comes from editor autocomplete"
+        // was the flawed premise behind the link-path bug; wikilink slugging
+        // now happens in resolve_urls itself.
         let (path, suffix) = split_path_suffix("page#My Heading");
         assert_eq!(path, "page");
         assert_eq!(suffix, Some("#My Heading")); // raw, spaces + case intact
