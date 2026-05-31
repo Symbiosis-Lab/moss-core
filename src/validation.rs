@@ -66,7 +66,7 @@ pub fn validate_frontmatter(
             }
             Some(value) => {
                 // Type check.
-                if !value_matches_type(value, &def.field_type) {
+                if !value_matches_def(value, def) {
                     diags.push(Diagnostic {
                         severity: Severity::Error,
                         message: format!(
@@ -159,7 +159,21 @@ pub fn validate_frontmatter(
     diags
 }
 
-/// Check if a YAML value matches the expected field type.
+/// Check if a YAML value satisfies a field definition. For `OneOf` unions the
+/// value must match at least one member; otherwise it's a plain type check.
+fn value_matches_def(value: &serde_yaml::Value, def: &crate::schema::FieldDefinition) -> bool {
+    if def.field_type == FieldType::OneOf {
+        return match &def.one_of {
+            Some(members) => members.iter().any(|m| value_matches_def(value, m)),
+            // A OneOf with no declared members accepts nothing meaningful;
+            // treat as permissive to avoid false positives on malformed schemas.
+            None => true,
+        };
+    }
+    value_matches_type(value, &def.field_type)
+}
+
+/// Check if a YAML value matches a scalar/array field type.
 fn value_matches_type(value: &serde_yaml::Value, expected: &FieldType) -> bool {
     match expected {
         FieldType::String => value.is_string(),
@@ -174,6 +188,9 @@ fn value_matches_type(value: &serde_yaml::Value, expected: &FieldType) -> bool {
         }
         FieldType::Array => value.is_sequence(),
         FieldType::Object => value.is_mapping(),
+        // OneOf is dispatched by value_matches_def before reaching here; a bare
+        // OneOf with no members is permissive.
+        FieldType::OneOf => true,
     }
 }
 
@@ -186,6 +203,7 @@ fn type_name(ft: &FieldType) -> &'static str {
         FieldType::Number => "number",
         FieldType::Array => "array",
         FieldType::Object => "object",
+        FieldType::OneOf => "one-of",
     }
 }
 

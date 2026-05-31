@@ -40,6 +40,7 @@ pub mod extract_headings;
 pub use extract_headings::{extract_headings, HeadingInfo};
 pub mod home;
 pub mod frontmatter;
+pub mod frontmatter_union;
 pub mod heading;
 pub mod link_candidates;
 pub mod heading_anchor;

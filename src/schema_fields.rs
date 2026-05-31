@@ -44,6 +44,11 @@ pub struct BuiltinField {
     pub enum_values: Option<&'static [&'static str]>,
     /// Item type for array fields (e.g. `FieldType::String` for `tags: [...]`).
     pub items_type: Option<FieldType>,
+    /// Member variants for a `OneOf` union field. Each member is itself a
+    /// `BuiltinField` (scalar field_type/widget — const-legal). Set only for
+    /// union fields (`children`, `series`); `builtin_schema()` recursively
+    /// materializes these into the owned `FieldDefinition::one_of`.
+    pub one_of_members: Option<&'static [BuiltinField]>,
     /// Human-readable description shown in the editor form.
     pub description: &'static str,
     /// Optional human-readable label for the chip bar. When `None`, the frontend
@@ -79,12 +84,49 @@ const FIELD_DEFAULTS: BuiltinField = BuiltinField {
     format: None,
     enum_values: None,
     items_type: None,
+    one_of_members: None,
     description: "",
     label: None,
     priority: 0,
     skip_schema: false,
     group: "",
 };
+
+/// Union members for `children`: a boolean toggle OR a single wikilink/path
+/// pointing at the folder whose articles to render. Materialized into
+/// `FieldDefinition::one_of` by `builtin_schema()`.
+const CHILDREN_MEMBERS: &[BuiltinField] = &[
+    BuiltinField {
+        name: "",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "",
+        field_type: FieldType::String,
+        widget: Widget::WikilinkPicker,
+        ..FIELD_DEFAULTS
+    },
+];
+
+/// Union members for `series`: a boolean flag OR an ordered list of wikilinks
+/// giving the explicit child order.
+const SERIES_MEMBERS: &[BuiltinField] = &[
+    BuiltinField {
+        name: "",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "",
+        field_type: FieldType::Array,
+        widget: Widget::WikilinkListPicker,
+        items_type: Some(FieldType::String),
+        ..FIELD_DEFAULTS
+    },
+];
 
 /// All builtin frontmatter fields recognized by moss.
 ///
@@ -247,9 +289,9 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
     },
     BuiltinField {
         name: "series",
-        field_type: FieldType::Array,
-        widget: Widget::TagInput,
-        items_type: Some(FieldType::String),
+        field_type: FieldType::OneOf,
+        widget: Widget::Union,
+        one_of_members: Some(SERIES_MEMBERS),
         priority: 90,
         description: "Declares children as sequential series. Use true for weight-based ordering, or a list of wikilinks for explicit order.",
         group: "Occasional",
@@ -259,8 +301,9 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
     // --- Children ---
     BuiltinField {
         name: "children",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
+        field_type: FieldType::OneOf,
+        widget: Widget::Union,
+        one_of_members: Some(CHILDREN_MEMBERS),
         default_json: Some("true"),
         priority: 100,
         description: "Whether to render child pages below content. Accepts true/false or a wikilink like [[News]] to render a specific folder's articles.",
