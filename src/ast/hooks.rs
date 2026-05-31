@@ -512,6 +512,17 @@ pub trait RenderHooks {
         }
         out.push('>');
         out.push_str(content);
+        // Permalink anchor — only when the heading has a slug id. Appended
+        // AFTER content / BEFORE </h> so the opening tag (id, data-source-line)
+        // stays byte-identical for preview scroll-sync. The auto-injected
+        // article-title H1 (`<h1 class="moss-article-title">`) is emitted
+        // separately in src-tauri html_post.rs and never reaches this hook,
+        // so it correctly gets no anchor.
+        if let Some(id) = id {
+            out.push_str(r##"<a class="moss-heading-anchor" href="#"##);
+            out.push_str(&escape_attr(id));
+            out.push_str(r##"" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a>"##);
+        }
         out.push_str("</h");
         out.push((b'0' + level) as char);
         out.push('>');
@@ -768,7 +779,10 @@ mod tests {
         let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_heading(&mut out, 2, Some("setup"), None, "Setup");
-        assert_eq!(out, r#"<h2 id="setup">Setup</h2>"#);
+        assert_eq!(
+            out,
+            r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+        );
     }
 
     #[test]
@@ -784,7 +798,10 @@ mod tests {
         let hooks = DefaultHooks::new();
         let mut out = String::new();
         hooks.render_heading(&mut out, 2, Some("setup"), Some(42), "Setup");
-        assert_eq!(out, r#"<h2 id="setup" data-source-line="42">Setup</h2>"#);
+        assert_eq!(
+            out,
+            r##"<h2 id="setup" data-source-line="42">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+        );
     }
 
     #[test]
@@ -793,6 +810,47 @@ mod tests {
         let mut out = String::new();
         hooks.render_heading(&mut out, 1, None, Some(1), "Top");
         assert_eq!(out, r#"<h1 data-source-line="1">Top</h1>"#);
+    }
+
+    #[test]
+    fn default_hooks_render_heading_emits_anchor_when_id_present() {
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_heading(&mut out, 2, Some("setup"), None, "Setup");
+        assert_eq!(
+            out,
+            r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+        );
+    }
+
+    #[test]
+    fn default_hooks_render_heading_no_anchor_when_id_absent() {
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_heading(&mut out, 3, None, None, "Sub");
+        assert_eq!(out, "<h3>Sub</h3>");
+    }
+
+    #[test]
+    fn default_hooks_render_heading_anchor_preserves_source_line_position() {
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_heading(&mut out, 2, Some("setup"), Some(42), "Setup");
+        assert_eq!(
+            out,
+            r##"<h2 id="setup" data-source-line="42">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+        );
+    }
+
+    #[test]
+    fn default_hooks_render_heading_anchor_escapes_id_in_href() {
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_heading(&mut out, 2, Some(r#"a&b"#), None, "AB");
+        assert_eq!(
+            out,
+            r##"<h2 id="a&amp;b">AB<a class="moss-heading-anchor" href="#a&amp;b" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+        );
     }
 
     #[test]

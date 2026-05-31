@@ -1016,6 +1016,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Article-page H1 title emitted from frontmatter.",
     },
+    ComponentEntry {
+        class: "moss-heading-anchor",
+        kind: "instance",
+        parent: "",
+        data_attrs: &[],
+        example_html: r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##,
+        example_markdown: "## Setup",
+        status: Status::Emerging,
+        since: "1",
+        description: "Clickable permalink appended inside every author-written body heading that carries a slug id; links to the heading's `#`-fragment. The auto-injected `moss-article-title` H1 is emitted separately and gets no anchor.",
+    },
     // -------------------------------------------------------------------
     // Grid + gallery + buttons containers (free-form layouts).
     // -------------------------------------------------------------------

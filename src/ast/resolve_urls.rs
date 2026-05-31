@@ -337,7 +337,7 @@ fn resolve_link_urls(
     source_path: &str,
     outgoing: &mut Vec<OutgoingLink>,
 ) {
-    walk_links_mut(doc, &mut |link_url, display_text| {
+    walk_links_mut(doc, &mut |link_url, display_text, is_wikilink| {
         let raw = match link_url {
             Url::Unresolved(s) => s.clone(),
             Url::Resolved(_) => return,
@@ -353,7 +353,15 @@ fn resolve_link_urls(
             return;
         }
         if raw.starts_with('#') {
-            *link_url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Anchor));
+            // Same-page anchor. For wikilinks (`[[#Heading]]`) slug the
+            // fragment so it matches the rendered heading id; markdown
+            // anchors (`[x](#frag)`) stay raw (literal author-supplied id).
+            let href = if is_wikilink {
+                slug_wikilink_suffix(&raw)
+            } else {
+                raw
+            };
+            *link_url = Url::Resolved(ResolvedUrl::new(href, UrlKind::Anchor));
             return;
         }
         if raw.starts_with("http://")
@@ -412,8 +420,19 @@ fn resolve_link_urls(
                     display_text: display_text.to_string(),
                     link_type: LinkType::Standard,
                 });
+                // For wikilinks, slug the `#fragment` so the emitted href
+                // matches the rendered heading id. The `?query` portion (if
+                // any) is preserved by `slug_wikilink_suffix`. Markdown links
+                // keep their suffix raw — a literal author-supplied URL.
                 let sentinel = match suffix {
-                    Some(s) => format!("moss-resolved:{}{}", resolved, s),
+                    Some(s) => {
+                        let s = if is_wikilink {
+                            slug_wikilink_suffix(s)
+                        } else {
+                            s.to_string()
+                        };
+                        format!("moss-resolved:{}{}", resolved, s)
+                    }
                     None => format!("moss-resolved:{}", resolved),
                 };
                 *link_url = Url::Unresolved(sentinel);
@@ -451,6 +470,40 @@ fn split_path_suffix(url: &str) -> (&str, Option<&str>) {
         #[allow(clippy::string_slice)]
         Some(pos) => (&url[..pos], Some(&url[pos..])),
         None => (url, None),
+    }
+}
+
+/// Slug the `#fragment` of a wikilink `suffix` so the emitted href matches
+/// the rendered heading id (`obsidian_heading_anchor`). Only the fragment is
+/// transformed: any leading `?query` is preserved verbatim. Block refs
+/// (`#^id`) keep their id raw (minus the caret), mirroring
+/// [`crate::resolve::wikilink_dispatch`]'s `build_anchor`. This must ONLY be
+/// called for wikilinks (`is_wikilink: true`); regular markdown links keep
+/// their fragment raw (it is a literal URL — `#L42`, hand-authored ids, etc.).
+///
+/// `suffix` is the value returned by [`split_path_suffix`] — it begins with
+/// `?` or `#`. Shapes handled:
+/// - `#frag` → `#<slug>`
+/// - `?query` → `?query` (no fragment, untouched)
+/// - `?query#frag` → `?query#<slug>` (query verbatim, fragment slugged)
+fn slug_wikilink_suffix(suffix: &str) -> String {
+    use crate::heading_anchor::obsidian_heading_anchor;
+
+    // Find the fragment (`#…`); everything before it is a `?query` we leave
+    // untouched. There is at most one `#` in a well-formed suffix.
+    match suffix.find('#') {
+        None => suffix.to_string(), // query-only (or empty) — nothing to slug
+        Some(h) => {
+            #[allow(clippy::string_slice)]
+            let (head, frag_with_hash) = (&suffix[..h], &suffix[h + 1..]);
+            let slugged = if let Some(block_id) = frag_with_hash.strip_prefix('^') {
+                // Block ref: keep the id raw (caret stripped). Matches build_anchor.
+                block_id.to_string()
+            } else {
+                obsidian_heading_anchor(frag_with_hash)
+            };
+            format!("{head}#{slugged}")
+        }
     }
 }
 
@@ -637,7 +690,7 @@ where
 /// children) — needed for the OutgoingLink::display_text contract.
 fn walk_links_mut<F>(doc: &mut Document, f: &mut F)
 where
-    F: FnMut(&mut Url, &str),
+    F: FnMut(&mut Url, &str, bool),
 {
     for block in &mut doc.blocks {
         walk_links_in_block(block, f);
@@ -646,7 +699,7 @@ where
 
 fn walk_links_in_block<F>(block: &mut Block, f: &mut F)
 where
-    F: FnMut(&mut Url, &str),
+    F: FnMut(&mut Url, &str, bool),
 {
     match block {
         Block::Heading { children, .. } | Block::Paragraph(children) => {
@@ -695,8 +748,10 @@ where
             // the inner text content as display_text by recursively
             // gathering it from the children (best-effort — empty string
             // if no text is found).
+            // LinkCard wrapping href is never a wikilink (it's a compound
+            // markdown link card), so pass is_wikilink=false.
             let display = gather_text_blocks(children);
-            f(url, &display);
+            f(url, &display, false);
             for nested in children {
                 walk_links_in_block(nested, f);
             }
@@ -707,7 +762,7 @@ where
 
 fn walk_links_in_shortcode<F>(sc: &mut Shortcode, f: &mut F)
 where
-    F: FnMut(&mut Url, &str),
+    F: FnMut(&mut Url, &str, bool),
 {
     match sc {
         Shortcode::Subscribe(_) | Shortcode::Recent(_) => {}
@@ -715,8 +770,9 @@ where
             for item in &mut args.items {
                 // ButtonItem display text comes from item.text per the
                 // shortcode shape (crates/moss-core/src/ast/shortcode.rs).
+                // Button URLs are authored markdown targets, not wikilinks.
                 let text = item.text.clone();
-                f(&mut item.url, &text);
+                f(&mut item.url, &text, false);
             }
         }
         Shortcode::Gallery(_) => {
@@ -740,15 +796,20 @@ where
 
 fn walk_links_in_inline<F>(inline: &mut Inline, f: &mut F)
 where
-    F: FnMut(&mut Url, &str),
+    F: FnMut(&mut Url, &str, bool),
 {
     match inline {
-        Inline::Link { url, children, .. } => {
+        Inline::Link {
+            url,
+            children,
+            is_wikilink,
+            ..
+        } => {
             // display_text = concatenated plain text of the children.
             // Matches markdown_links::rewrite_line, which uses the raw
             // text between `[` and `]` (no rendering, just the literal).
             let display = gather_text_inlines(children);
-            f(url, &display);
+            f(url, &display, *is_wikilink);
             // Descend so nested Links (rare in CommonMark but possible
             // via parser quirks) get visited too.
             for nested in children {
@@ -850,6 +911,29 @@ mod tests {
     // -----------------------------------------------------------------
     // Single-shot resolve_urls behavior
     // -----------------------------------------------------------------
+
+    #[test]
+    fn markdown_link_fragment_preserved_raw_not_slugged() {
+        // Unit test of `split_path_suffix` PURITY: it splits path from
+        // suffix but never slugs — the returned suffix is byte-identical to
+        // the source. (Slugging, when it happens, is layered on top by
+        // `slug_wikilink_suffix`, exercised separately.)
+        //
+        // Design split (corrected): a MARKDOWN link (`[t](page#Heading)`) is
+        // a literal URL — its `#fragment` stays RAW by design, so authored
+        // `#L42` / hand-authored ids / external anchors survive untouched.
+        // A WIKILINK (`[[page#Heading]]`) is NOT a literal URL: its fragment
+        // IS slugged to match the rendered heading id — `resolve_link_urls`
+        // routes wikilinks through `slug_wikilink_suffix` (see the
+        // end-to-end guard `markdown_link_fragment_stays_raw_not_slugged`
+        // and the `wikilink_*_fragment_is_slugged` tests below). The earlier
+        // claim that "authoring correctness comes from editor autocomplete"
+        // was the flawed premise behind the link-path bug; wikilink slugging
+        // now happens in resolve_urls itself.
+        let (path, suffix) = split_path_suffix("page#My Heading");
+        assert_eq!(path, "page");
+        assert_eq!(suffix, Some("#My Heading")); // raw, spaces + case intact
+    }
 
     #[test]
     fn resolves_standard_markdown_link_to_internal() {
@@ -1415,5 +1499,107 @@ mod tests {
 
         let href = extract_hero_image_href(&doc).expect("hero image must be Resolved");
         assert_eq!(href, "missing.jpg");
+    }
+
+    // -----------------------------------------------------------------
+    // Wikilink #fragment slugging (keystone bug fix)
+    //
+    // Authored `[[Page#Heading]]` wikilinks must resolve to a SLUGGED
+    // fragment so the emitted href matches the rendered heading id
+    // (`<h2 id="getting-started">`). Regular markdown links `[x](page#frag)`
+    // stay RAW (a markdown link is a literal URL). The discriminator is
+    // `Inline::Link::is_wikilink`, which `parse()` sets for `[[…]]` syntax
+    // (ENABLE_WIKILINKS). Block refs (`#^id`) keep the id raw minus the
+    // caret, mirroring `wikilink_dispatch::build_anchor`.
+    // -----------------------------------------------------------------
+
+    /// Pull the resolved Url string out of the first Link inline in the
+    /// first paragraph. Works for both `Url::Unresolved` (sentinel) and
+    /// `Url::Resolved` (anchor / external) variants.
+    fn first_link_href(doc: &Document) -> String {
+        match &doc.blocks[0] {
+            Block::Paragraph(children) => {
+                let link = children
+                    .iter()
+                    .find(|i| matches!(i, Inline::Link { .. }))
+                    .expect("expected an Inline::Link");
+                match link {
+                    Inline::Link { url, .. } => match url {
+                        Url::Unresolved(s) => s.clone(),
+                        Url::Resolved(r) => r.href.clone(),
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            other => panic!("expected Paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wikilink_cross_page_fragment_is_slugged() {
+        // `[[other#Getting Started]]` → sentinel `moss-resolved:other.md#getting-started`.
+        let mut doc = parse("[[other#Getting Started]]");
+        let graph = graph_with(&["index.md", "other.md"]);
+        let _ = resolve_urls(&mut doc, &graph, "index.md");
+        assert_eq!(first_link_href(&doc), "moss-resolved:other.md#getting-started");
+    }
+
+    #[test]
+    fn wikilink_same_page_fragment_is_slugged() {
+        // Same-page `[[#Local Section]]` → bare anchor `#local-section`,
+        // no `moss-resolved:` prefix (the path part is empty).
+        let mut doc = parse("[[#Local Section]]");
+        let graph = graph_with(&["index.md"]);
+        let _ = resolve_urls(&mut doc, &graph, "index.md");
+        assert_eq!(first_link_href(&doc), "#local-section");
+    }
+
+    #[test]
+    fn markdown_link_fragment_stays_raw_not_slugged() {
+        // Regression guard for the design decision: a NON-wikilink markdown
+        // link keeps its fragment RAW (case intact, no slugging). This MUST
+        // still hold after the wikilink fix. (CommonMark forbids spaces in a
+        // bare link destination, so we use a case-bearing fragment to make
+        // the raw-vs-slug distinction observable: raw `#GettingStarted`
+        // would slug to `#gettingstarted`.)
+        let mut doc = parse("[x](other#GettingStarted)");
+        let graph = graph_with(&["index.md", "other.md"]);
+        let _ = resolve_urls(&mut doc, &graph, "index.md");
+        assert_eq!(first_link_href(&doc), "moss-resolved:other.md#GettingStarted");
+    }
+
+    #[test]
+    fn wikilink_block_ref_keeps_id_raw() {
+        // Block refs (`#^id`) strip the caret but keep the id RAW (no slug),
+        // mirroring `wikilink_dispatch::build_anchor`. Use space + uppercase
+        // so slugging would be observably different.
+        let mut doc = parse("[[other#^Block Id]]");
+        let graph = graph_with(&["index.md", "other.md"]);
+        let _ = resolve_urls(&mut doc, &graph, "index.md");
+        let href = first_link_href(&doc);
+        assert!(href.contains("#Block Id"), "expected raw block-ref, got: {href}");
+        assert!(!href.contains("#block-id"), "block-ref was slugged: {href}");
+    }
+
+    #[test]
+    fn wikilink_cjk_fragment_preserved() {
+        // CJK characters are preserved by obsidian_heading_anchor.
+        let mut doc = parse("[[other#中文标题]]");
+        let graph = graph_with(&["index.md", "other.md"]);
+        let _ = resolve_urls(&mut doc, &graph, "index.md");
+        assert_eq!(first_link_href(&doc), "moss-resolved:other.md#中文标题");
+    }
+
+    #[test]
+    fn slug_wikilink_suffix_preserves_query() {
+        // A `?query#frag` suffix: only the `#frag` is slugged; the query
+        // passes through untouched.
+        assert_eq!(slug_wikilink_suffix("?a=1#My Heading"), "?a=1#my-heading");
+        // Query-only suffix is untouched.
+        assert_eq!(slug_wikilink_suffix("?a=1"), "?a=1");
+        // Fragment-only suffix is slugged.
+        assert_eq!(slug_wikilink_suffix("#My Heading"), "#my-heading");
+        // Block ref keeps id raw (caret stripped).
+        assert_eq!(slug_wikilink_suffix("#^Block Id"), "#Block Id");
     }
 }

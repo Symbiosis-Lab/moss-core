@@ -566,7 +566,7 @@ mod tests {
             children: vec![Inline::Text("Setup".into())],
             id: Some("setup".into()),
         }]);
-        assert_eq!(html, "<h2 id=\"setup\">Setup</h2>\n");
+        assert_eq!(html, "<h2 id=\"setup\">Setup<a class=\"moss-heading-anchor\" href=\"#setup\" aria-label=\"Permalink to this section\"><span aria-hidden=\"true\">#</span></a></h2>\n");
     }
 
     #[test]
@@ -898,7 +898,7 @@ mod tests {
             _ => {}
         });
         let html = render_document(&doc, &DefaultHooks::new());
-        assert!(html.contains(r#"<h1 id="title">Title</h1>"#), "got: {html}");
+        assert!(html.contains(r##"<h1 id="title">Title<a class="moss-heading-anchor" href="#title" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h1>"##), "got: {html}");
         assert!(html.contains(r#"<a href="docs/">link</a>"#));
         assert!(html.contains("<em>em</em>"));
     }
@@ -1082,7 +1082,7 @@ mod tests {
             }],
         );
         assert!(
-            html.contains(r#"<h2 id="setup" data-source-line="3">Setup</h2>"#),
+            html.contains(r##"<h2 id="setup" data-source-line="3">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##),
             "got: {html}"
         );
     }
@@ -1341,7 +1341,7 @@ mod tests {
         });
         let html = render_document(&doc, &DefaultHooks::new());
         assert!(
-            html.contains(r#"<h1 id="title" data-source-line="1">Title</h1>"#),
+            html.contains(r##"<h1 id="title" data-source-line="1">Title<a class="moss-heading-anchor" href="#title" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h1>"##),
             "H1 should carry data-source-line=1: {html}"
         );
         assert!(
@@ -1349,7 +1349,7 @@ mod tests {
             "first paragraph should carry data-source-line=3: {html}"
         );
         assert!(
-            html.contains(r#"<h2 id="sub" data-source-line="5">Sub</h2>"#),
+            html.contains(r##"<h2 id="sub" data-source-line="5">Sub<a class="moss-heading-anchor" href="#sub" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##),
             "H2 should carry data-source-line=5: {html}"
         );
         assert!(

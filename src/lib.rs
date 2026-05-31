@@ -36,6 +36,8 @@ pub mod content_graph;
 pub mod contract;
 pub mod csv_table;
 pub mod date;
+pub mod extract_headings;
+pub use extract_headings::{extract_headings, HeadingInfo};
 pub mod home;
 pub mod frontmatter;
 pub mod heading;
