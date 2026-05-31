@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::schema_fields::BUILTIN_FIELDS;
+use crate::schema_fields::{BuiltinField, BUILTIN_FIELDS};
 
 /// The top-level content schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +75,14 @@ pub struct FieldDefinition {
     #[serde(default)]
     #[cfg_attr(feature = "specta", specta(type = Option<serde_json::Value>))]
     pub items: Option<Box<FieldDefinition>>,
+    /// Member variants for a `OneOf` union field. Each member is a full
+    /// `FieldDefinition` carrying its own `field_type` + `widget`. Only set
+    /// when `field_type == OneOf`. The specta override mirrors `items` to dodge
+    /// the self-referential type (the chip bar reads members structurally from
+    /// JSON; it needs no nominal TS type).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "specta", specta(type = Option<Vec<serde_json::Value>>))]
+    pub one_of: Option<Vec<FieldDefinition>>,
     /// Human-readable description of the field.
     #[serde(default)]
     pub description: Option<String>,
@@ -109,6 +117,11 @@ pub enum FieldType {
     Number,
     Array,
     Object,
+    /// A union of member variants (see `FieldDefinition::one_of`). The authored
+    /// value matches exactly one member. Used for fields like `children`
+    /// (bool | wikilink) and `series` (bool | wikilink-list) whose real value
+    /// space the older scalar types could not express.
+    OneOf,
 }
 
 /// UI widget types.
@@ -125,6 +138,13 @@ pub enum Widget {
     TagInput,
     FilePicker,
     CodeEditor,
+    /// Parent dispatcher for a `OneOf` field: reads `one_of` and renders the
+    /// active branch's UI. Never falls through to value-type inference.
+    Union,
+    /// Single wikilink/path picker with folder autocomplete (e.g. `children`).
+    WikilinkPicker,
+    /// Ordered list of wikilinks (e.g. `series` explicit order).
+    WikilinkListPicker,
 }
 
 /// Shortcode schema: delimiters and named definitions.
@@ -165,6 +185,66 @@ pub struct ShortcodeParam {
     pub default: Option<String>,
 }
 
+/// Materialize one owned [`FieldDefinition`] from a const [`BuiltinField`].
+///
+/// Recurses for union fields: a `BuiltinField` carrying `one_of_members`
+/// becomes a `OneOf` definition whose `one_of` is each member materialized the
+/// same way. This is what lets the const table (scalars only) describe a union
+/// whose owned representation is a `Vec<FieldDefinition>` built here, not in
+/// const context — exactly the pattern `items` already uses.
+fn materialize_field(bf: &BuiltinField) -> FieldDefinition {
+    let items = bf.items_type.as_ref().map(|it| {
+        Box::new(FieldDefinition {
+            field_type: it.clone(),
+            widget: None,
+            required: false,
+            default: None,
+            format: None,
+            enum_values: None,
+            items: None,
+            one_of: None,
+            description: None,
+            label: None,
+            priority: 0,
+            source: None,
+            group: None,
+        })
+    });
+
+    let one_of = bf
+        .one_of_members
+        .map(|members| members.iter().map(materialize_field).collect());
+
+    let default = bf.default_json.map(|s| {
+        serde_json::from_str(s)
+            .unwrap_or_else(|e| panic!("invalid default_json for '{}': {}", bf.name, e))
+    });
+
+    let enum_values = bf
+        .enum_values
+        .map(|vals| vals.iter().map(|s| s.to_string()).collect());
+
+    FieldDefinition {
+        field_type: bf.field_type.clone(),
+        widget: Some(bf.widget.clone()),
+        required: bf.required,
+        default,
+        format: bf.format.map(|s| s.to_string()),
+        enum_values,
+        items,
+        one_of,
+        description: if bf.description.is_empty() {
+            None
+        } else {
+            Some(bf.description.to_string())
+        },
+        label: bf.label.map(|s| s.to_string()),
+        priority: bf.priority,
+        source: None,
+        group: if bf.group.is_empty() { None } else { Some(bf.group.to_string()) },
+    }
+}
+
 /// Return the built-in content schema.
 ///
 /// Builds the schema programmatically from [`BUILTIN_FIELDS`] — the const
@@ -181,48 +261,7 @@ pub fn builtin_schema() -> ContentSchema {
             continue;
         }
 
-        let items = bf.items_type.as_ref().map(|it| {
-            Box::new(FieldDefinition {
-                field_type: it.clone(),
-                widget: None,
-                required: false,
-                default: None,
-                format: None,
-                enum_values: None,
-                items: None,
-                description: None,
-                label: None,
-                priority: 0,
-                source: None,
-                group: None,
-            })
-        });
-
-        let default = bf.default_json.map(|s| {
-            serde_json::from_str(s)
-                .unwrap_or_else(|e| panic!("invalid default_json for '{}': {}", bf.name, e))
-        });
-
-        let enum_values = bf
-            .enum_values
-            .map(|vals| vals.iter().map(|s| s.to_string()).collect());
-
-        let fd = FieldDefinition {
-            field_type: bf.field_type.clone(),
-            widget: Some(bf.widget.clone()),
-            required: bf.required,
-            default,
-            format: bf.format.map(|s| s.to_string()),
-            enum_values,
-            items,
-            description: Some(bf.description.to_string()),
-            label: bf.label.map(|s| s.to_string()),
-            priority: bf.priority,
-            source: None,
-            group: if bf.group.is_empty() { None } else { Some(bf.group.to_string()) },
-        };
-
-        fields.insert(bf.name.to_string(), fd);
+        fields.insert(bf.name.to_string(), materialize_field(bf));
     }
 
     ContentSchema {
@@ -297,13 +336,65 @@ mod tests {
     }
 
     #[test]
-    fn test_builtin_schema_children_boolean() {
-        // D1: `children` is boolean — answers "render children or not?"
+    fn test_builtin_schema_children_union() {
+        // `children` is a OneOf union: bool toggle OR a wikilink/path picker.
         let schema = builtin_schema();
         let children = schema.frontmatter.fields.get("children").expect("children field");
-        assert_eq!(children.field_type, FieldType::Boolean, "children should be boolean");
-        assert_eq!(children.widget, Some(Widget::Checkbox), "children should use checkbox widget");
-        assert!(children.enum_values.is_none(), "children should not have enum_values");
+        assert_eq!(children.field_type, FieldType::OneOf, "children should be a union");
+        assert_eq!(children.widget, Some(Widget::Union), "children should use the union widget");
+        let members = children.one_of.as_ref().expect("children should have one_of members");
+        assert_eq!(members.len(), 2, "children union has two members");
+        assert_eq!(members[0].field_type, FieldType::Boolean);
+        assert_eq!(members[0].widget, Some(Widget::Checkbox));
+        assert_eq!(members[1].field_type, FieldType::String);
+        assert_eq!(members[1].widget, Some(Widget::WikilinkPicker));
+    }
+
+    #[test]
+    fn test_builtin_schema_series_union() {
+        // `series` is a OneOf union: bool flag OR an ordered wikilink list.
+        let schema = builtin_schema();
+        let series = schema.frontmatter.fields.get("series").expect("series field");
+        assert_eq!(series.field_type, FieldType::OneOf, "series should be a union");
+        assert_eq!(series.widget, Some(Widget::Union));
+        let members = series.one_of.as_ref().expect("series one_of members");
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].field_type, FieldType::Boolean);
+        assert_eq!(members[1].field_type, FieldType::Array);
+        assert_eq!(members[1].widget, Some(Widget::WikilinkListPicker));
+        // The array member carries an items definition (string).
+        let items = members[1].items.as_ref().expect("series list items");
+        assert_eq!(items.field_type, FieldType::String);
+    }
+
+    /// Type-aware sync guard (the forcing function against schema↔compiler drift):
+    /// every declared member form of each `OneOf` field must round-trip through
+    /// the shared normalizer to its canonical form. If a member is declared that
+    /// the normalizer doesn't honor (or vice versa), this fails.
+    #[test]
+    fn union_members_round_trip() {
+        use crate::frontmatter_union::{normalize_children, normalize_series};
+        use serde_yaml::Value;
+
+        // children: Boolean member ⇒ bool passes through; String member ⇒ source.
+        assert!(normalize_children(&Value::Bool(true)).children);
+        let n = normalize_children(&Value::String("[[News]]".into()));
+        assert!(n.children && n.source.as_deref() == Some("[[News]]"));
+
+        // series: Boolean member ⇒ flag; Array member ⇒ order list.
+        assert!(normalize_series(&Value::Bool(true)).series);
+        let s = normalize_series(&Value::Sequence(vec![Value::String("[[A]]".into())]));
+        assert!(s.series && s.order.as_deref() == Some(&["[[A]]".to_string()][..]));
+
+        // Both union fields must actually be OneOf with exactly their declared members.
+        let schema = builtin_schema();
+        for name in ["children", "series"] {
+            let f = schema.frontmatter.fields.get(name).unwrap();
+            assert_eq!(f.field_type, FieldType::OneOf, "{name} must be OneOf");
+            let m = f.one_of.as_ref().unwrap_or_else(|| panic!("{name} needs one_of"));
+            assert_eq!(m.len(), 2, "{name} has 2 members");
+            assert_eq!(m[0].field_type, FieldType::Boolean, "{name} member 0 is the bool branch");
+        }
     }
 
     #[test]

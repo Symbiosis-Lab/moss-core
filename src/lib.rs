@@ -38,6 +38,7 @@ pub mod csv_table;
 pub mod date;
 pub mod home;
 pub mod frontmatter;
+pub mod frontmatter_union;
 pub mod heading;
 pub mod link_candidates;
 pub mod heading_anchor;
