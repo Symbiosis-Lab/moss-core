@@ -1225,6 +1225,76 @@ mod tests {
     }
 
     #[test]
+    fn wikilink_section_fragment_is_slugged() {
+        // `[[notes#My Heading]]` slugs the section fragment via
+        // `build_anchor` → `obsidian_heading_anchor` → `#my-heading`.
+        // Real emitted output: `[notes > My Heading](moss-resolved:notes.md#my-heading)`.
+        let graph = build_graph(&["notes.md"]);
+        let emit = dispatch_wikilink_embed(
+            "notes#My Heading",
+            None,
+            false,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Link(link) => {
+                assert!(link.contains("#my-heading"), "got: {}", link);
+                assert!(link.contains("moss-resolved:"), "got: {}", link);
+            }
+            other => panic!("expected Link, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn same_page_section_wikilink_emits_bare_anchor() {
+        // Same-page `[[#My Heading]]` resolves to a bare slugged anchor with
+        // no `moss-resolved:` prefix (the file part is empty, so the link
+        // target is just the fragment).
+        // Real emitted output: `[My Heading](#my-heading)`.
+        let graph = build_graph(&["notes.md"]);
+        let emit = dispatch_wikilink_embed(
+            "#My Heading",
+            None,
+            false,
+            &graph,
+            "notes.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Link(link) => {
+                assert!(link.contains("(#my-heading)"), "got: {}", link);
+                assert!(!link.contains("moss-resolved:"), "got: {}", link);
+            }
+            other => panic!("expected Link, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn wikilink_block_ref_is_not_slugged() {
+        // Block refs `[[notes#^block-id]]` strip the `^` and emit the id
+        // RAW (no slugging) — `build_anchor` short-circuits on the `^`
+        // prefix before calling `obsidian_heading_anchor`.
+        // Real emitted output: `[notes > ^block-id](moss-resolved:notes.md#block-id)`.
+        let graph = build_graph(&["notes.md"]);
+        let emit = dispatch_wikilink_embed(
+            "notes#^block-id",
+            None,
+            false,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Link(link) => {
+                assert!(link.contains("#block-id"), "got: {}", link);
+            }
+            other => panic!("expected Link, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn dispatch_image_embed_uses_image_renderer() {
         let graph = build_graph(&["photo.jpg"]);
         let emit = dispatch_wikilink_embed(
