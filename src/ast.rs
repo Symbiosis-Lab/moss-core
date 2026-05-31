@@ -50,7 +50,7 @@ pub mod visit;
 pub use dispatch_wikilink_embeds::{dispatch_wikilink_embeds, WikilinkDispatchResult};
 pub use document::{BlockMeta, Document};
 pub use extract_hero::{extract_hero, HeroExtraction};
-pub use hooks::{DefaultHooks, RenderHooks};
+pub use hooks::{DefaultHooks, HeroOverlayHooks, RenderHooks};
 pub use node::{Block, CalloutKind, Fold, Inline};
 pub use parser::{parse, parse_with_config, ParseConfig};
 pub use query::find_first_block_image;

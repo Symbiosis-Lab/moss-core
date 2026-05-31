@@ -412,8 +412,18 @@ pub trait RenderHooks {
                     // matches today's `render_markdown_to_html_with`
                     // production (pulldown-cmark's `push_html` emits no
                     // tag-adjacent newlines).
+                    //
+                    // HeroOverlayHooks wraps a DefaultHooks to suppress
+                    // moss-heading-anchor on overlay headings. We rebuild
+                    // DefaultHooks from gallery_assets() rather than coercing
+                    // `self` to `&dyn RenderHooks` — the coercion requires
+                    // `Self: Sized`, which the trait default cannot guarantee.
                     let mut overlay_html = String::new();
-                    super::render::render_blocks(self, &mut overlay_html, &args.overlay);
+                    render_hero_overlay_blocks(
+                        self.gallery_assets(),
+                        &args.overlay,
+                        &mut overlay_html,
+                    );
                     let collapsed = collapse_tag_adjacent_newlines(&overlay_html);
                     out.push_str(r#"<div class="moss-hero-content">"#);
                     out.push_str(collapsed.trim());
@@ -713,6 +723,40 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
 // Internal escape helpers used by both DefaultHooks and the renderer.
 // ---------------------------------------------------------------------------
 
+/// Render hero overlay blocks into `out` using `HeroOverlayHooks` so that
+/// headings inside the overlay don't carry a `moss-heading-anchor` permalink.
+///
+/// Accepts an optional `AssetSnapshot` reference (from the caller's
+/// `gallery_assets()`) to route inline images through the synth path when
+/// available. Creates a fresh `DefaultHooks` from the snapshot rather than
+/// coercing the caller's `self` to `&dyn RenderHooks` — that coercion
+/// requires `Self: Sized`, which the trait default method cannot guarantee.
+///
+/// **Limitation**: only `gallery_assets()` is forwarded from the caller.
+/// Any other hook overrides on the caller (`render_image`, `render_link`,
+/// etc.) are NOT propagated. The rebuilt `DefaultHooks` uses the trait
+/// default for everything except image synthesis. This is intentional for
+/// the `DefaultHooks` test-harness path; production callers (`PipelineHooks`)
+/// override `render_shortcode` entirely and never reach this function.
+fn render_hero_overlay_blocks(
+    snapshot: Option<&crate::asset_snapshot::AssetSnapshot>,
+    blocks: &[super::node::Block],
+    out: &mut String,
+) {
+    match snapshot {
+        Some(snap) => {
+            let inner = DefaultHooks::with_snapshot(snap);
+            let hooks = HeroOverlayHooks::new(&inner);
+            super::render::render_blocks(&hooks, out, blocks);
+        }
+        None => {
+            let inner = DefaultHooks::new();
+            let hooks = HeroOverlayHooks::new(&inner);
+            super::render::render_blocks(&hooks, out, blocks);
+        }
+    }
+}
+
 /// Collapse `\n` that follows a heading or paragraph closing tag when the
 /// next character is `<` (the start of another block). Mirrors
 /// pulldown-cmark's `push_html` byte shape: heading and paragraph closes
@@ -773,6 +817,87 @@ fn ends_with_heading_close(s: &str) -> bool {
         && bytes[n - 3] == b'h'
         && matches!(bytes[n - 2], b'1' | b'2' | b'3' | b'4' | b'5' | b'6')
         && bytes[n - 1] == b'>'
+}
+
+/// Render hooks adapter for hero overlay content.
+///
+/// Delegates every method to the wrapped `inner` hooks except
+/// `render_heading`, which suppresses the `moss-heading-anchor` permalink.
+/// Hero headings are display titles, not in-page navigation landmarks —
+/// the `#` link is visual noise. The `id` attribute is kept so fragment
+/// links pointing at the heading still resolve.
+///
+/// Used by the `Shortcode::Hero` arm of [`DefaultHooks::render_shortcode`]
+/// (the moss-core path) and by src-tauri's `render_hero_html_typed`
+/// (the current hoisted path). Both paths must agree: anchor suppression
+/// belongs here rather than in either call site.
+pub struct HeroOverlayHooks<'a> {
+    inner: &'a dyn RenderHooks,
+}
+
+impl<'a> HeroOverlayHooks<'a> {
+    pub fn new(inner: &'a dyn RenderHooks) -> Self {
+        Self { inner }
+    }
+}
+
+impl<'a> RenderHooks for HeroOverlayHooks<'a> {
+    fn render_link(
+        &self,
+        out: &mut String,
+        url: &super::url::ResolvedUrl,
+        is_wikilink: bool,
+        content: &str,
+    ) {
+        self.inner.render_link(out, url, is_wikilink, content);
+    }
+
+    fn render_image(
+        &self,
+        out: &mut String,
+        src: &super::url::ResolvedUrl,
+        alt: &str,
+        title: Option<&str>,
+    ) {
+        self.inner.render_image(out, src, alt, title);
+    }
+
+    fn gallery_assets(&self) -> Option<&crate::asset_snapshot::AssetSnapshot> {
+        self.inner.gallery_assets()
+    }
+
+    fn render_shortcode(&self, out: &mut String, sc: &Shortcode) {
+        self.inner.render_shortcode(out, sc);
+    }
+
+    fn render_heading(
+        &self,
+        out: &mut String,
+        level: u8,
+        id: Option<&str>,
+        source_line: Option<usize>,
+        content: &str,
+    ) {
+        use std::fmt::Write as _;
+        out.push('<');
+        out.push('h');
+        out.push((b'0' + level) as char);
+        if let Some(id) = id {
+            out.push_str(r#" id=""#);
+            out.push_str(&escape_attr(id));
+            out.push('"');
+        }
+        if let Some(n) = source_line {
+            let _ = write!(out, r#" data-source-line="{}""#, n);
+        }
+        out.push('>');
+        out.push_str(content);
+        // Permalink anchor intentionally omitted — hero headings are
+        // visual titles, not in-page navigation landmarks.
+        out.push_str("</h");
+        out.push((b'0' + level) as char);
+        out.push('>');
+    }
 }
 
 /// True if `s` ends with `</p>` (a paragraph close tag).
@@ -1418,5 +1543,33 @@ mod tests {
             None,
         );
         assert_eq!(out, r#"<img src="cat.jpg" alt="A cat" />"#);
+    }
+
+    #[test]
+    fn default_hooks_hero_overlay_heading_has_no_permalink_anchor() {
+        // Regression for Yi-website: headings inside :::hero overlays must not
+        // carry moss-heading-anchor when rendered through DefaultHooks
+        // (the moss-core test-harness path). The DefaultHooks::render_shortcode
+        // Hero arm delegates overlay rendering to render_hero_overlay_blocks
+        // which wraps with HeroOverlayHooks. This test covers that path.
+        use crate::ast::shortcode::{HeroShortcode, Shortcode};
+        use crate::ast::{parse, Url, UrlKind, ResolvedUrl};
+        let overlay_blocks = parse("# Understanding climate extremes\n\nSubtitle.").blocks;
+        let sc = Shortcode::Hero(HeroShortcode {
+            overlay: overlay_blocks,
+            image: Some(Url::Resolved(ResolvedUrl::new("header.png", UrlKind::Asset))),
+            ..Default::default()
+        });
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_shortcode(&mut out, &sc);
+        assert!(
+            !out.contains("moss-heading-anchor"),
+            "hero overlay heading must not carry a permalink anchor via DefaultHooks; got: {out}"
+        );
+        assert!(
+            out.contains(r#"id="understanding-climate-extremes""#),
+            "hero overlay heading must still carry its id; got: {out}"
+        );
     }
 }
