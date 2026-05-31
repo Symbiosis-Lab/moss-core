@@ -43,6 +43,7 @@ pub mod frontmatter;
 pub mod frontmatter_union;
 pub mod heading;
 pub mod link_candidates;
+pub mod link_completions;
 pub mod heading_anchor;
 pub mod media;
 pub mod page_kind;
