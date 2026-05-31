@@ -852,6 +852,17 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
+    fn markdown_link_fragment_preserved_raw_not_slugged() {
+        // Design decision: a markdown link is a literal URL. We do NOT slug
+        // its #fragment (would break #L42 / hand-authored ids / external
+        // anchors). Authoring correctness comes from editor autocomplete,
+        // not silent rewriting.
+        let (path, suffix) = split_path_suffix("page#My Heading");
+        assert_eq!(path, "page");
+        assert_eq!(suffix, Some("#My Heading")); // raw, spaces + case intact
+    }
+
+    #[test]
     fn resolves_standard_markdown_link_to_internal() {
         let mut doc = parse("[文字](文字.md)");
         let graph = graph_with(&["index.md", "文字/文字.md"]);
