@@ -82,7 +82,7 @@ where
         Block::Shortcode(sc) => {
             visit_urls_in_shortcode(sc, callback);
         }
-        Block::Figure { image, caption } => {
+        Block::Figure { image, caption, .. } => {
             // Descend into the image's src (the load-bearing URL); the
             // caption is a Vec<Inline> that may itself carry links —
             // unlikely in practice (captions default to alt text) but the
@@ -559,6 +559,10 @@ mod tests {
                 wikilink_pothole: None,
             },
             caption: Some(vec![Inline::Text("f".into())]),
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }]);
         let mut seen: Vec<String> = Vec::new();
         visit_urls_mut(&mut doc, |u| match u {
@@ -582,6 +586,10 @@ mod tests {
                 wikilink_pothole: None,
             },
             caption: None,
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }]);
         visit_urls_mut(&mut doc, |u| {
             *u = Url::resolved("p.jpg", UrlKind::Asset);
@@ -614,6 +622,10 @@ mod tests {
                 children: vec![Inline::Text("credit".into())],
                 is_wikilink: false,
             }]),
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }]);
         let mut seen: Vec<String> = Vec::new();
         visit_urls_mut(&mut doc, |u| match u {

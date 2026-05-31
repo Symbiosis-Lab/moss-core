@@ -280,6 +280,16 @@ fn apply_emit(
         EmitKind::Html(html) | EmitKind::Deferred(html) => {
             blocks[i] = Block::Other(html);
         }
+        EmitKind::Block(block) => {
+            // Image-embed synth-collapse: a typed `Block::Figure` (or other
+            // typed block) substituted 1:1 at `blocks[i]`. This is the only
+            // emit shape that preserves the source paragraph's `block_meta`
+            // (a `Block::Other` HTML string carries none): replacing in place
+            // leaves the parallel `block_meta` vec untouched, so the figure
+            // inherits the original paragraph's `data-source-line`. No
+            // re-parse, no splice — exactly one block in, one block out.
+            blocks[i] = *block;
+        }
         EmitKind::Inline(markdown) | EmitKind::Link(markdown) => {
             // Re-parse the emitted markdown and splice in the resulting
             // blocks at position `i`. Typical shape: a single

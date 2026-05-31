@@ -322,7 +322,14 @@ fn render_block<H: RenderHooks + ?Sized>(
             push_source_line_attr(out, meta.source_line);
             out.push_str(" />\n");
         }
-        Block::Figure { image, caption } => {
+        Block::Figure {
+            image,
+            caption,
+            width,
+            align,
+            class_names,
+            img_style,
+        } => {
             // Phase 4 PR3 (2026-05-27): image-only paragraphs promoted at
             // parse time become Block::Figure. The render shape is a
             // `<figure class="moss-image">` wrap around the image hook's
@@ -341,7 +348,36 @@ fn render_block<H: RenderHooks + ?Sized>(
             // empty-alt case). Empty caption Vec is also treated as no
             // figcaption — defensive, since `caption: Some(vec![])` would
             // otherwise emit `<figcaption></figcaption>`.
-            out.push_str(r#"<figure class="moss-image""#);
+            //
+            // Figure-level display params (`width`, `align`, `class_names`,
+            // `img_style`) are populated only by parameterized wikilink
+            // embeds (image-embed synth-collapse). The class list /
+            // `data-width=` byte shape matches
+            // `render::image::wrap_in_figure_full` so an embed-sourced figure
+            // and a CommonMark `![](url)` figure with the same params are
+            // byte-identical. For the CommonMark path these are all defaults,
+            // so `class="moss-image"` with no `data-width=` — unchanged from
+            // before the collapse.
+            let mut class_value = String::from("moss-image");
+            if let Some(a) = align {
+                class_value.push(' ');
+                class_value.push_str(a);
+            }
+            for cn in class_names {
+                if cn.is_empty() {
+                    continue;
+                }
+                class_value.push(' ');
+                class_value.push_str(cn);
+            }
+            out.push_str(r#"<figure class=""#);
+            out.push_str(&escape_attr(&class_value));
+            out.push('"');
+            if let Some(w) = width {
+                out.push_str(r#" data-width=""#);
+                out.push_str(&escape_attr(w));
+                out.push('"');
+            }
             push_source_line_attr(out, meta.source_line);
             out.push('>');
             // Render the inner image. Pattern-match the constrained shape;
@@ -352,7 +388,7 @@ fn render_block<H: RenderHooks + ?Sized>(
                     src, alt, title, ..
                 } => match src {
                     Url::Resolved(r) => {
-                        hooks.render_image(out, r, alt, title.as_deref());
+                        hooks.render_image_styled(out, r, alt, title.as_deref(), img_style.as_deref());
                     }
                     Url::Unresolved(s) => {
                         debug_assert!(
@@ -922,6 +958,10 @@ mod tests {
                 wikilink_pothole: None,
             },
             caption: Some(vec![Inline::Text("A logo".into())]),
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }]);
         assert!(
             html.starts_with(r#"<figure class="moss-image">"#),
@@ -948,6 +988,10 @@ mod tests {
                 wikilink_pothole: None,
             },
             caption: None,
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }]);
         assert!(html.contains("<figure"), "got: {html}");
         assert!(
@@ -969,6 +1013,10 @@ mod tests {
                 wikilink_pothole: None,
             },
             caption: Some(vec![]),
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }]);
         assert!(!html.contains("<figcaption"), "got: {html}");
     }
@@ -987,6 +1035,10 @@ mod tests {
                 wikilink_pothole: None,
             },
             caption: Some(vec![Inline::Text("a<b>c".into())]),
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }]);
         assert!(
             html.contains("<figcaption>a&lt;b&gt;c</figcaption>"),
@@ -1301,6 +1353,10 @@ mod tests {
                 wikilink_pothole: None,
             },
             caption: Some(vec![Inline::Text("A".into())]),
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }];
         let meta = vec![BlockMeta {
             source_line: Some(9),

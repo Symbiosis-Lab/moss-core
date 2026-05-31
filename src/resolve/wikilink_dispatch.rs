@@ -116,6 +116,14 @@ pub enum EmitKind {
     /// A standard markdown link string. Used for non-embed wikilinks
     /// (`[[file]]` rather than `![[file]]`).
     Link(String),
+    /// A typed AST block to splice in directly (image-embed synth-collapse).
+    /// Unlike [`EmitKind::Html`] (which lands as an opaque `Block::Other`
+    /// carrying no `BlockMeta`), a typed block placed 1:1 at `blocks[i]`
+    /// inherits the source paragraph's `block_meta[i]` — so a lone image
+    /// embed rendered as `Block::Figure` keeps its `data-source-line` in
+    /// preview/site builds. The image arm uses this; non-image embeds keep
+    /// emitting `EmitKind::Html`.
+    Block(Box<crate::ast::node::Block>),
 }
 
 /// Parse pothole text using the every-token-K=V rule.
@@ -485,50 +493,80 @@ fn dispatch_embed_form(
                 };
             }
 
-            // Image embeds carrying display params (`![[hero.jpg|cover]]`,
-            // `![[hero.jpg|cover left]]`, `![[hero.jpg|fit=cover position=left]]`)
-            // route directly to `synthesize_image_html` here. Without this
-            // branch, `ImageRenderer::render_to_markdown` discards the params
-            // accumulated from the alias / pothole (`let _ = params`,
-            // embed_renderer.rs after Phase 3 PR4) — the emitted markdown is
-            // bare `![alt](url)`, fit/position are gone, and the author's
-            // intent silently no-ops.
+            // Image embeds — the unified arm (image-embed synth-collapse).
             //
-            // Image embeds without display params (`![[hero.jpg]]` plus
-            // caption-text aliases like `![[hero.jpg|My nice photo]]`) keep
-            // the legacy markdown round-trip — `ImageRenderer` emits
-            // `![alt](url)`, the outer pipeline re-parses and lets
-            // `emit_standalone_figure_image` decide on the figure wrap from
-            // the surrounding paragraph shape.
+            // ALL `![[photo.jpg]]` forms route through here to a typed
+            // `Block::Figure`, the SAME node the CommonMark `![](url)` path
+            // produces. This replaced the prior split (a fit/position
+            // "fast-path" that emitted bare `<picture>` + an
+            // `ImageRenderer::render_to_markdown` round-trip that dropped
+            // width via `let _ = params`). Six embed kinds already went
+            // dispatch → synth → Html; image now matches via
+            // dispatch → Block::Figure → render_document.
             //
-            // TODO Phase 4: collapse this branch into `SynthKind::Image`
-            // alongside the video/pdf/audio/iframe/model dispatch above, with
-            // `build_synth_params` learning to project `MediaAttrs` into
-            // `TitleParams` and the caller passing the right `ImageContext`
-            // (MarkdownInline vs. MarkdownStandalone) based on paragraph
-            // shape. That refactor also restores width/align/class_names
-            // threading to the figure wrapper — currently dropped here
-            // because `MarkdownInline` has no figure-level slots. See the
-            // polish-pass plan's Item B for the discussion + the
-            // architecture review of this commit for the recommended seam.
+            // Four sources of display params are assembled into the figure:
+            //   1. width  ← `embed.width` (canonical WidthToken) → figure `data-width=`
+            //   2. caption + alt ← `classify_image_alias` (structural → none,
+            //      caption-text → both, empty → none; never `Some("")`)
+            //   3. fit/position ← `build_image_media_attrs` → `to_inline_style()`
+            //      → inner `<img>` `style=` (NOT the figure)
+            //   4. align + class_names ← `build_image_media_attrs` → figure class list
+            //
+            // Emitting `EmitKind::Block` (not `EmitKind::Html`) keeps the
+            // 1:1 `apply_emit` substitution so the figure inherits the source
+            // paragraph's `block_meta` → `data-source-line` survives.
+            //
+            // `find_lone_wikilink_image` guarantees the dispatcher is only
+            // reached for a lone embed (within its container), so the figure
+            // shape is always correct here.
             if matches!(ext.as_deref(), Some(e) if IMAGE_EXTENSIONS.iter().any(|x| *x == e)) {
                 let media = build_image_media_attrs(&pothole, parsed.attrs.as_ref());
-                if media.fit.is_some() || media.position.is_some() {
-                    // When fit/position fire, the alias was a structural
-                    // display-keyword run (e.g. "cover", "contain center")
-                    // — not caption text. alt stays empty so it doesn't
-                    // leak the keywords into the accessible name.
-                    // (Matches `ImageRenderer::render_to_markdown`'s
-                    // `caption_text = None` branch in the structural-alias
-                    // arm.)
-                    let html =
-                        synthesize_image_with_media_attrs(&url, /* alt */ "", assets, &media);
-                    return WikilinkEmit {
-                        output: EmitKind::Html(html),
-                        outgoing_link: Some(outgoing),
-                        diagnostics,
-                    };
-                }
+                let alias_class = crate::media::classify_image_alias(parsed.alias);
+                let alt = alias_class.caption.clone().unwrap_or_default();
+                let caption: Option<Vec<crate::ast::node::Inline>> = alias_class
+                    .caption
+                    .map(|c| vec![crate::ast::node::Inline::Text(c)]);
+                // `AlignSide::css_class()` returns the canonical
+                // `moss-align-left` / `moss-align-right` class verbatim —
+                // the same class the figure renderer appends.
+                let align = media.align.map(|side| side.css_class().to_string());
+                let img_style = media.to_inline_style();
+                // Width source: canonical pothole WidthToken (`|wide`) OR a
+                // width token embedded in a structural alias (`|wide cover`
+                // parses as Alias, so `width` is None) — recover it here so
+                // the figure `data-width` survives either spelling. The
+                // pre-collapse fast-path dropped the embedded case (the bug).
+                let figure_width: Option<&'static str> = width.or_else(|| {
+                    alias_class.display_keywords.as_deref().and_then(|kw| {
+                        kw.split_whitespace().find_map(crate::media::match_width_token)
+                    })
+                });
+                let figure = crate::ast::node::Block::Figure {
+                    image: crate::ast::node::Inline::Image {
+                        // `Asset` is the canonical kind for an `<img src>`
+                        // (matches resolve_urls' image-URL classification).
+                        src: crate::ast::url::Url::resolved(
+                            url.clone(),
+                            crate::ast::url::UrlKind::Asset,
+                        ),
+                        alt,
+                        title: None,
+                        is_wikilink: true,
+                        wikilink_pothole: None,
+                    },
+                    caption,
+                    // Canonical `&'static str` width token; the node stores
+                    // `Option<String>` (for Deserialize).
+                    width: figure_width.map(|w| w.to_string()),
+                    align,
+                    class_names: media.class_names,
+                    img_style,
+                };
+                return WikilinkEmit {
+                    output: EmitKind::Block(Box::new(figure)),
+                    outgoing_link: Some(outgoing),
+                    diagnostics,
+                };
             }
 
             let emit = match ext.as_deref().and_then(lookup) {
@@ -781,66 +819,6 @@ fn build_image_media_attrs(
     }
 
     media
-}
-
-/// Synthesize the `<img>` HTML for a wikilink embed carrying display
-/// params (fit / position), routing through the canonical
-/// `synthesize_image_html` so `<picture>`, dims, eager/lazy, and LQIP
-/// suppression all stay in one place. The inline style produced by
-/// [`MediaAttrs::to_inline_style`] is appended via
-/// [`crate::render::image::ImageRenderOptions::extra_attrs`] — the
-/// synthesizer detects the resulting `style="..."` fragment and skips its
-/// own LQIP/dominant-color style emission (per the `extra_has_style`
-/// guard in `synthesize_inner`).
-///
-/// Author-provided extras (`media.extra_attrs`) are emitted after the
-/// style fragment, HTML-escaped, in deterministic [`BTreeMap`] order.
-/// `class_names` ride on the inner `<img>` via [`ImageRenderOptions::class`]
-/// — present-tense limitation: align (which conceptually belongs on the
-/// figure wrapper) and the figure-level class list are not yet carried
-/// through; see the polish-pass plan for the standalone-wrap follow-up.
-fn synthesize_image_with_media_attrs(
-    url: &str,
-    alt: &str,
-    assets: &AssetSnapshot,
-    media: &MediaAttrs,
-) -> String {
-    use crate::media::html_escape;
-    use crate::render::image::{synthesize_image_html, ImageContext, ImageRenderOptions};
-
-    let mut extra = String::new();
-    if let Some(style) = media.to_inline_style() {
-        extra.push_str(r#"style=""#);
-        extra.push_str(&html_escape(&style));
-        extra.push('"');
-    }
-    for (k, v) in &media.extra_attrs {
-        if !extra.is_empty() {
-            extra.push(' ');
-        }
-        extra.push_str(&html_escape(k));
-        extra.push_str(r#"=""#);
-        extra.push_str(&html_escape(v));
-        extra.push('"');
-    }
-
-    let class_owned = if media.class_names.is_empty() {
-        None
-    } else {
-        Some(media.class_names.join(" "))
-    };
-
-    synthesize_image_html(
-        url,
-        alt,
-        assets,
-        ImageContext::MarkdownInline,
-        &ImageRenderOptions {
-            eager: false,
-            class: class_owned.as_deref(),
-            extra_attrs: if extra.is_empty() { None } else { Some(&extra) },
-        },
-    )
 }
 
 /// Discriminant for the per-kind HTML synthesizer the dispatcher routes to
@@ -1360,28 +1338,6 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_image_embed_uses_image_renderer() {
-        let graph = build_graph(&["photo.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "photo.jpg",
-            None,
-            /* is_embed */ true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Inline(s) => {
-                // ImageRenderer emits Inline markdown `![alt](url)` for the
-                // no-width / no-attrs path (see embed_renderer.rs::ImageRenderer).
-                assert!(s.starts_with("!["));
-                assert!(s.contains("photo.jpg"));
-            }
-            other => panic!("expected Inline, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn dispatch_video_extension_routes_to_synth() {
         // Phase 3 PR4.5 (2026-05-27): non-image wikilinks now route
         // DIRECTLY to the per-kind synthesizer — the markdown round-trip
@@ -1562,38 +1518,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dispatch_width_token_pothole_passes_width_to_renderer() {
-        // `![[photo.jpg|wide]]` should propagate `wide` to the renderer.
-        // The pothole parses as a WidthToken and the dispatcher hands
-        // ParsedEmbed { width: Some("wide"), .. } to the ImageRenderer.
-        // Phase 3 PR4 (2026-05-27): ImageRenderer now emits bare
-        // markdown — width is no longer round-tripped through a title
-        // attribute. The pothole-classifier still surfaces the canonical
-        // width to typed consumers downstream (the dispatcher's
-        // `WidthToken` variant — see `parse_pothole_params` test above).
-        assert_eq!(
-            parse_pothole_params("wide"),
-            PotholeContent::WidthToken {
-                width: "wide",
-                rest_alias: String::new()
-            }
-        );
-        let graph = build_graph(&["photo.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "photo.jpg",
-            Some("wide"),
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Inline(s) => assert_eq!(s, "![](photo.jpg)"),
-            other => panic!("expected Inline markdown, got {:?}", other),
-        }
-    }
-
     // --- Image display-attr dispatch (fit / position threading) ----------
     //
     // The polish-pass plan (docs/plans/2026-05-27-polish-passes-followups.md
@@ -1604,262 +1528,6 @@ mod tests {
     // `let _ = params;` — the emitted markdown is bare `![](url)`. The
     // dispatcher now intercepts these cases ahead of the renderer registry
     // and emits a final `<img>` with the appropriate `style=`.
-
-    #[test]
-    fn dispatch_image_alias_with_fit_emits_object_fit_style() {
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            Some("cover"),
-            /* is_embed */ true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Html(s) => {
-                assert!(s.contains("<img"), "expected <img>, got: {}", s);
-                assert!(
-                    s.contains("object-fit:cover"),
-                    "expected object-fit:cover, got: {}",
-                    s,
-                );
-                // Structural alias must not leak into accessible name:
-                // `cover` is a display keyword, not caption text.
-                assert!(s.contains(r#"alt="""#), "expected empty alt, got: {}", s,);
-            }
-            other => panic!("expected Html, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dispatch_image_alias_with_fit_and_position_emits_both_styles() {
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            Some("cover left"),
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Html(s) => {
-                assert!(
-                    s.contains("object-fit:cover"),
-                    "expected object-fit:cover, got: {}",
-                    s,
-                );
-                assert!(
-                    s.contains("object-position:left"),
-                    "expected object-position:left, got: {}",
-                    s,
-                );
-            }
-            other => panic!("expected Html, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dispatch_image_params_form_emits_object_fit_style() {
-        // `![[hero.jpg|fit=cover position=left]]` — K=V pothole.
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            Some("fit=cover position=left"),
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Html(s) => {
-                assert!(
-                    s.contains("object-fit:cover"),
-                    "expected object-fit:cover, got: {}",
-                    s,
-                );
-                assert!(
-                    s.contains("object-position:left"),
-                    "expected object-position:left, got: {}",
-                    s,
-                );
-            }
-            other => panic!("expected Html, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dispatch_image_with_two_word_position_emits_combined_style() {
-        // `![[hero.jpg|cover top right]]` — two-word position keyword.
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            Some("cover top right"),
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Html(s) => {
-                assert!(
-                    s.contains("object-fit:cover"),
-                    "expected object-fit:cover, got: {}",
-                    s,
-                );
-                assert!(
-                    s.contains("object-position:top right"),
-                    "expected object-position:top right, got: {}",
-                    s,
-                );
-            }
-            other => panic!("expected Html, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dispatch_image_without_display_params_stays_on_legacy_path() {
-        // `![[hero.jpg]]` — no pothole. Still routes through
-        // ImageRenderer's markdown round-trip (EmitKind::Inline).
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            None,
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Inline(s) => assert!(s.starts_with("!["), "expected markdown, got: {}", s),
-            other => panic!("expected Inline markdown, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dispatch_image_with_caption_alias_stays_on_legacy_path() {
-        // `![[hero.jpg|A nice photo]]` — caption text, not display params.
-        // Falls through to ImageRenderer's markdown round-trip.
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            Some("A nice photo"),
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Inline(s) => {
-                assert!(s.contains("A nice photo"), "expected caption, got: {}", s)
-            }
-            other => panic!("expected Inline markdown, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dispatch_image_with_width_token_only_stays_on_legacy_path() {
-        // `![[hero.jpg|wide]]` — width token, no fit/position.
-        // Falls through to ImageRenderer (which today carries width via
-        // the `embed.width` field, not via the new dispatcher branch).
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            Some("wide"),
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        assert!(
-            matches!(emit.output, EmitKind::Inline(_)),
-            "width-only alias must NOT trigger the new fit/position branch",
-        );
-    }
-
-    #[test]
-    fn dispatch_image_params_style_does_not_duplicate_style_attribute() {
-        // Regression test: an author-typed `style=foo` in the K=V pothole
-        // used to land in `MediaAttrs::extra_attrs` and emit a second
-        // `style="foo"` attribute after the synth's `style="object-fit:…"`.
-        // The browser would honor the last `style=` and drop moss's
-        // object-fit silently. `build_image_media_attrs` now filters
-        // `style` out of `extra_attrs` since the synth owns inline-style
-        // emission.
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            Some("fit=cover style=bar"),
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Html(s) => {
-                let style_count = s.matches("style=").count();
-                assert_eq!(
-                    style_count, 1,
-                    "expected exactly one style= attribute, got {} in: {}",
-                    style_count, s,
-                );
-                assert!(s.contains("object-fit:cover"), "got: {}", s);
-                // The author's `style=bar` is silently dropped — better
-                // than two style= attrs. Document the trade-off via
-                // assertion.
-                assert!(!s.contains(r#"style="bar""#), "got: {}", s);
-            }
-            other => panic!("expected Html, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dispatch_image_with_width_and_fit_emits_fit_but_drops_width() {
-        // `![[hero.jpg|wide cover]]` — width AND fit in one space-separated
-        // alias. The width token gets stripped from the alias-cleaning step
-        // (so fit still parses cleanly through `parse_media_attrs`), but
-        // the dispatcher's image branch hard-codes `ImageContext::MarkdownInline`
-        // — there is no `data-width=` slot on the inner `<img>`. Width
-        // belongs on the `<figure>` wrapper, which this branch doesn't emit.
-        //
-        // **Known limitation, not a regression**: the pre-fix path through
-        // `ImageRenderer::render_to_markdown` ALSO dropped width here (the
-        // `let _ = params;` line discarded it along with fit/position). The
-        // legacy figure-wrap path via Phase 3 PR4's retired `parse_title`
-        // would have surfaced it, but that's gone. Restoring it is Phase 4
-        // territory (TODO: collapse this branch into `SynthKind::Image` with
-        // context-aware emission — see the polish-pass plan's Item B
-        // discussion and the architecture review of this commit).
-        //
-        // The test pins the CURRENT behavior so a future refactor that
-        // accidentally re-surfaces width has to update this assertion
-        // intentionally.
-        let graph = build_graph(&["hero.jpg"]);
-        let emit = dispatch_wikilink_embed(
-            "hero.jpg",
-            Some("wide cover"),
-            true,
-            &graph,
-            "index.md",
-            &empty_snapshot(),
-        );
-        match emit.output {
-            EmitKind::Html(s) => {
-                assert!(
-                    s.contains("object-fit:cover"),
-                    "expected object-fit:cover, got: {}",
-                    s,
-                );
-                assert!(
-                    !s.contains(r#"data-width="#),
-                    "current branch does not thread width to figure wrap, got: {}",
-                    s,
-                );
-            }
-            other => panic!("expected Html, got: {:?}", other),
-        }
-    }
 
     #[test]
     fn dispatch_only_fires_for_wikilink_caller() {
@@ -1876,4 +1544,181 @@ mod tests {
 
         // No assertion needed — the type signature itself is the check.
     }
+    // ---- Image embed dispatch (image-embed synth-collapse) ---------------
+    //
+    // ALL `![[photo.jpg]]` forms now emit `EmitKind::Block(Block::Figure)`
+    // with full param threading (width / caption / fit / position / align).
+    // The OLD tests asserted `EmitKind::Inline("![](url)")` round-trips and
+    // a fit/position fast-path that DROPPED width — they encoded the bug
+    // this change fixes and were removed.
+
+    fn figure_of(emit: &WikilinkEmit) -> &crate::ast::node::Block {
+        match &emit.output {
+            EmitKind::Block(b) => b.as_ref(),
+            other => panic!("expected EmitKind::Block(Figure), got {other:?}"),
+        }
+    }
+
+    fn render_figure(emit: &WikilinkEmit) -> String {
+        let block = match emit.output.clone() {
+            EmitKind::Block(b) => *b,
+            other => panic!("expected EmitKind::Block(Figure), got {other:?}"),
+        };
+        let doc = crate::ast::Document::from_blocks(vec![block]);
+        crate::ast::render_document(&doc, &crate::ast::DefaultHooks::new())
+    }
+
+    fn dispatch_img(alias: Option<&str>) -> WikilinkEmit {
+        let graph = build_graph(&["photo.jpg", "hero.jpg"]);
+        dispatch_wikilink_embed("photo.jpg", alias, true, &graph, "index.md", &empty_snapshot())
+    }
+
+    #[test]
+    fn dispatch_image_plain_emits_figure_block() {
+        use crate::ast::node::{Block, Inline};
+        let emit = dispatch_img(None);
+        match figure_of(&emit) {
+            Block::Figure { image, caption, width, align, class_names, img_style } => {
+                assert!(caption.is_none(), "plain embed: no caption");
+                assert!(width.is_none());
+                assert!(align.is_none());
+                assert!(class_names.is_empty());
+                assert!(img_style.is_none());
+                match image {
+                    Inline::Image { src, alt, is_wikilink, .. } => {
+                        assert!(src.is_resolved());
+                        assert_eq!(alt, "");
+                        assert!(*is_wikilink);
+                    }
+                    other => panic!("expected Image, got {other:?}"),
+                }
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_image_caption_text_sets_alt_and_figcaption() {
+        use crate::ast::node::{Block, Inline};
+        let emit = dispatch_img(Some("My caption"));
+        match figure_of(&emit) {
+            Block::Figure { image, caption, .. } => {
+                let cap = caption.as_ref().expect("caption present");
+                assert_eq!(cap.len(), 1);
+                match &cap[0] {
+                    Inline::Text(t) => assert_eq!(t, "My caption"),
+                    other => panic!("expected caption Text, got {other:?}"),
+                }
+                match image {
+                    Inline::Image { alt, .. } => assert_eq!(alt, "My caption"),
+                    other => panic!("expected Image, got {other:?}"),
+                }
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+        let html = render_figure(&emit);
+        assert!(html.contains(r#"alt="My caption""#), "got: {html}");
+        assert!(html.contains("<figcaption>My caption</figcaption>"), "got: {html}");
+    }
+
+    #[test]
+    fn dispatch_image_width_token_preserved_as_data_width() {
+        use crate::ast::node::Block;
+        // FIX: width is no longer dropped — it lands as figure data-width=.
+        let emit = dispatch_img(Some("wide"));
+        match figure_of(&emit) {
+            Block::Figure { width, caption, .. } => {
+                assert_eq!(width.as_deref(), Some("wide"));
+                assert!(caption.is_none(), "width token is not a caption");
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+        let html = render_figure(&emit);
+        assert!(html.contains(r#"data-width="wide""#), "got: {html}");
+    }
+
+    #[test]
+    fn dispatch_image_cover_emits_object_fit_on_inner_img() {
+        use crate::ast::node::Block;
+        let emit = dispatch_img(Some("cover"));
+        match figure_of(&emit) {
+            Block::Figure { img_style, caption, .. } => {
+                assert_eq!(img_style.as_deref(), Some("object-fit:cover"));
+                assert!(caption.is_none(), "structural alias is not a caption");
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+        let html = render_figure(&emit);
+        assert!(html.contains("object-fit:cover"), "got: {html}");
+        assert!(html.contains(r#"<figure class="moss-image""#), "got: {html}");
+    }
+
+    #[test]
+    fn dispatch_image_cover_left_emits_fit_and_position() {
+        use crate::ast::node::Block;
+        let emit = dispatch_img(Some("cover left"));
+        match figure_of(&emit) {
+            Block::Figure { img_style, .. } => {
+                let style = img_style.as_deref().expect("style present");
+                assert!(style.contains("object-fit:cover"), "got: {style}");
+                assert!(style.contains("object-position:left"), "got: {style}");
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_image_params_form_emits_object_fit() {
+        use crate::ast::node::Block;
+        let emit = dispatch_img(Some("fit=cover"));
+        match figure_of(&emit) {
+            Block::Figure { img_style, .. } => {
+                assert_eq!(img_style.as_deref(), Some("object-fit:cover"));
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_image_two_word_position_combines() {
+        use crate::ast::node::Block;
+        let emit = dispatch_img(Some("cover top left"));
+        match figure_of(&emit) {
+            Block::Figure { img_style, .. } => {
+                let style = img_style.as_deref().expect("style present");
+                assert!(style.contains("object-fit:cover"), "got: {style}");
+                assert!(style.contains("object-position:top left"), "got: {style}");
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_image_wide_cover_combines_width_and_fit() {
+        use crate::ast::node::Block;
+        // width → figure data-width; fit → inner <img> style. Both survive
+        // (the pre-collapse fast-path DROPPED width when fit was present).
+        let emit = dispatch_img(Some("wide cover"));
+        match figure_of(&emit) {
+            Block::Figure { width, img_style, .. } => {
+                assert_eq!(width.as_deref(), Some("wide"));
+                assert_eq!(img_style.as_deref(), Some("object-fit:cover"));
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+        let html = render_figure(&emit);
+        assert!(html.contains(r#"data-width="wide""#), "got: {html}");
+        assert!(html.contains("object-fit:cover"), "got: {html}");
+    }
+
+    #[test]
+    fn dispatch_image_inner_img_has_single_style_attr() {
+        // Inner <img> carries exactly one style= (object-fit), no LQIP dup
+        // (no snapshot here).
+        let emit = dispatch_img(Some("fit=cover"));
+        let html = render_figure(&emit);
+        let n = html.matches("style=").count();
+        assert_eq!(n, 1, "exactly one style= attr, got {n}: {html}");
+    }
+
 }

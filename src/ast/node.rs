@@ -274,9 +274,34 @@ pub enum Block {
     /// `caption` defaults to the image's alt text at parse time. `None`
     /// means "figure wrap but no `<figcaption>`" — reserved for the
     /// empty-alt case (omit caption when there is nothing to read).
+    ///
+    /// The figure-level display params (`width`, `align`, `class_names`,
+    /// `img_style`) are populated only when a figure originates from a
+    /// parameterized wikilink embed (`![[photo.jpg|wide cover]]`) — the
+    /// image-embed synth-collapse routes such embeds through this typed
+    /// node so width/fit/position/align survive (previously dropped by the
+    /// markdown round-trip). The CommonMark `![](url)` promotion path
+    /// (`try_promote_to_figure`) leaves them at their defaults, so its
+    /// rendered output is byte-identical to before the collapse.
     Figure {
         image: Inline,
         caption: Option<Vec<Inline>>,
+        /// Canonical width token (`body | wide | page | screen`) emitted as
+        /// `data-width="…"` on the `<figure>`. `None` omits the attribute.
+        /// `String` (not `&'static str`) so `Block` keeps its `Deserialize`
+        /// derive; the value is always one of the canonical tokens.
+        width: Option<String>,
+        /// Figure-level align class (`moss-align-left` / `moss-align-right`),
+        /// appended to the `<figure>` class list. `None` omits it.
+        align: Option<String>,
+        /// Extra author-supplied class names appended to the `<figure>` class
+        /// list (after `moss-image` and any align class). Empty = none.
+        class_names: Vec<String>,
+        /// Inline `style=` fragment for the INNER `<img>` (e.g.
+        /// `object-fit:cover;object-position:left` from a `|cover left`
+        /// embed). `None` omits it. Distinct from any figure-level attribute:
+        /// fit/position style belongs on the image element, not the figure.
+        img_style: Option<String>,
     },
     /// Compound-link grid cell: the entire cell is a single markdown
     /// link `[inner](url)` whose `inner` is parsed as block-level content
@@ -516,11 +541,16 @@ mod tests {
         let b = Block::Figure {
             image: image.clone(),
             caption: Some(vec![text("A photo")]),
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         };
         match b {
             Block::Figure {
                 image: img,
                 caption,
+                ..
             } => {
                 assert!(matches!(img, Inline::Image { .. }));
                 let cap = caption.expect("caption present");
@@ -542,6 +572,10 @@ mod tests {
                 wikilink_pothole: None,
             },
             caption: None,
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         };
         let s = serde_json::to_string(&b).expect("serialize");
         let back: Block = serde_json::from_str(&s).expect("deserialize");

@@ -611,7 +611,7 @@ where
         Block::Shortcode(sc) => {
             walk_images_in_shortcode(sc, f);
         }
-        Block::Figure { image, caption } => {
+        Block::Figure { image, caption, .. } => {
             walk_images_in_inline(image, f);
             if let Some(cap) = caption {
                 for inline in cap {
@@ -876,7 +876,7 @@ fn gather_text_block(block: &Block, out: &mut String) {
                 gather_text_inline(inline, out);
             }
         }
-        Block::Figure { image, caption } => {
+        Block::Figure { image, caption, .. } => {
             if let Inline::Image { alt, .. } = image {
                 out.push_str(alt);
             }

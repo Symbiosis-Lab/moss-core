@@ -699,7 +699,17 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
         Inline::Image { alt, .. } => Some(vec![Inline::Text(alt.clone())]),
         _ => None,
     };
-    Ok(Block::Figure { image, caption })
+    // CommonMark `![](url)` promotion carries no pipe params — the
+    // figure-level display fields stay at their defaults so this path's
+    // rendered output is byte-identical to before the synth-collapse.
+    Ok(Block::Figure {
+        image,
+        caption,
+        width: None,
+        align: None,
+        class_names: Vec::new(),
+        img_style: None,
+    })
 }
 
 /// Collect a contiguous run of inline events into `Vec<Inline>`. Stops
@@ -1728,7 +1738,7 @@ mod tests {
         // For image+text (where Block::Paragraph still applies), see
         // `image_with_caption_text_does_not_promote` below.
         match first_block("![cat photo](cat.jpg)\n") {
-            Block::Figure { image, caption } => {
+            Block::Figure { image, caption, .. } => {
                 match image {
                     Inline::Image {
                         src, alt, title, ..
@@ -2224,7 +2234,7 @@ mod tests {
         // sibling inline content, becomes Block::Figure. Caption defaults
         // to the image's alt text.
         match first_block("![A logo](logo.png)\n") {
-            Block::Figure { image, caption } => {
+            Block::Figure { image, caption, .. } => {
                 match image {
                     Inline::Image { src, alt, .. } => {
                         assert!(src.is_unresolved());

@@ -275,7 +275,6 @@ fn registry() -> &'static [&'static dyn EmbedRenderer] {
     static INIT: OnceLock<Vec<&'static dyn EmbedRenderer>> = OnceLock::new();
     INIT.get_or_init(|| {
         vec![
-            &ImageRenderer as &'static dyn EmbedRenderer,
             &MarkdownEmbedRenderer as &'static dyn EmbedRenderer,
             &IframeRenderer as &'static dyn EmbedRenderer,
             &PdfRenderer as &'static dyn EmbedRenderer,
@@ -304,227 +303,13 @@ pub fn lookup_renderer(ext: &str) -> Option<&'static dyn EmbedRenderer> {
 // ---------------------------------------------------------------------------
 
 use crate::heading_anchor::obsidian_heading_anchor;
-use crate::media::{is_all_display_keywords, parse_media_attrs};
+use crate::media::parse_media_attrs;
 
 use super::fuzzy_path::relative_asset_path;
 use super::title_params::TitleParams;
 
 /// Image file extensions recognized by `ImageRenderer`.
 pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
-
-/// Renderer for image embeds: `![[photo.jpg]]` → `<img>` or `![alt](url)`.
-#[derive(Debug)]
-pub struct ImageRenderer;
-
-impl EmbedRenderer for ImageRenderer {
-    fn extensions(&self) -> &[&'static str] {
-        IMAGE_EXTENSIONS
-    }
-
-    fn render(&self, embed: &ParsedEmbed<'_>) -> RenderedEmbed {
-        RenderedEmbed::Inline(self.render_to_markdown(embed))
-    }
-}
-
-impl ImageRenderer {
-    /// Stage 1 emission: produce a standard CommonMark image
-    /// `![alt](url)` or `![alt](url "moss:params")`. pulldown-cmark parses this
-    /// natively as `Tag::Image`; Phase 1's Stage 2 dispatcher reads the
-    /// `moss:` title and synthesizes the final `<figure>`/`<img>` HTML.
-    ///
-    /// The wikilink resolver pre-extracts the spec § P9 width token into
-    /// `embed.width`, and feeds the remaining alias text into `embed.alias`.
-    /// We translate both into title-attribute params here — no HTML is emitted
-    /// by moss-core anymore.
-    fn render_to_markdown(&self, embed: &ParsedEmbed<'_>) -> String {
-        let url = relative_asset_path(embed.from_path, embed.resolved_path);
-
-        let mut params = TitleParams::default();
-
-        // Width comes from the resolver's pre-extracted width segment
-        // (canonical value-space term — see `crate::media::match_width_token`).
-        if let Some(w) = embed.width {
-            params.insert("width", w);
-        }
-
-        // Classify alias. An alias is "display keywords" if every
-        // space-separated token is either a recognized display keyword
-        // (`is_all_display_keywords`) OR a recognized width token
-        // (`match_width_token`). This lets authors write the compound form
-        // `align-left wide` in a single pipe segment — both classify as
-        // structural, not as a caption.
-        // Empty alias (`![[file|]]`) is treated as no alias.
-        let (display_kw, caption_text) = match embed.alias {
-            Some(alias) if alias.is_empty() => (None, None),
-            Some(alias) if is_structural_alias(alias) => (Some(alias), None),
-            Some(other) => (None, Some(other.to_string())),
-            None => (None, None),
-        };
-
-        // Track passthrough classes from BOTH the pipe-alias display-keyword
-        // stream AND the trailing Pandoc attribute block. They union+dedupe
-        // when both forms are present (Decision #11).
-        let mut class_names: Vec<String> = Vec::new();
-        let mut extra_attrs: std::collections::BTreeMap<String, String> =
-            std::collections::BTreeMap::new();
-
-        // Fold display keywords + inline width tokens into typed params.
-        if let Some(dk) = display_kw {
-            // Pull any inline width tokens out of the alias before parsing
-            // display keywords (so parse_media_attrs sees a clean stream of
-            // align / fit / position tokens).
-            let mut kept = Vec::new();
-            for tok in dk.split_whitespace() {
-                if let Some(canonical) = crate::media::match_width_token(tok) {
-                    // Last-wins if multiple width tokens appear (defensive —
-                    // production input has at most one).
-                    params.insert("width", canonical);
-                } else {
-                    kept.push(tok);
-                }
-            }
-            let attrs = parse_media_attrs(&kept.join(" "));
-            if let Some(side) = attrs.align {
-                params.insert("align", align_keyword(side));
-            }
-            if let Some(fit) = attrs.fit {
-                params.insert("fit", fit.to_css_value());
-            }
-            if let Some(pos) = attrs.position {
-                params.insert("position", pos.to_css_value());
-            }
-            class_names.extend(attrs.class_names.into_iter());
-            for (k, v) in attrs.extra_attrs.into_iter() {
-                extra_attrs.insert(k, v);
-            }
-        }
-
-        // Fold the trailing Pandoc attribute block. Attribute block wins on
-        // typed-field conflicts (Decision #11). Class lists union+dedupe
-        // (handled by `add_class_dedup`). Pandoc `class="..."` longhand is
-        // treated as a space-separated class list (Pandoc spec parity); the
-        // same recognized-vocabulary extraction applies as for `.class`.
-        if let Some(block) = &embed.attrs {
-            // `.class` shorthand → typed fields (align) or passthrough.
-            for class in &block.classes {
-                if let Some(side) = crate::media::AlignSide::from_keyword(class) {
-                    params.insert("align", align_keyword(side));
-                } else if let Some(f) = crate::media::Fit::from_keyword(class) {
-                    params.insert("fit", f.to_css_value());
-                } else if let Some(p) = crate::media::Position::from_keyword(class) {
-                    params.insert("position", p.to_css_value());
-                } else {
-                    add_class_dedup(&mut class_names, class);
-                }
-            }
-            // Width flag from attr block.
-            if let Some(w) = block.width {
-                params.insert("width", w);
-            }
-            // Pandoc `class="..."` longhand → split + same dispatch.
-            // Also consume it from the kv map so it does not flow into
-            // `extra_attrs`.
-            let mut consumed_class_kv = false;
-            for (k, v) in &block.kvs {
-                if k == "class" {
-                    consumed_class_kv = true;
-                    for c in v.split_whitespace() {
-                        if let Some(side) = crate::media::AlignSide::from_keyword(c) {
-                            params.insert("align", align_keyword(side));
-                        } else if let Some(f) = crate::media::Fit::from_keyword(c) {
-                            params.insert("fit", f.to_css_value());
-                        } else if let Some(p) = crate::media::Position::from_keyword(c) {
-                            params.insert("position", p.to_css_value());
-                        } else {
-                            add_class_dedup(&mut class_names, c);
-                        }
-                    }
-                }
-            }
-            // Remaining key=value pairs flow through as extra_attrs (and
-            // override pipe-alias extras on conflict — attribute block wins).
-            for (k, v) in &block.kvs {
-                if consumed_class_kv && k == "class" {
-                    continue;
-                }
-                extra_attrs.insert(k.clone(), v.clone());
-            }
-        }
-
-        if !class_names.is_empty() {
-            params.insert("classes", class_names.join(" "));
-        }
-        for (k, v) in &extra_attrs {
-            params.insert(k.clone(), v.clone());
-        }
-
-        let alt = caption_text.unwrap_or_default();
-
-        // Phase 3 PR4 (2026-05-27): the `moss:` title channel retired —
-        // `parse_title` no longer reads markdown image titles. The
-        // wikilink dispatcher hands `TitleParams` directly to
-        // synthesizers via `parse_pothole_params`, bypassing the
-        // markdown round-trip entirely. The params accumulated above
-        // are still useful for future Stage 2 surfaces that read them
-        // off the dispatcher's pothole-parse output (Tracked: width /
-        // caption / align threading in `render_inline_md_for_dispatch`).
-        // For now we emit bare markdown; the discarded `params` are
-        // a noop side-effect, not a behavioral regression — the prior
-        // `moss:` title was already discarded by the downstream
-        // `render_inline_md_for_dispatch` path.
-        let _ = params;
-        format!("![{}]({})", markdown_escape_alt(&alt), url)
-    }
-}
-
-/// True when every whitespace-separated token in `alias` is either a
-/// recognized display keyword (fit / position / align) OR a canonical
-/// width token (body / wide / page / screen / full).
-///
-/// This is the structural-vs-caption classifier for image aliases: a
-/// fully-structural alias contributes only to title params; anything else
-/// becomes alt text. The `is_all_display_keywords` half is unchanged
-/// (covers two-word position tokens like `top left`); the width-token
-/// half lets authors write `align-left wide` without breaking the pipe.
-fn is_structural_alias(alias: &str) -> bool {
-    // Fast path: any caption-like text fails `is_all_display_keywords`
-    // and would also fail the per-token loop below.
-    if is_all_display_keywords(alias) {
-        return true;
-    }
-    let tokens: Vec<&str> = alias.split_whitespace().collect();
-    if tokens.is_empty() {
-        return false;
-    }
-    // Walk tokens; admit width tokens, otherwise defer to display-keyword
-    // recognition (per-token, since position tokens may pair across two).
-    let mut i = 0;
-    while i < tokens.len() {
-        // Width token: single-token, simple admit.
-        if crate::media::match_width_token(tokens[i]).is_some() {
-            i += 1;
-            continue;
-        }
-        // Two-word position (e.g. `top left`).
-        if i + 1 < tokens.len() {
-            let combined = format!("{} {}", tokens[i], tokens[i + 1]);
-            if crate::media::Position::from_keyword(&combined).is_some() {
-                i += 2;
-                continue;
-            }
-        }
-        // Single-token display keyword.
-        if crate::media::Fit::from_keyword(tokens[i]).is_some()
-            || crate::media::Position::from_keyword(tokens[i]).is_some()
-            || crate::media::AlignSide::from_keyword(tokens[i]).is_some()
-        {
-            i += 1;
-            continue;
-        }
-        return false;
-    }
-    true
-}
 
 /// Map an `AlignSide` to its canonical title-param keyword (`"left"` or
 /// `"right"`). Stage 2 reverses this via `AlignSide::from_keyword`-style
@@ -610,14 +395,6 @@ fn markdown_escape_alt(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('[', "\\[")
         .replace(']', "\\]")
-}
-
-/// Escape title text for markdown `(url "title")` syntax.
-///
-/// CommonMark allows three quoting styles; we always emit `"..."` so we
-/// only need to escape literal `"` and `\` inside the title body.
-fn markdown_escape_title(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Shared Stage 1 emitter for the five non-image renderers (iframe, pdf,
@@ -1141,200 +918,6 @@ mod tests {
         assert_eq!(MarkdownEmbedRenderer.extensions(), &["md"]);
     }
 
-    // --- ImageRenderer ---
-
-    #[test]
-    fn test_image_renderer_no_alias_emits_bare_markdown() {
-        // Stage 1: no params, no caption → bare CommonMark image with empty alt.
-        // pulldown-cmark's default Tag::Image handler converts this to <img>
-        // with no figure wrapper at all; the bare-image-paragraph rule (in
-        // src-tauri post-pass) decides figure-wrap separately.
-        let r = ImageRenderer;
-        let embed = ParsedEmbed {
-            resolved_path: "assets/photo.jpg",
-            from_path: "hello.md", // sibling — no `../` prefix in output
-            query: None,
-            section: None,
-            alias: None,
-            width: None,
-            attrs: None,
-        };
-        assert_eq!(
-            r.render(&embed),
-            RenderedEmbed::Inline("![](assets/photo.jpg)".to_string())
-        );
-    }
-
-    #[test]
-    fn test_image_renderer_empty_alias_treated_as_no_alias() {
-        // `![[file|]]` (literal empty pipe) goes through `Some("")`. Stage 1
-        // treats an empty alias as "no alias": no params, empty alt.
-        let r = ImageRenderer;
-        let embed = ParsedEmbed {
-            resolved_path: "photo.jpg",
-            from_path: "hello.md",
-            query: None,
-            section: None,
-            alias: Some(""),
-            width: None,
-            attrs: None,
-        };
-        assert_eq!(
-            r.render(&embed),
-            RenderedEmbed::Inline("![](photo.jpg)".to_string())
-        );
-    }
-
-    #[test]
-    fn test_image_renderer_alias_plain_text() {
-        // Stage 1: plain caption text becomes the alt slot (no params).
-        let r = ImageRenderer;
-        let embed = ParsedEmbed {
-            resolved_path: "photo.jpg",
-            from_path: "hello.md",
-            query: None,
-            section: None,
-            alias: Some("A lovely cat"),
-            width: None,
-            attrs: None,
-        };
-        assert_eq!(
-            r.render(&embed),
-            RenderedEmbed::Inline("![A lovely cat](photo.jpg)".to_string())
-        );
-    }
-
-    #[test]
-    fn test_image_renderer_extensions_cover_all_formats() {
-        let r = ImageRenderer;
-        let exts: Vec<&&str> = r.extensions().iter().collect();
-        for e in &["png", "jpg", "jpeg", "gif", "svg", "webp"] {
-            assert!(
-                exts.iter().any(|&&x| x == *e),
-                "missing ext: {} in {:?}",
-                e,
-                exts
-            );
-        }
-    }
-
-    // -- ImageRenderer Stage 1: markdown emission with `moss:` title -----
-
-    /// Pre-extract width from alias (mirrors the wikilink resolver's pre-pass)
-    /// then run the renderer. Returns the Inline string — Stage 1 markdown.
-    fn image_inline(alias: Option<&str>) -> String {
-        let r = ImageRenderer;
-        let (width, alias_owned) = match alias {
-            Some(a) => crate::media::extract_width_from_alias(a),
-            None => (None, String::new()),
-        };
-        let alias_for_renderer: Option<&str> = if width.is_some() {
-            if alias_owned.is_empty() {
-                None
-            } else {
-                Some(alias_owned.as_str())
-            }
-        } else {
-            alias
-        };
-        let embed = ParsedEmbed {
-            resolved_path: "assets/photo.jpg",
-            from_path: "hello.md", // sibling — keeps URL == resolved_path
-            query: None,
-            section: None,
-            alias: alias_for_renderer,
-            width,
-            attrs: None,
-        };
-        match r.render(&embed) {
-            RenderedEmbed::Inline(s) => s,
-            _ => panic!("image renderer should return Inline"),
-        }
-    }
-
-    #[test]
-    fn stage1_image_no_params_is_bare_markdown() {
-        let out = image_inline(None);
-        assert_eq!(out, "![](assets/photo.jpg)");
-    }
-
-    // Phase 3 PR4 (2026-05-27): `ImageRenderer::render_to_markdown` no
-    // longer emits a `moss:K=V` title. The typed-param accumulation still
-    // runs (so the structural / caption classifier stays exercised) but
-    // the params are discarded — `parse_title` retired and the
-    // downstream pipeline reads `TitleParams` from the wikilink pothole
-    // via `parse_pothole_params`. The remaining assertions pin the alt /
-    // url shape; param round-trip moves to `parse_pothole_params` tests.
-
-    #[test]
-    fn stage1_image_with_align_emits_bare_markdown() {
-        let out = image_inline(Some("align-left"));
-        assert_eq!(out, "![](assets/photo.jpg)");
-    }
-
-    #[test]
-    fn stage1_image_with_width_emits_bare_markdown() {
-        let out = image_inline(Some("wide"));
-        assert_eq!(out, "![](assets/photo.jpg)");
-    }
-
-    #[test]
-    fn stage1_image_full_alias_keeps_alt_empty() {
-        // `full` is a width keyword; classifier strips it from the alt
-        // slot. Caption stays empty.
-        let out = image_inline(Some("full"));
-        assert_eq!(out, "![](assets/photo.jpg)");
-    }
-
-    #[test]
-    fn stage1_image_width_caption_keeps_caption_as_alt() {
-        // Caption text + width: caption becomes alt. The width param is
-        // discarded under PR4 — recoverable via wikilink pothole syntax.
-        let out = image_inline(Some("A nice photo|full"));
-        assert_eq!(out, "![A nice photo](assets/photo.jpg)");
-    }
-
-    #[test]
-    fn stage1_image_structural_alias_yields_empty_alt() {
-        // Structural aliases (display keywords / width) all strip from alt.
-        for alias in [
-            "align-left wide",
-            "align-right|wide",
-            "cover|full",
-            "align-left cover|full",
-        ] {
-            let out = image_inline(Some(alias));
-            assert_eq!(out, "![](assets/photo.jpg)", "alias={}", alias);
-        }
-    }
-
-    #[test]
-    fn stage1_image_caption_with_width_word_not_shadowed() {
-        // The word `wide` inside a longer caption must NOT trigger width
-        // classification — only an exact-match alias segment counts.
-        // Caption survives in the alt slot.
-        let out = image_inline(Some("a wide angle shot"));
-        assert!(!out.contains("moss:"), "no params expected, got: {}", out);
-        assert_eq!(out, "![a wide angle shot](assets/photo.jpg)");
-    }
-
-    #[test]
-    fn stage1_image_html_escapes_caption_for_alt() {
-        // Caption goes into alt. CommonMark alt allows " and & inline;
-        // only [ and ] need escaping. Phase 3 PR4: width param dropped
-        // from output (no title attribute is emitted).
-        let out = image_inline(Some(r#"Q&A "best"|wide"#));
-        assert_eq!(out, r#"![Q&A "best"](assets/photo.jpg)"#);
-    }
-
-    #[test]
-    fn stage1_image_alt_brackets_escaped() {
-        // Brackets in caption text must be backslash-escaped to keep the
-        // CommonMark parser from terminating the alt span early.
-        let out = image_inline(Some("a [bracketed] caption"));
-        assert!(out.contains(r"![a \[bracketed\] caption]("), "got: {}", out);
-    }
-
     // -- markdown escape helpers (covered above; spec from plan §D1) -----
 
     #[test]
@@ -1345,16 +928,6 @@ mod tests {
             markdown_escape_alt(r"with \ backslash"),
             r"with \\ backslash"
         );
-    }
-
-    #[test]
-    fn markdown_escape_title_quotes() {
-        assert_eq!(markdown_escape_title("plain"), "plain");
-        assert_eq!(
-            markdown_escape_title(r#"has "quotes""#),
-            r#"has \"quotes\""#
-        );
-        assert_eq!(markdown_escape_title(r"\backslash"), r"\\backslash");
     }
 
     // --- Dim parser ---
@@ -1478,9 +1051,13 @@ mod tests {
 
     #[test]
     fn test_lookup_renderer_by_extension() {
-        assert!(lookup_renderer("jpg").is_some());
-        assert!(lookup_renderer("JPG").is_some()); // case-insensitive
+        // Image extensions no longer resolve through the registry — the
+        // image-embed synth-collapse routes them to the dispatcher's
+        // Block::Figure arm (via IMAGE_EXTENSIONS), not an EmbedRenderer.
+        assert!(lookup_renderer("jpg").is_none());
+        assert!(lookup_renderer("JPG").is_none()); // case-insensitive
         assert!(lookup_renderer("md").is_some());
+        assert!(lookup_renderer("MD").is_some()); // case-insensitive
         assert!(lookup_renderer("xyz").is_none());
         assert!(lookup_renderer("").is_none());
     }

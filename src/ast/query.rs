@@ -184,6 +184,10 @@ mod tests {
         Block::Figure {
             image: img(src),
             caption: None,
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
         }
     }
 

@@ -49,7 +49,7 @@
 //! | With plugins | [`super::wikilink_dispatch::dispatch_wikilink_embed_with_registry`] | custom registry built at init |
 
 use super::embed_renderer::{
-    AudioRenderer, EmbedRenderer, IframeRenderer, ImageRenderer, MarkdownEmbedRenderer,
+    AudioRenderer, EmbedRenderer, IframeRenderer, MarkdownEmbedRenderer,
     ModelViewerRenderer, NotebookRenderer, PdfRenderer, TableRenderer, VideoRenderer,
 };
 
@@ -106,7 +106,6 @@ impl RendererRegistryBuilder {
     fn with_builtins(mut self) -> Self {
         // Order matches embed_renderer::registry() — built-ins first so they
         // win on extension collision with plugins.
-        self.renderers.push(&ImageRenderer);
         self.renderers.push(&MarkdownEmbedRenderer);
         self.renderers.push(&IframeRenderer);
         self.renderers.push(&PdfRenderer);
@@ -168,9 +167,10 @@ mod tests {
     #[test]
     fn test_builtin_registry_has_core_renderers() {
         let reg = RendererRegistry::builtin().build();
-        for ext in [
-            "jpg", "md", "html", "pdf", "mp3", "mp4", "ipynb", "glb", "csv",
-        ] {
+        // Image extensions ("jpg"/"png") deliberately NOT here: the
+        // image-embed synth-collapse removed ImageRenderer; image embeds
+        // route to the dispatcher's Block::Figure arm, not the registry.
+        for ext in ["md", "html", "pdf", "mp3", "mp4", "ipynb", "glb", "csv"] {
             assert!(
                 reg.lookup(ext).is_some(),
                 "builtin missing renderer for .{}",
@@ -186,7 +186,7 @@ mod tests {
             .with_boxed(Box::new(CustomRenderer))
             .build();
         assert!(reg.lookup("xyz").is_some());
-        assert!(reg.lookup("jpg").is_some(), "built-ins still present");
+        assert!(reg.lookup("md").is_some(), "built-ins still present");
     }
 
     #[test]
@@ -235,14 +235,16 @@ mod tests {
     #[test]
     fn test_lookup_case_insensitive() {
         let reg = RendererRegistry::builtin().build();
-        assert!(reg.lookup("JPG").is_some());
-        assert!(reg.lookup("Jpg").is_some());
+        // jpg no longer resolves via the registry (synth-collapse); use a
+        // surviving registry-resolved extension to test case-insensitivity.
+        assert!(reg.lookup("MD").is_some());
+        assert!(reg.lookup("Md").is_some());
     }
 
     #[test]
     fn test_all_returns_registered_renderers() {
         let reg = RendererRegistry::builtin().build();
-        // 9 built-ins as of Phase D.
-        assert_eq!(reg.all().len(), 9);
+        // 8 built-ins after the image-embed synth-collapse removed ImageRenderer.
+        assert_eq!(reg.all().len(), 8);
     }
 }

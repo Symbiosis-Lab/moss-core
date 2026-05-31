@@ -123,6 +123,27 @@ pub trait RenderHooks {
         out.push_str(" />");
     }
 
+    /// Emit the inner `<img>` of a `Block::Figure`, optionally carrying an
+    /// inline `style=` fragment on the image element (fit/position from a
+    /// parameterized wikilink embed, e.g. `object-fit:cover`).
+    ///
+    /// Default impl ignores `img_style` and delegates to [`render_image`],
+    /// so only snapshot-aware impls that can thread it through the
+    /// synthesizer's `extra_attrs` channel honor it. `img_style: None` MUST
+    /// produce byte-identical output to a plain `render_image` call — the
+    /// CommonMark `![](url)` figure path always passes `None`.
+    fn render_image_styled(
+        &self,
+        out: &mut String,
+        src: &ResolvedUrl,
+        alt: &str,
+        title: Option<&str>,
+        img_style: Option<&str>,
+    ) {
+        let _ = img_style;
+        self.render_image(out, src, alt, title);
+    }
+
     /// Optional [`AssetSnapshot`] for the gallery synth path.
     ///
     /// Phase 2E v5 PR3 (2026-05-26): when the impl returns
@@ -621,13 +642,33 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
         alt: &str,
         title: Option<&str>,
     ) {
+        self.render_image_styled(out, src, alt, title, None);
+    }
+
+    /// Snapshot-aware figure-inner image. `img_style` (fit/position from a
+    /// parameterized wikilink embed) flows through
+    /// `ImageRenderOptions.extra_attrs` onto the inner `<img>`; the
+    /// synthesizer's `extra_has_style` guard then suppresses its
+    /// LQIP/dominant-color `style=` so the two declarations never collide
+    /// (the same guard the legacy fast-path relied on). `img_style: None`
+    /// yields `ImageRenderOptions::default()` — byte-identical to before the
+    /// synth-collapse.
+    fn render_image_styled(
+        &self,
+        out: &mut String,
+        src: &ResolvedUrl,
+        alt: &str,
+        title: Option<&str>,
+        img_style: Option<&str>,
+    ) {
         let assets = match self.assets {
             Some(a) => a,
             None => {
                 // No snapshot in scope — fall back to the trait's
                 // bare-`<img>` default. This is the test-only path; the
                 // production path always provides a snapshot via
-                // `PipelineHooks::render_image`.
+                // `PipelineHooks::render_image`. The style fragment, when
+                // present, still rides on the inner `<img>`.
                 out.push_str(r#"<img src=""#);
                 out.push_str(&escape_attr(&src.href));
                 out.push_str(r#"" alt=""#);
@@ -638,6 +679,11 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
                     out.push_str(&escape_attr(t));
                     out.push('"');
                 }
+                if let Some(style) = img_style {
+                    out.push_str(r#" style=""#);
+                    out.push_str(&escape_attr(style));
+                    out.push('"');
+                }
                 out.push_str(" />");
                 return;
             }
@@ -646,7 +692,12 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
         // wrap) for inline images. PR3's Block::Figure handles the figure
         // wrap for image-only paragraphs.
         let ctx = crate::render::image::ImageContext::MarkdownInline;
-        let opts = crate::render::image::ImageRenderOptions::default();
+        let style_attr =
+            img_style.map(|s| format!(r#"style="{}""#, crate::media::html_escape(s)));
+        let opts = crate::render::image::ImageRenderOptions {
+            extra_attrs: style_attr.as_deref(),
+            ..Default::default()
+        };
         let html = crate::render::image::synthesize_image_html(
             &src.href,
             alt,

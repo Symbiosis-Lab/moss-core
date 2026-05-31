@@ -454,6 +454,115 @@ pub fn is_all_display_keywords(text: &str) -> bool {
     true
 }
 
+/// True when every whitespace-separated token in `alias` is either a
+/// recognized display keyword (fit / position / align) OR a canonical
+/// width token (body / wide / page / screen / full).
+///
+/// This is the structural-vs-caption classifier for image aliases: a
+/// fully-structural alias contributes only to display params; anything else
+/// becomes caption / alt text. The [`is_all_display_keywords`] half is
+/// unchanged (covers two-word position tokens like `top left`); the
+/// width-token half lets authors write `align-left wide` without breaking
+/// the pipe.
+///
+/// Lifted from `resolve::embed_renderer` (Phase 1 of the image-embed
+/// synth-collapse) so it survives `ImageRenderer`'s deletion — it is the
+/// load-bearing half of [`classify_image_alias`].
+pub(crate) fn is_structural_alias(alias: &str) -> bool {
+    // Fast path: any caption-like text fails `is_all_display_keywords`
+    // and would also fail the per-token loop below.
+    if is_all_display_keywords(alias) {
+        return true;
+    }
+    let tokens: Vec<&str> = alias.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    // Walk tokens; admit width tokens, otherwise defer to display-keyword
+    // recognition (per-token, since position tokens may pair across two).
+    let mut i = 0;
+    while i < tokens.len() {
+        // Width token: single-token, simple admit.
+        if match_width_token(tokens[i]).is_some() {
+            i += 1;
+            continue;
+        }
+        // Two-word position (e.g. `top left`).
+        if i + 1 < tokens.len() {
+            let combined = format!("{} {}", tokens[i], tokens[i + 1]);
+            if Position::from_keyword(&combined).is_some() {
+                i += 2;
+                continue;
+            }
+        }
+        // Single-token display keyword.
+        if Fit::from_keyword(tokens[i]).is_some()
+            || Position::from_keyword(tokens[i]).is_some()
+            || AlignSide::from_keyword(tokens[i]).is_some()
+        {
+            i += 1;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+/// Classification of an image-embed pipe alias into its display-vs-caption
+/// role.
+///
+/// The pipe alias of `![[photo.jpg|<alias>]]` is one of three things:
+/// a run of structural display keywords (`cover`, `wide cover`), human-
+/// readable caption prose (`My nice photo`), or absent/empty. This struct
+/// captures the disambiguation so every image-embed call site classifies
+/// identically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImageAliasClass {
+    /// Structural display-keyword run (e.g. `"cover"`, `"wide cover"`) to be
+    /// fed to `parse_media_attrs`; `None` when the alias is a caption or
+    /// empty.
+    pub display_keywords: Option<String>,
+    /// Caption text (also used as `alt`) when the alias is human-readable
+    /// prose; `None` for structural/empty aliases.
+    ///
+    /// **Invariant:** never `Some("")`. An empty alias yields `None` so
+    /// callers never emit an empty `<figcaption>`.
+    pub caption: Option<String>,
+}
+
+/// Classify an image-embed pipe alias into [`ImageAliasClass`].
+///
+/// Mirrors the 3-way split previously inlined in
+/// `ImageRenderer::render_to_markdown` (now lifted so it survives that
+/// struct's deletion in the image-embed synth-collapse):
+///
+/// - `None`                       → both `None`
+/// - `Some("")` (empty)           → both `None` (no empty figcaption)
+/// - `Some(s)` and structural     → `display_keywords = Some(s)`, `caption = None`
+/// - `Some(other)`                → `display_keywords = None`, `caption = Some(other)`
+pub(crate) fn classify_image_alias(alias: Option<&str>) -> ImageAliasClass {
+    match alias {
+        // Empty alias (`![[file|]]`) is treated as no alias. Matches the
+        // historical `alias.is_empty()` guard exactly (no extra trimming).
+        Some(a) if a.is_empty() => ImageAliasClass {
+            display_keywords: None,
+            caption: None,
+        },
+        Some(a) if is_structural_alias(a) => ImageAliasClass {
+            display_keywords: Some(a.to_string()),
+            caption: None,
+        },
+        Some(other) => ImageAliasClass {
+            display_keywords: None,
+            caption: Some(other.to_string()),
+        },
+        None => ImageAliasClass {
+            display_keywords: None,
+            caption: None,
+        },
+    }
+}
+
 /// Escape a string for safe use in HTML text or attribute values.
 ///
 /// Replaces `&`, `"`, `'`, `<`, and `>` with their HTML entities.
@@ -1262,5 +1371,63 @@ mod tests {
         // BTreeMap iteration is deterministic alphabetical (data-id < data-zoom).
         let keys: Vec<&str> = attrs.extra_attrs.keys().map(String::as_str).collect();
         assert_eq!(keys, vec!["data-id", "data-zoom"]);
+    }
+
+    // -- classify_image_alias (Phase 1: lifted from ImageRenderer) ----------
+
+    #[test]
+    fn test_classify_image_alias_none() {
+        let c = classify_image_alias(None);
+        assert_eq!(c.display_keywords, None);
+        assert_eq!(c.caption, None);
+    }
+
+    #[test]
+    fn test_classify_image_alias_empty_is_none_never_some_empty() {
+        // THE invariant: an empty alias yields caption=None, never Some(""),
+        // so no caller emits an empty <figcaption>.
+        let c = classify_image_alias(Some(""));
+        assert_eq!(c.display_keywords, None);
+        assert_eq!(c.caption, None);
+    }
+
+    #[test]
+    fn test_classify_image_alias_structural_single_keyword() {
+        let c = classify_image_alias(Some("cover"));
+        assert_eq!(c.display_keywords.as_deref(), Some("cover"));
+        assert_eq!(c.caption, None);
+    }
+
+    #[test]
+    fn test_classify_image_alias_structural_compound() {
+        // `wide cover` = width token + fit keyword — fully structural.
+        let c = classify_image_alias(Some("wide cover"));
+        assert_eq!(c.display_keywords.as_deref(), Some("wide cover"));
+        assert_eq!(c.caption, None);
+    }
+
+    #[test]
+    fn test_classify_image_alias_pure_width_token_is_structural() {
+        // A bare width token alone is structural, not a caption.
+        let c = classify_image_alias(Some("wide"));
+        assert_eq!(c.display_keywords.as_deref(), Some("wide"));
+        assert_eq!(c.caption, None);
+    }
+
+    #[test]
+    fn test_classify_image_alias_caption_text() {
+        let c = classify_image_alias(Some("My nice photo"));
+        assert_eq!(c.display_keywords, None);
+        assert_eq!(c.caption.as_deref(), Some("My nice photo"));
+    }
+
+    #[test]
+    fn test_is_structural_alias_matches_classifier() {
+        // Sanity: the lifted helper agrees with the classifier's branch.
+        assert!(is_structural_alias("cover"));
+        assert!(is_structural_alias("wide cover"));
+        assert!(is_structural_alias("top left"));
+        assert!(!is_structural_alias("My nice photo"));
+        assert!(!is_structural_alias(""));
     }
 }
