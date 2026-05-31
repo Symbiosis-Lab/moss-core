@@ -12,6 +12,9 @@ pub struct FolderEmbedParams {
     pub limit: Option<usize>,
     pub more: bool,
     pub sort: Option<SortAxis>,
+    pub style: Option<String>,  // "list" | "summary" | "grid"
+    pub depth: Option<String>,  // "direct" | "all"
+    pub group: Option<String>,  // "year" | "none"
 }
 
 /// Parse pipe-encoded params from the portion after `|`.
@@ -36,6 +39,9 @@ pub fn parse_params(raw: &str) -> FolderEmbedParams {
                         _ => None,
                     }
                 }
+                "style" => out.style = Some(v.trim().to_string()),
+                "depth" => out.depth = Some(v.trim().to_string()),
+                "group" => out.group = Some(v.trim().to_string()),
                 _ => {}
             }
         } else if tok == "more" {
@@ -56,6 +62,15 @@ pub const MARKER_END: &str = "-->";
 
 pub fn emit_marker(path: &str, from: &str, params: &FolderEmbedParams) -> String {
     let mut parts = vec![format!("path={}", path), format!("from={}", from)];
+    if let Some(ref s) = params.style {
+        parts.push(format!("style={}", s));
+    }
+    if let Some(ref d) = params.depth {
+        parts.push(format!("depth={}", d));
+    }
+    if let Some(ref g) = params.group {
+        parts.push(format!("group={}", g));
+    }
     if let Some(n) = params.limit {
         parts.push(format!("limit={}", n));
     }
@@ -114,6 +129,9 @@ mod tests {
             limit: Some(3),
             more: true,
             sort: Some(SortAxis::Date),
+            style: None,
+            depth: None,
+            group: None,
         };
         let m = emit_marker("/journal/", "index.md", &p);
         assert!(m.starts_with(MARKER_FOLDER_LIST));
@@ -123,5 +141,38 @@ mod tests {
         assert!(m.contains("more"));
         assert!(m.contains("sort=date"));
         assert!(m.ends_with(MARKER_END));
+    }
+
+    #[test]
+    fn parses_style_grid() {
+        assert_eq!(parse_params("style:grid").style, Some("grid".to_string()));
+    }
+
+    #[test]
+    fn parses_depth_all() {
+        assert_eq!(parse_params("depth:all").depth, Some("all".to_string()));
+    }
+
+    #[test]
+    fn parses_group_year() {
+        assert_eq!(parse_params("group:year").group, Some("year".to_string()));
+    }
+
+    #[test]
+    fn marker_roundtrips_new_fields() {
+        let p = FolderEmbedParams {
+            style: Some("grid".to_string()),
+            depth: Some("all".to_string()),
+            group: Some("year".to_string()),
+            limit: Some(5),
+            more: false,
+            sort: None,
+        };
+        let m = emit_marker("/p/", "index.md", &p);
+        assert!(m.contains("style=grid"));
+        assert!(m.contains("depth=all"));
+        assert!(m.contains("group=year"));
+        assert!(m.contains("limit=5"));
+        assert!(!m.contains("more")); // not set
     }
 }
