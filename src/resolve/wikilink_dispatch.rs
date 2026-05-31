@@ -1273,13 +1273,15 @@ mod tests {
 
     #[test]
     fn wikilink_block_ref_is_not_slugged() {
-        // Block refs `[[notes#^block-id]]` strip the `^` and emit the id
-        // RAW (no slugging) — `build_anchor` short-circuits on the `^`
-        // prefix before calling `obsidian_heading_anchor`.
-        // Real emitted output: `[notes > ^block-id](moss-resolved:notes.md#block-id)`.
+        // Block refs (^id) are emitted RAW — NOT run through
+        // obsidian_heading_anchor. Use a block-id with a space + uppercase
+        // so slugging (which would yield "#block-id") is observably
+        // different from the raw form ("#Block Id"). This fails loudly if
+        // the `^` short-circuit in build_anchor regresses.
+        // Real emitted output: `[notes > ^Block Id](moss-resolved:notes.md#Block Id)`.
         let graph = build_graph(&["notes.md"]);
         let emit = dispatch_wikilink_embed(
-            "notes#^block-id",
+            "notes#^Block Id",
             None,
             false,
             &graph,
@@ -1288,7 +1290,8 @@ mod tests {
         );
         match emit.output {
             EmitKind::Link(link) => {
-                assert!(link.contains("#block-id"), "got: {}", link);
+                assert!(link.contains("#Block Id"), "expected raw block-ref, got: {}", link);
+                assert!(!link.contains("#block-id"), "block-ref was slugged: {}", link);
             }
             other => panic!("expected Link, got {:?}", other),
         }
