@@ -37,13 +37,18 @@ fn entries_are_sorted_alphabetically_within_group() {
 
 #[test]
 fn token_value_preserves_var_references() {
+    // A token whose $value is a var() reference must round-trip verbatim
+    // (no resolution/inlining at load time). moss-font-size aliases the base
+    // size the same way; it replaced moss-nav-width as the example here when
+    // nav-width became an opt-in (unset-by-default) escape hatch — see the
+    // .main-nav fallback in site.css.
     let tokens = load_tokens().expect("tokens.json must parse");
-    let layout = tokens.groups.iter().find(|g| g.name == "layout")
-        .expect("layout group must exist");
+    let typography = tokens.groups.iter().find(|g| g.name == "typography")
+        .expect("typography group must exist");
 
-    let nav_width = layout.entries.iter().find(|t| t.name == "moss-nav-width")
-        .expect("moss-nav-width must exist");
-    assert_eq!(nav_width.value, "var(--moss-content-width)");
+    let font_size = typography.entries.iter().find(|t| t.name == "moss-font-size")
+        .expect("moss-font-size must exist");
+    assert_eq!(font_size.value, "var(--moss-font-size-base)");
 }
 
 // Error-path tests using parse_tokens helper
