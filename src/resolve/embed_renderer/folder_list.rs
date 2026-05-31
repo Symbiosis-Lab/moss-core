@@ -12,9 +12,15 @@ pub struct FolderEmbedParams {
     pub limit: Option<usize>,
     pub more: bool,
     pub sort: Option<SortAxis>,
-    pub style: Option<String>,  // "list" | "summary" | "grid"
-    pub depth: Option<String>,  // "direct" | "all"
-    pub group: Option<String>,  // "year" | "none"
+    pub style: Option<String>,   // "list" | "summary" | "grid"
+    pub depth: Option<String>,   // "direct" | "all"
+    pub group: Option<String>,   // "year" | "none"
+    /// Internal: restrict children to this language-tree prefix (url_path prefix).
+    /// Set by synthesize_children_marker for homepage default-mode; not user-facing.
+    pub lang_tree: Option<String>,
+    /// Internal: exclude folder pages that act as top-level nav items.
+    /// Set by synthesize_children_marker for homepage default-mode; not user-facing.
+    pub exclude_nav: bool,
 }
 
 /// Parse pipe-encoded params from the portion after `|`.
@@ -77,6 +83,12 @@ pub fn emit_marker(path: &str, from: &str, params: &FolderEmbedParams) -> String
     if params.more {
         parts.push("more".to_string());
     }
+    if let Some(ref lt) = params.lang_tree {
+        parts.push(format!("lang_tree={}", lt));
+    }
+    if params.exclude_nav {
+        parts.push("exclude_nav".to_string());
+    }
     if let Some(s) = params.sort {
         parts.push(format!(
             "sort={}",
@@ -132,6 +144,8 @@ mod tests {
             style: None,
             depth: None,
             group: None,
+            lang_tree: None,
+            exclude_nav: false,
         };
         let m = emit_marker("/journal/", "index.md", &p);
         assert!(m.starts_with(MARKER_FOLDER_LIST));
@@ -167,6 +181,8 @@ mod tests {
             limit: Some(5),
             more: false,
             sort: None,
+            lang_tree: None,
+            exclude_nav: false,
         };
         let m = emit_marker("/p/", "index.md", &p);
         assert!(m.contains("style=grid"));
