@@ -591,6 +591,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
     };
     let classes = parsed.class_string();
     let width = parsed.width.map(str::to_string);
+    let mobile = parsed.get("mobile").map(str::to_string);
 
     // Priority 1: `image=` attribute.
     if let Some(image_value) = parsed.get("image") {
@@ -609,7 +610,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
                 overlay,
                 overlay_text,
                 width,
-                mobile: None,
+                mobile: mobile.clone(),
             },
             false,
         );
@@ -634,7 +635,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
                 overlay,
                 overlay_text,
                 width,
-                mobile: None,
+                mobile: mobile.clone(),
             },
             false,
         );
@@ -670,7 +671,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
             overlay,
             overlay_text,
             width,
-            mobile: None,
+            mobile,
         },
         used_priority_3,
     )
@@ -2719,6 +2720,44 @@ mod tests {
         let md = ":::hero {image=photo.jpg}\n# Title\n:::\n";
         match first_extracted(md) {
             Shortcode::Hero(h) => assert!(h.width.is_none(), "got {:?}", h.width),
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_mobile_overlay_attr_is_parsed() {
+        let md = ":::hero {image=hero.jpg mobile=overlay}\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        assert_eq!(result.extracted.len(), 1);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert_eq!(args.mobile.as_deref(), Some("overlay"));
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_without_mobile_attr_has_none() {
+        let md = ":::hero {image=hero.jpg}\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert!(args.mobile.is_none());
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_mobile_overlay_with_body_image_fallback() {
+        let md = ":::hero {mobile=overlay}\n![[bg.jpg]]\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert_eq!(args.mobile.as_deref(), Some("overlay"));
+                assert!(args.image.is_some());
+            }
             other => panic!("expected Hero, got {other:?}"),
         }
     }
