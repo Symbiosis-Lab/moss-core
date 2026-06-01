@@ -64,6 +64,11 @@ pub fn synthesize_iframe_html(
         full_src.push_str(f);
     }
 
+    let data_provider_attr = match params.get("data-provider") {
+        Some(p) if !p.is_empty() => format!(r#" data-provider="{}""#, html_escape_attr(p)),
+        _ => String::new(),
+    };
+
     let data_width_attr = match params.get("data-width") {
         Some(w) => format!(r#" data-width="{}""#, html_escape_attr(w)),
         None => String::new(),
@@ -101,8 +106,9 @@ pub fn synthesize_iframe_html(
     };
 
     format!(
-        "<iframe class=\"{}\" data-type=\"iframe\"{} src=\"{}\"{}{}{}{}{}{} loading=\"lazy\"></iframe>",
+        "<iframe class=\"{}\" data-type=\"iframe\"{}{} src=\"{}\"{}{}{}{}{}{} loading=\"lazy\"></iframe>",
         CLASS_EMBED,
+        data_provider_attr,
         data_width_attr,
         html_escape_attr(&full_src),
         title_attr,

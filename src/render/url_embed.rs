@@ -51,9 +51,13 @@ pub fn detect_provider(url: &str) -> ProviderEmbed {
 
     // YouTube
     if bare_host == "youtube.com" || bare_host == "youtu.be" {
-        if let Some(id) = extract_youtube_id(bare_host, path_and_query) {
+        if let Some((id, start)) = extract_youtube_id(bare_host, path_and_query) {
+            let embed_url = match start {
+                Some(t) => format!("https://www.youtube.com/embed/{}?start={}", id, t),
+                None => format!("https://www.youtube.com/embed/{}", id),
+            };
             return ProviderEmbed {
-                embed_url: format!("https://www.youtube.com/embed/{}", id),
+                embed_url,
                 allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share",
                 sandbox: "",
                 allowfullscreen: true,
@@ -63,8 +67,8 @@ pub fn detect_provider(url: &str) -> ProviderEmbed {
     }
 
     // Vimeo
-    if bare_host == "vimeo.com" || host == "player.vimeo.com" {
-        if let Some(embed_url) = extract_vimeo_embed_url(host, path_and_query) {
+    if bare_host == "vimeo.com" || bare_host == "player.vimeo.com" {
+        if let Some(embed_url) = extract_vimeo_embed_url(bare_host, path_and_query) {
             return ProviderEmbed {
                 embed_url,
                 allow: "autoplay; fullscreen; picture-in-picture",
@@ -117,25 +121,11 @@ pub fn synthesize_url_embed_html(
         PotholeContent::WidthToken { width, rest_alias } => {
             params.insert("data-width", *width);
             if !rest_alias.is_empty() {
-                if let Some(Sizing::Width(w)) = Sizing::parse(rest_alias) {
-                    params.insert("width", w.to_css());
-                } else if let Some(Sizing::Box(w, h)) = Sizing::parse(rest_alias) {
-                    params.insert("width", w.to_css());
-                    params.insert("height", h.to_css());
-                } else {
-                    params.insert("title", rest_alias.as_str());
-                }
+                apply_alias_to_params(rest_alias.as_str(), &mut params);
             }
         }
         PotholeContent::Alias(alias) => {
-            if let Some(Sizing::Width(w)) = Sizing::parse(alias) {
-                params.insert("width", w.to_css());
-            } else if let Some(Sizing::Box(w, h)) = Sizing::parse(alias) {
-                params.insert("width", w.to_css());
-                params.insert("height", h.to_css());
-            } else {
-                params.insert("title", alias.as_str());
-            }
+            apply_alias_to_params(alias.as_str(), &mut params);
         }
         PotholeContent::Params(kv) => {
             for (k, v) in &kv.params {
@@ -153,51 +143,105 @@ pub fn synthesize_url_embed_html(
     if provider.allowfullscreen {
         params.insert("allowfullscreen", "true");
     }
-
-    let base_html = synthesize_iframe_html(&params, &provider.embed_url, assets);
-
-    if provider.provider_name.is_empty() {
-        base_html
-    } else {
-        let provider_attr = format!(r#" data-provider="{}""#, provider.provider_name);
-        base_html.replacen(r#"data-type="iframe""#, &format!(r#"data-type="iframe"{}"#, provider_attr), 1)
+    if !provider.provider_name.is_empty() {
+        params.insert("data-provider", provider.provider_name);
     }
+
+    synthesize_iframe_html(&params, &provider.embed_url, assets)
 }
 
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
 
-fn extract_youtube_id(host: &str, path_and_query: &str) -> Option<String> {
+fn apply_alias_to_params(alias: &str, params: &mut TitleParams) {
+    match Sizing::parse(alias) {
+        Some(Sizing::Width(w)) => {
+            params.insert("width", w.to_css());
+        }
+        Some(Sizing::Box(w, h)) => {
+            params.insert("width", w.to_css());
+            params.insert("height", h.to_css());
+        }
+        None => {
+            params.insert("title", alias);
+        }
+    }
+}
+
+/// Find the value of `key` in a `&`-separated query string (e.g. `"v=abc&t=30"`).
+fn find_query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    for param in query.split('&') {
+        if let Some(val) = param.strip_prefix(key) {
+            if let Some(val) = val.strip_prefix('=') {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+/// Parse a YouTube timestamp (`t=` or `start=`) from a query string.
+/// Strips a trailing `s` suffix (e.g. `30s` → `"30"`). Returns `None` if
+/// not present or not purely numeric after stripping.
+fn parse_youtube_timestamp(query: &str) -> Option<String> {
+    let raw = find_query_param(query, "t")
+        .or_else(|| find_query_param(query, "start"))?;
+    let digits = raw.strip_suffix('s').unwrap_or(raw);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(digits.to_string())
+}
+
+fn extract_youtube_id(host: &str, path_and_query: &str) -> Option<(String, Option<String>)> {
     if host == "youtu.be" {
-        let id = path_and_query
-            .trim_start_matches('/')
-            .split(['/', '?', '#'])
-            .next()?;
-        return validate_youtube_id(id).map(str::to_string);
+        let trimmed = path_and_query.trim_start_matches('/');
+        let id = trimmed.split(['/', '?', '#']).next()?;
+        let id = validate_youtube_id(id)?.to_string();
+        let start = path_and_query
+            .find('?')
+            .and_then(|i| parse_youtube_timestamp(&path_and_query[i + 1..]));
+        return Some((id, start));
     }
 
     if let Some(rest) = path_and_query.strip_prefix("/embed/") {
         let id = rest.split(['/', '?', '#']).next()?;
-        return validate_youtube_id(id).map(str::to_string);
+        let id = validate_youtube_id(id)?.to_string();
+        let start = rest
+            .find('?')
+            .and_then(|i| parse_youtube_timestamp(&rest[i + 1..]));
+        return Some((id, start));
     }
 
     if let Some(rest) = path_and_query.strip_prefix("/shorts/") {
         let id = rest.split(['/', '?', '#']).next()?;
-        return validate_youtube_id(id).map(str::to_string);
+        let id = validate_youtube_id(id)?.to_string();
+        let start = rest
+            .find('?')
+            .and_then(|i| parse_youtube_timestamp(&rest[i + 1..]));
+        return Some((id, start));
     }
 
     if let Some(rest) = path_and_query.strip_prefix("/live/") {
         let id = rest.split(['/', '?', '#']).next()?;
-        return validate_youtube_id(id).map(str::to_string);
+        let id = validate_youtube_id(id)?.to_string();
+        let start = rest
+            .find('?')
+            .and_then(|i| parse_youtube_timestamp(&rest[i + 1..]));
+        return Some((id, start));
     }
 
     if path_and_query.starts_with("/watch") {
-        let query = path_and_query.find('?').map(|i| &path_and_query[i + 1..])?;
+        let query_start = path_and_query.find('?').map(|i| i + 1)?;
+        let query = &path_and_query[query_start..];
         for param in query.split('&') {
             if let Some(id) = param.strip_prefix("v=") {
                 let id = id.split(['&', '#']).next().unwrap_or(id);
-                return validate_youtube_id(id).map(str::to_string);
+                if let Some(id) = validate_youtube_id(id) {
+                    let start = parse_youtube_timestamp(query);
+                    return Some((id.to_string(), start));
+                }
             }
         }
     }
@@ -213,12 +257,15 @@ fn validate_youtube_id(id: &str) -> Option<&str> {
     }
 }
 
-fn extract_vimeo_embed_url(host: &str, path_and_query: &str) -> Option<String> {
-    if host == "player.vimeo.com" {
+fn extract_vimeo_embed_url(bare_host: &str, path_and_query: &str) -> Option<String> {
+    if bare_host == "player.vimeo.com" {
         return Some(format!("https://player.vimeo.com{}", path_and_query));
     }
 
-    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let (path, query) = match path_and_query.find('?') {
+        Some(i) => (&path_and_query[..i], Some(&path_and_query[i..])), // includes the '?'
+        None => (path_and_query, None),
+    };
     let mut segments = path.trim_start_matches('/').split('/');
 
     let id_str = segments.next()?;
@@ -232,7 +279,10 @@ fn extract_vimeo_embed_url(host: &str, path_and_query: &str) -> Option<String> {
 
     Some(match hash {
         Some(h) => format!("https://player.vimeo.com/video/{}?h={}", id_str, h),
-        None => format!("https://player.vimeo.com/video/{}", id_str),
+        None => match query {
+            Some(q) => format!("https://player.vimeo.com/video/{}{}", id_str, q),
+            None => format!("https://player.vimeo.com/video/{}", id_str),
+        },
     })
 }
 
@@ -489,5 +539,44 @@ mod tests {
         assert!(out.contains("sandbox="), "got: {out}");
         assert!(out.contains("allow-scripts"), "got: {out}");
         assert!(out.contains(r#"data-provider="codepen""#), "got: {out}");
+    }
+
+    #[test]
+    fn detect_provider_youtube_watch_with_timestamp() {
+        let p = detect_provider("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42");
+        assert!(p.embed_url.contains("start=42"), "timestamp should be preserved, got: {}", p.embed_url);
+    }
+
+    #[test]
+    fn detect_provider_youtube_shortlink_with_timestamp() {
+        let p = detect_provider("https://youtu.be/dQw4w9WgXcQ?t=30");
+        assert!(p.embed_url.contains("start=30"), "got: {}", p.embed_url);
+    }
+
+    #[test]
+    fn detect_provider_youtube_invalid_id_falls_to_generic() {
+        // Short IDs (not 11 chars) should fall through to generic
+        let p = detect_provider("https://www.youtube.com/watch?v=short");
+        assert_eq!(p.provider_name, "", "short ID should not match youtube");
+        assert_eq!(p.embed_url, "https://www.youtube.com/watch?v=short");
+    }
+
+    #[test]
+    fn detect_provider_youtube_no_v_param_falls_to_generic() {
+        let p = detect_provider("https://www.youtube.com/watch");
+        assert_eq!(p.provider_name, "");
+    }
+
+    #[test]
+    fn synthesize_url_embed_alias_xss_is_escaped() {
+        // Alias text goes into title= attribute; HTML special chars must be escaped
+        let out = synthesize_url_embed_html(
+            "https://vimeo.com/123456789",
+            &PotholeContent::Alias(r#"My "video" <test>"#.to_string()),
+            &empty_snapshot(),
+        );
+        // The raw quote and angle bracket must not appear unescaped in the output
+        assert!(!out.contains(r#"title="My "video""#), "unescaped quote in title, got: {out}");
+        assert!(!out.contains("<test>"), "unescaped angle bracket in title, got: {out}");
     }
 }
