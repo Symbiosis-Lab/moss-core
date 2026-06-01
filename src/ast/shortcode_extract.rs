@@ -609,6 +609,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
                 overlay,
                 overlay_text,
                 width,
+                mobile: None,
             },
             false,
         );
@@ -633,6 +634,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
                 overlay,
                 overlay_text,
                 width,
+                mobile: None,
             },
             false,
         );
@@ -668,6 +670,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
             overlay,
             overlay_text,
             width,
+            mobile: None,
         },
         used_priority_3,
     )

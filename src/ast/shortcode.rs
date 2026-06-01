@@ -212,6 +212,11 @@ pub struct HeroShortcode {
     /// a width — the emitter omits `data-width` so the HTML stays sparse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<String>,
+    /// Mobile layout override. `Some("overlay")` keeps text overlaid on a
+    /// taller cropped image on mobile. `None` = default stacking behavior
+    /// (image full-width at natural ratio, text block below).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mobile: Option<String>,
 }
 
 /// Arguments for [`Shortcode::Recent`].
@@ -479,6 +484,25 @@ mod tests {
             last: None,
             count: Some(5),
             fallback_markdown: "_No posts yet._".to_string(),
+        });
+        let s = serde_json::to_string(&sc).expect("serialize");
+        let back: Shortcode = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(sc, back);
+    }
+
+    // ---- Hero ----
+
+    #[test]
+    fn hero_mobile_field_defaults_to_none() {
+        let args = HeroShortcode::default();
+        assert!(args.mobile.is_none());
+    }
+
+    #[test]
+    fn hero_with_mobile_overlay_round_trips_serde() {
+        let sc = Shortcode::Hero(HeroShortcode {
+            mobile: Some("overlay".to_string()),
+            ..Default::default()
         });
         let s = serde_json::to_string(&sc).expect("serialize");
         let back: Shortcode = serde_json::from_str(&s).expect("deserialize");

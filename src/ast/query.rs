@@ -334,6 +334,7 @@ mod tests {
             overlay,
             overlay_text: String::new(),
             width: None,
+            mobile: None,
         }))]);
         match find_first_block_image(&doc) {
             Some(Inline::Image { src, .. }) => {

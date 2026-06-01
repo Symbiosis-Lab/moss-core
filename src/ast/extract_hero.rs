@@ -203,6 +203,7 @@ mod tests {
             overlay,
             overlay_text: String::new(),
             width: None,
+            mobile: None,
         }))
     }
 
