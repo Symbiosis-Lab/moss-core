@@ -55,6 +55,7 @@ pub mod resolved;
 pub use resolved::{Resolved, ResolvedOrigin};
 pub mod schema;
 pub mod schema_fields;
+pub mod slug;
 pub mod sort;
 pub mod shortcode_tokens;
 pub mod validation;

@@ -659,6 +659,72 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
     (frontmatter, body)
 }
 
+/// Compute the output URL path for a source file.
+/// This is the single source of truth for file-tree → page-tree mapping.
+///
+/// All directory segments and the file basename go through [`crate::slug::generate_slug`],
+/// so URLs are always lowercase kebab-case regardless of how the source files
+/// and folders are cased on disk.
+///
+/// # Arguments
+/// * `file_path` - Relative path from site root (e.g., "posts/hello.md")
+/// * `is_index_file` - Whether this file is the index/home file for its folder
+/// * `frontmatter_url` - Optional `url` override from frontmatter
+/// * `clean_stem` - Language-suffix-stripped filename stem (e.g., "hello" from "hello.zh.md")
+pub fn compute_url_path(
+    file_path: &str,
+    is_index_file: bool,
+    frontmatter_url: Option<&str>,
+    clean_stem: &str,
+) -> String {
+    use std::path::Path;
+    use crate::slug::{generate_slug, slugify_path_segments};
+
+    if is_index_file {
+        let parent_path = Path::new(file_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("");
+        if parent_path.is_empty() {
+            "index.html".to_string()
+        } else if let Some(custom_url) = frontmatter_url {
+            // url override replaces the last segment of the parent path
+            let grandparent = Path::new(parent_path)
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or("");
+            let slug = generate_slug(custom_url);
+            if grandparent.is_empty() {
+                format!("{}/index.html", slug)
+            } else {
+                format!("{}/{}/index.html", slugify_path_segments(grandparent), slug)
+            }
+        } else {
+            format!("{}/index.html", slugify_path_segments(parent_path))
+        }
+    } else {
+        // Check for frontmatter url override first
+        let slug = if let Some(custom_url) = frontmatter_url {
+            generate_slug(custom_url)
+        } else {
+            // Use clean stem (language suffix stripped)
+            generate_slug(clean_stem)
+        };
+
+        // Preserve directory structure, output as slug/index.html (pretty URL)
+        let parent_path = Path::new(file_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("");
+
+        if parent_path.is_empty() {
+            format!("{}/index.html", slug)
+        } else {
+            format!("{}/{}/index.html", slugify_path_segments(parent_path), slug)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,5 +741,182 @@ mod tests {
     fn series_field_ordered_roundtrips() {
         let v: SeriesField = serde_yaml::from_str(r#"["[[Ch 1]]", "[[Ch 2]]"]"#).unwrap();
         assert!(matches!(v, SeriesField::Ordered(ref items) if items.len() == 2));
+    }
+}
+
+#[cfg(test)]
+mod url_path_tests {
+    use super::*;
+
+    // Tests for slugify_path_segments and compute_url_path
+    // (folder-name URL slugify regression coverage)
+
+    #[test]
+    fn test_slugify_path_segments_lowercase_passthrough() {
+        assert_eq!(crate::slug::slugify_path_segments("posts"), "posts");
+        assert_eq!(crate::slug::slugify_path_segments("posts/2024"), "posts/2024");
+    }
+
+    #[test]
+    fn test_slugify_path_segments_title_case_lowercased() {
+        assert_eq!(crate::slug::slugify_path_segments("News"), "news");
+        assert_eq!(crate::slug::slugify_path_segments("Projects"), "projects");
+    }
+
+    #[test]
+    fn test_slugify_path_segments_spaces_kebabed() {
+        assert_eq!(crate::slug::slugify_path_segments("My Section"), "my-section");
+        assert_eq!(
+            crate::slug::slugify_path_segments("News/Sub Section"),
+            "news/sub-section"
+        );
+    }
+
+    #[test]
+    fn test_slugify_path_segments_empty() {
+        assert_eq!(crate::slug::slugify_path_segments(""), "");
+    }
+
+    #[test]
+    fn test_slugify_path_segments_unicode_preserved() {
+        assert_eq!(crate::slug::slugify_path_segments("文章"), "文章");
+        assert_eq!(crate::slug::slugify_path_segments("文章/Hello World"), "文章/hello-world");
+    }
+
+    #[test]
+    fn test_compute_url_path_top_level_file() {
+        // Top-level file: filename slugified, no parent.
+        assert_eq!(
+            compute_url_path("Funding.md", false, None, "Funding"),
+            "funding/index.html"
+        );
+        assert_eq!(
+            compute_url_path("Code of Conduct.md", false, None, "Code of Conduct"),
+            "code-of-conduct/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_file_in_lowercase_folder() {
+        // Regression: pre-existing lowercase folder still produces lowercase URL.
+        assert_eq!(
+            compute_url_path("posts/hello.md", false, None, "hello"),
+            "posts/hello/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_file_in_title_case_folder() {
+        // Bug fix: Title-Case folder must be lowercased in the URL.
+        assert_eq!(
+            compute_url_path(
+                "News/2026-04-22-morbidelli.md",
+                false,
+                None,
+                "2026-04-22-morbidelli"
+            ),
+            "news/2026-04-22-morbidelli/index.html"
+        );
+        assert_eq!(
+            compute_url_path("Projects/giant-planets.md", false, None, "giant-planets"),
+            "projects/giant-planets/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_file_in_nested_title_case_folders() {
+        assert_eq!(
+            compute_url_path(
+                "My Section/Sub Page/page.md",
+                false,
+                None,
+                "page"
+            ),
+            "my-section/sub-page/page/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_index_file_in_title_case_folder() {
+        // Bug fix: folder-file (e.g., News/News.md) URL must be /news/.
+        assert_eq!(
+            compute_url_path("News/News.md", true, None, "News"),
+            "news/index.html"
+        );
+        assert_eq!(
+            compute_url_path("Projects/Projects.md", true, None, "Projects"),
+            "projects/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_index_file_in_lowercase_folder() {
+        // Regression: lowercase folder index unchanged.
+        assert_eq!(
+            compute_url_path("posts/index.md", true, None, "index"),
+            "posts/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_root_index_file() {
+        // Root index has no parent path; stays "index.html".
+        assert_eq!(
+            compute_url_path("index.md", true, None, "index"),
+            "index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_url_override_with_title_case_grandparent() {
+        // url: override slugifies to its own segment; the grandparent path
+        // is also slugified so a Title-Case grandparent produces lowercase URL.
+        assert_eq!(
+            compute_url_path(
+                "Section/Old Name/page.md",
+                true,
+                Some("New Name"),
+                "page"
+            ),
+            "section/new-name/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_url_override_no_grandparent() {
+        // url: override at top level (no grandparent) — slug is the only segment.
+        assert_eq!(
+            compute_url_path("News/index.md", true, Some("Custom Name"), "index"),
+            "custom-name/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_non_index_with_url_override_in_title_case_folder() {
+        // Non-index file with its own `url:` override, sitting in a Title-Case
+        // folder. The override slug becomes the file segment; the parent folder
+        // segment is independently slugified.
+        assert_eq!(
+            compute_url_path(
+                "News/page.md",
+                false,
+                Some("Custom Slug"),
+                "page"
+            ),
+            "news/custom-slug/index.html"
+        );
+    }
+
+    #[test]
+    fn test_compute_url_path_idempotent_for_already_lowercase() {
+        // The fix must not break paths that were already correct.
+        assert_eq!(
+            compute_url_path("blog/post.md", false, None, "post"),
+            "blog/post/index.html"
+        );
+        assert_eq!(
+            compute_url_path("blog/index.md", true, None, "index"),
+            "blog/index.html"
+        );
     }
 }
