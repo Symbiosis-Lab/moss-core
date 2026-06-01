@@ -420,6 +420,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Checkbox,
         priority: 80,
         description: "Override site-wide breadcrumb setting for this page",
+        label_key: "chip.breadcrumb.label",
         group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
@@ -429,6 +430,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Checkbox,
         priority: 80,
         description: "Show as a link in the site footer",
+        label_key: "chip.footer.label",
         group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
@@ -438,6 +440,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         priority: 80,
         description: "Named slot to inject this page into (e.g. footer-left). Recognized values are validated at build time.",
+        label_key: "chip.slot.label",
         group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
@@ -447,6 +450,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Checkbox,
         priority: 80,
         description: "Exclude from listings but still accessible",
+        label_key: "chip.unlisted.label",
         group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
@@ -455,7 +459,8 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
         priority: 80,
-        description: "Per-page comment opt-in/opt-out",
+        description: "Per-page comment opt-in/out",
+        label_key: "chip.comments.label",
         group: "Navigation & Visibility",
         ..FIELD_DEFAULTS
     },
@@ -492,6 +497,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         priority: 90,
         description: "Deprecated. Use children + children_in: sidebar. Wikilink to folder whose children appear in sidebar (e.g. [[News]]).",
+        label_key: "chip.sidebar.label",
         group: "Layout & Presentation",
         ..FIELD_DEFAULTS
     },
@@ -501,6 +507,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::CodeEditor,
         priority: 110,
         description: "Frontmatter values to push to all descendant pages",
+        label_key: "chip.cascade.label",
         group: "Layout & Presentation",
         ..FIELD_DEFAULTS
     },
@@ -514,6 +521,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 90,
         description: "Cross-list this page in other sections",
         label: Some("Also In"),
+        label_key: "chip.also_in.label",
         group: "Cross-referencing & i18n",
         ..FIELD_DEFAULTS
     },
@@ -524,6 +532,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 70,
         description: "Key to link translations of the same content",
         label: Some("Translation Key"),
+        label_key: "chip.translationKey.label",
         group: "Cross-referencing & i18n",
         ..FIELD_DEFAULTS
     },
@@ -536,6 +545,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 90,
         description: "URL of item being reviewed (activates review feature)",
         label: Some("Review Of"),
+        label_key: "chip.review_of.label",
         group: "Review Metadata",
         ..FIELD_DEFAULTS
     },
@@ -545,6 +555,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::NumberInput,
         priority: 90,
         description: "Author's rating of the reviewed item (1-5)",
+        label_key: "chip.rating.label",
         group: "Review Metadata",
         ..FIELD_DEFAULTS
     },
@@ -557,6 +568,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 95,
         description: "Override for the email subject line. When absent, the send modal uses the page title. Cleared automatically when the modal's edit reverts to the title.",
         label: Some("Email Subject"),
+        label_key: "chip.email_subject.label",
         group: "Email",
         ..FIELD_DEFAULTS
     },
@@ -567,6 +579,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 95,
         description: "Override for the email inbox preview (preheader). When absent, the send modal uses the page description. Cleared automatically when the modal's edit reverts to the description.",
         label: Some("Email Preview"),
+        label_key: "chip.email_preview.label",
         group: "Email",
         ..FIELD_DEFAULTS
     },
