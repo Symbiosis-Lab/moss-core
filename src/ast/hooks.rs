@@ -382,6 +382,17 @@ pub trait RenderHooks {
                     out.push_str(w);
                     out.push('"');
                 }
+                // Click-to-source: emit a point source range on the Hero's
+                // outermost element so the bridge's `resolveSourceTarget`
+                // (`data-source-range`) routes a click back to the `:::hero`
+                // line. Same start/end = point range (mirrors the Grid arm).
+                if let Some(n) = source_line {
+                    out.push_str(r#" data-source-range=""#);
+                    out.push_str(&n.to_string());
+                    out.push('-');
+                    out.push_str(&n.to_string());
+                    out.push('"');
+                }
                 out.push('>');
                 if let Some(image) = &args.image {
                     let src = match image {
