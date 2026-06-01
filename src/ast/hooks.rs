@@ -357,6 +357,15 @@ pub trait RenderHooks {
                 // tests can pattern-match on the wrapper without
                 // depending on the full pipeline.
                 //
+                // NOTE: this arm does NOT emit `data-mobile="overlay"` or
+                // `--moss-hero-mobile-bg`/`--moss-hero-mobile-color` CSS custom
+                // properties — those require `dominant_color` from the scan
+                // cache which is not available in moss-core (zero-I/O invariant).
+                // Before PR7a-flip-core-B promotes `render_document` as the sole
+                // Hero rendering path, this arm must either be updated or
+                // callers must use `PipelineHooks` to get full mobile attrs.
+                // Tracked: src-tauri issue #747 (HeroRenderContext refactor).
+                //
                 // Phase 4 PR1 (2026-05-27): the inner `<img>` is now
                 // emitted via [`crate::render::image::synthesize_image_html`]
                 // instead of a bare `<img>` literal so the `img_contract_test`
