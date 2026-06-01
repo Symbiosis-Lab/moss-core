@@ -10,4 +10,5 @@ pub mod iframe;
 pub mod image;
 pub mod model;
 pub mod pdf;
+pub mod url_embed;
 pub mod video;
