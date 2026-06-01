@@ -41,6 +41,7 @@ pub use extract_headings::{extract_headings, HeadingInfo};
 pub mod home;
 pub mod frontmatter;
 pub mod frontmatter_union;
+pub mod frontmatter_typed;
 pub mod heading;
 pub mod link_candidates;
 pub mod link_completions;
