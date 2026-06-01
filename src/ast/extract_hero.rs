@@ -137,7 +137,9 @@ pub fn extract_hero(doc: &mut Document, hooks: &dyn RenderHooks) -> Option<HeroE
     // dispatches to `render_hero_html_typed` which produces the full
     // section+slot+overlay HTML.
     let mut html = String::new();
-    hooks.render_shortcode(&mut html, hero_shortcode);
+    // Hero is hoisted out of the body to the article template's hero slot,
+    // not rendered in-flow, so it carries no body source line.
+    hooks.render_shortcode(&mut html, hero_shortcode, None);
 
     Some(HeroExtraction {
         html,
