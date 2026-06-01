@@ -797,6 +797,12 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 default: "body",
                 description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9.",
             },
+            DataAttr {
+                name: "data-provider",
+                values: &["youtube", "vimeo", "codepen"],
+                default: "",
+                description: "Identifies the embed provider for external URL embeds. Absent for generic iframes and local HTML embeds.",
+            },
         ],
         example_html: r#"<div class="moss-embed moss-embed-pdf"><iframe src="..."></iframe></div>"#,
         example_markdown: "![[paper.pdf]]",
