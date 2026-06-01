@@ -577,14 +577,20 @@ fn synthesize_inner(
 }
 
 /// Returns true when `src` is a raster original that always gets a webp
-/// variant from moss's image pipeline. Restricted to the three formats that
-/// `should_skip` never filters out by content sniffing — png, jpg, jpeg. Gif
-/// is excluded because animated GIFs skip webp encoding (image.rs § should_skip,
-/// `is_animated_gif`); SVG is excluded as a vector format; webp originals are
-/// excluded because the variant URL would equal the src URL. Restricting here
-/// keeps the synthesizer's emitted `<source>` URL in lockstep with the
-/// AssetRegistry's `set_pending` registration in blocking.rs (which loops over
-/// `collect_images_for_conversion`'s output, also filtered by `should_skip`).
+/// variant from moss's image pipeline. Restricted to the three extensions
+/// (png, jpg, jpeg) that the synthesizer emits `<picture><source srcset>` for.
+/// Gif is excluded because animated GIFs skip webp encoding (image.rs §
+/// should_skip, `is_animated_gif`); SVG is excluded as a vector format; webp
+/// originals are excluded because the variant URL would equal the src URL.
+///
+/// Note: this check is extension-only. `collect_images_for_conversion` applies
+/// additional content-based filters (e.g. `SkipReason::NotAnImage` for files
+/// whose magic bytes don't match the declared format). A file that passes
+/// `is_raster_original` here but is filtered by `NotAnImage` will NOT have
+/// `set_pending` called for it — the synthesizer will emit a `<picture>` but
+/// the registry will serve the LQIP placeholder until the build completes
+/// without a webp. In practice this only occurs for genuinely corrupt files
+/// (e.g. an HTML 404 page saved as .png) that are not referenced from content.
 fn is_raster_original(src: &str) -> bool {
     let lower = src.to_ascii_lowercase();
     lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")
