@@ -91,9 +91,9 @@ pub struct FieldDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// i18n key for the chip bar label, resolved by the TypeScript registry.
-    /// Empty string means no key is registered (frontend falls back to field name).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub label_key: String,
+    /// `None` when no key is registered (frontend falls back to field name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_key: Option<String>,
     /// Display priority for chip bar ordering. Lower values appear first.
     /// 0 means unset (defaults to end). Typical range: 10 (title) to 110 (cascade).
     #[serde(default)]
@@ -209,7 +209,7 @@ fn materialize_field(bf: &BuiltinField) -> FieldDefinition {
             one_of: None,
             description: None,
             label: None,
-            label_key: String::new(),
+            label_key: None,
             priority: 0,
             source: None,
             group: None,
@@ -244,7 +244,7 @@ fn materialize_field(bf: &BuiltinField) -> FieldDefinition {
             Some(bf.description.to_string())
         },
         label: bf.label.map(|s| s.to_string()),
-        label_key: bf.label_key.to_string(),
+        label_key: if bf.label_key.is_empty() { None } else { Some(bf.label_key.to_string()) },
         priority: bf.priority,
         source: None,
         group: if bf.group.is_empty() { None } else { Some(bf.group.to_string()) },
