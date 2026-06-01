@@ -197,4 +197,20 @@ mod tests {
         assert!(!out.contains("allowfullscreen"), "got: {out}");
     }
 
+    #[test]
+    fn iframe_allow_empty_string_is_omitted() {
+        // Empty string should be treated same as absent — no allow= attr emitted
+        let p = params_with(&[("allow", "")]);
+        let out = synthesize_iframe_html(&p, "x.html", &empty_snapshot());
+        assert!(!out.contains("allow="), "got: {out}");
+    }
+
+    #[test]
+    fn iframe_allowfullscreen_false_is_omitted() {
+        // Only "true" emits the boolean attr; any other value is treated as absent
+        let p = params_with(&[("allowfullscreen", "false")]);
+        let out = synthesize_iframe_html(&p, "x.html", &empty_snapshot());
+        assert!(!out.contains("allowfullscreen"), "got: {out}");
+    }
+
 }
