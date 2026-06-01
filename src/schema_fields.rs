@@ -10,7 +10,9 @@
 //!
 //! 1. Add the field to `FrontMatter` in `crates/moss-core/src/frontmatter_typed.rs`.
 //! 2. Add a corresponding entry to [`BUILTIN_FIELDS`] in this file.
-//! 3. Run `cargo test` — the sync test in `markdown.rs` will fail if you forget either side.
+//!
+//! Both files live in the same crate — add new fields to both in the same commit.
+//! Co-location and PR review are the enforcement mechanism.
 //!
 //! ## `skip_schema` fields
 //!
@@ -130,9 +132,10 @@ const SERIES_MEMBERS: &[BuiltinField] = &[
 
 /// All builtin frontmatter fields recognized by moss.
 ///
-/// This table drives both the editor schema (via `builtin_schema()`) and the
-/// drift detection test (which asserts every field here has a matching field
-/// in the `FrontMatter` struct, and vice versa).
+/// This table drives the editor schema (via `builtin_schema()`). The `FrontMatter`
+/// struct in `crates/moss-core/src/frontmatter_typed.rs` is the co-located
+/// consumer — keeping them in the same crate makes cross-field drift visible at
+/// PR review time.
 pub const BUILTIN_FIELDS: &[BuiltinField] = &[
     // --- Common ---
     BuiltinField {

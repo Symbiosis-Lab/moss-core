@@ -1,8 +1,13 @@
 //! URL-safe slug generation for moss-core.
 //!
-//! Only the two pure primitives that `compute_url_path` and the resolver need.
-//! UID generation and duplicate-slug deduplication remain in src-tauri (they
-//! require byte-slicing audit under #642 before moving).
+//! The two pure primitives used by `compute_url_path` and re-exported to src-tauri.
+//!
+//! **Disambiguation:** `moss_core::content_graph` has its own internal `generate_slug`
+//! that strips file extensions and handles full relative paths (a "path-to-key"
+//! transform). This module's `generate_slug` is a "text-to-slug" primitive for
+//! titles, folder names, and URL segments. Use the right one for the right job.
+//! UID generation and duplicate-slug deduplication remain in src-tauri pending
+//! the byte-slicing audit under #642.
 
 /// Converts a string to a URL-safe slug.
 ///

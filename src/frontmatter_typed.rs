@@ -407,13 +407,14 @@ where
 ///   - `"blog/index.md"` → `"blog"` (folder note → folder name)
 ///   - `"news.md"` → `"news"` (root file → stem)
 ///   - `"Departure"` → `"Departure"` (plain name, pass-through)
-#[allow(clippy::string_slice)] // char-aligned: starts_with/ends_with already checked ASCII quote chars (single-byte)
+#[allow(clippy::string_slice)] // char-aligned: ASCII quote chars (single-byte) + len >= 2 guard prevents [1..0] panic
 pub fn frontmatter_ref_to_stem(s: &str) -> String {
     let trimmed = s.trim();
 
     // Strip optional surrounding quotes (simplified frontmatter preserves them)
-    let unquoted = if (trimmed.starts_with('"') && trimmed.ends_with('"'))
-        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    let unquoted = if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
     {
         &trimmed[1..trimmed.len() - 1]
     } else {
@@ -728,6 +729,13 @@ pub fn compute_url_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frontmatter_ref_to_stem_single_char_quote_no_panic() {
+        // Regression: single-char `"` or `'` must not panic at [1..0]
+        assert_eq!(frontmatter_ref_to_stem("\""), "\"");
+        assert_eq!(frontmatter_ref_to_stem("'"), "'");
+    }
 
     #[test]
     fn series_field_flag_roundtrips() {
