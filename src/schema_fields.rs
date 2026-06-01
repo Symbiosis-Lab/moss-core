@@ -57,6 +57,10 @@ pub struct BuiltinField {
     /// falls back to using the field key. Useful for fields with unfriendly
     /// internal names (e.g. `children_depth` → "Depth").
     pub label: Option<&'static str>,
+    /// i18n key for the chip bar label, resolved by the TypeScript registry.
+    /// Format: "chip.<name>.label". Empty string → frontend falls back to field name.
+    /// The existing `label` field is deprecated in favour of this key.
+    pub label_key: &'static str,
     /// Display priority for chip bar ordering. Lower values appear first.
     /// 0 means unset (skip-schema fields). Typical range: 10 (title) to 110 (cascade).
     pub priority: u8,
@@ -89,6 +93,7 @@ const FIELD_DEFAULTS: BuiltinField = BuiltinField {
     one_of_members: None,
     description: "",
     label: None,
+    label_key: "",
     priority: 0,
     skip_schema: false,
     group: "",
@@ -145,6 +150,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         required: true,
         priority: 10,
         description: "Title of the page. Drives the visible heading, <title>, og:title, RSS, nav, breadcrumb, and link cards. Filename is used when this field is missing. Set to an empty string to suppress the auto-injected page heading.",
+        label_key: "chip.title.label",
         group: "Common",
         ..FIELD_DEFAULTS
     },
@@ -154,6 +160,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextArea,
         priority: 20,
         description: "Page excerpt for SEO meta, og:description, and list previews",
+        label_key: "chip.description.label",
         group: "Common",
         ..FIELD_DEFAULTS
     },
@@ -164,6 +171,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         format: Some("date"),
         priority: 30,
         description: "Publication date (YYYY-MM-DD)",
+        label_key: "chip.date.label",
         group: "Common",
         ..FIELD_DEFAULTS
     },
@@ -174,6 +182,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         items_type: Some(FieldType::String),
         priority: 50,
         description: "Content tags for organization",
+        label_key: "chip.tags.label",
         group: "Common",
         ..FIELD_DEFAULTS
     },
@@ -183,6 +192,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Checkbox,
         priority: 60,
         description: "Mark as draft (excluded from build)",
+        label_key: "chip.draft.label",
         group: "Common",
         ..FIELD_DEFAULTS
     },
@@ -194,6 +204,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::FilePicker,
         priority: 15,
         description: "Site logo image path (rendered before site name in nav)",
+        label_key: "chip.logo.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -203,6 +214,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         priority: 40,
         description: "Custom URL path override",
+        label_key: "chip.url.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -212,6 +224,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         priority: 35,
         description: "Author name (or 'A and B' / 'A, B, and C' for co-authors). Captured by moss import from JSON-LD / OpenGraph.",
+        label_key: "chip.author.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -221,6 +234,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         priority: 36,
         description: "Publishing outlet name. Captured by moss import from schema.org publisher (resolved via @id) or OpenGraph site_name.",
+        label_key: "chip.publisher.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -230,6 +244,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         priority: 37,
         description: "Linkblog target: when set, internal references to this page (cards, link rewrites, canonical, sitemap) point here instead of the local URL. The page is still built locally — direct visits to its slug still work — but the canonical home is elsewhere on the web. Pattern from JSON Feed 1.1.",
+        label_key: "chip.external_url.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -239,6 +254,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::FilePicker,
         priority: 60,
         description: "Cover image path",
+        label_key: "chip.cover.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -256,6 +272,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         priority: 70,
         description: "Language code (e.g. en, zh)",
+        label_key: "chip.lang.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -265,6 +282,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::NumberInput,
         priority: 70,
         description: "Sort weight for ordering",
+        label_key: "chip.weight.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -274,6 +292,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Checkbox,
         priority: 80,
         description: "Whether to show in site navigation",
+        label_key: "chip.nav.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -287,6 +306,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         enum_values: Some(&["date", "weight", "title"]),
         priority: 85,
         description: "How to sort children in this folder's listing. Use date for chronological streams, weight for authored order, title for alphabetical. A list of child stems (e.g. [intro, setup]) declares explicit order.",
+        label_key: "chip.sort.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -297,6 +317,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         one_of_members: Some(SERIES_MEMBERS),
         priority: 90,
         description: "Declares children as sequential series. Use true for weight-based ordering, or a list of wikilinks for explicit order.",
+        label_key: "chip.series.label",
         group: "Occasional",
         ..FIELD_DEFAULTS
     },
@@ -310,6 +331,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         default_json: Some("true"),
         priority: 100,
         description: "Whether to render child pages below content. Accepts true/false or a wikilink like [[News]] to render a specific folder's articles.",
+        label_key: "chip.children.label",
         group: "Children",
         ..FIELD_DEFAULTS
     },
@@ -330,6 +352,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 100,
         description: "How child pages are rendered",
         label: Some("Style"),
+        label_key: "chip.children_style.label",
         group: "Children",
         ..FIELD_DEFAULTS
     },
@@ -341,6 +364,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 100,
         description: "How children are grouped: year (default for list) or none (default for card)",
         label: Some("Group"),
+        label_key: "chip.children_group.label",
         group: "Children",
         ..FIELD_DEFAULTS
     },
@@ -353,6 +377,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 100,
         description: "Whether to include only immediate children or all descendants",
         label: Some("Depth"),
+        label_key: "chip.children_depth.label",
         group: "Children",
         ..FIELD_DEFAULTS
     },
@@ -364,6 +389,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 100,
         description: "Where to render the children feed: body (after page content, default) or sidebar (right rail).",
         label: Some("Slot"),
+        label_key: "chip.children_in.label",
         group: "Children",
         ..FIELD_DEFAULTS
     },
@@ -374,6 +400,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 100,
         description: "Cap the feed at N items. If truncated, a 'More \u{2192}' link is added. Absent = no cap.",
         label: Some("Limit"),
+        label_key: "chip.children_limit.label",
         group: "Children",
         ..FIELD_DEFAULTS
     },
@@ -443,6 +470,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 50,
         description: "Typesetting direction: horizontal (default) or vertical (right-to-left columns for CJK content)",
         label: Some("Typesetting"),
+        label_key: "chip.typesetting.label",
         group: "Layout & Presentation",
         ..FIELD_DEFAULTS
     },
@@ -454,6 +482,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         priority: 75,
         description: "Page width: default (67ch) for prose, wide (80ch) for grids/tables, full (site max) for dashboards",
         label: Some("Width"),
+        label_key: "chip.content_width.label",
         group: "Layout & Presentation",
         ..FIELD_DEFAULTS
     },
