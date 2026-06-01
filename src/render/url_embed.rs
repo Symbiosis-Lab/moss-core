@@ -579,4 +579,31 @@ mod tests {
         assert!(!out.contains(r#"title="My "video""#), "unescaped quote in title, got: {out}");
         assert!(!out.contains("<test>"), "unescaped angle bracket in title, got: {out}");
     }
+
+    #[test]
+    fn dispatch_generic_url_with_query_preserved_in_src() {
+        // Generic URL with query string: split_dest_url splits on ?, reassemble_url
+        // puts it back, detect_provider keeps it unchanged in embed_url, and
+        // synthesize_iframe_html HTML-escapes & → &amp; in the src attribute.
+        let out = synthesize_url_embed_html(
+            "https://example.com/x?a=1&b=2",
+            &PotholeContent::Empty,
+            &empty_snapshot(),
+        );
+        // & in query string must be escaped as &amp; in HTML attribute
+        assert!(
+            out.contains(r#"src="https://example.com/x?a=1&amp;b=2""#),
+            "query string must survive and be HTML-escaped, got: {out}"
+        );
+        assert!(!out.contains("data-provider="), "generic, got: {out}");
+    }
+
+    #[test]
+    fn detect_provider_youtube_timestamp_with_s_suffix() {
+        // YouTube links often use t=30s (with trailing 's' unit); should be
+        // normalised to ?start=30 (without the 's')
+        let p = detect_provider("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30s");
+        assert!(p.embed_url.contains("start=30"), "s-suffix timestamp should be normalised, got: {}", p.embed_url);
+        assert!(!p.embed_url.contains("30s"), "raw 30s must not appear, got: {}", p.embed_url);
+    }
 }
