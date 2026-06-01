@@ -3,12 +3,9 @@
 > Pure-Rust content engine that powers moss.
 
 [![crates.io](https://img.shields.io/crates/v/moss-core.svg)](https://crates.io/crates/moss-core)
-[![downloads](https://img.shields.io/crates/d/moss-core.svg)](https://crates.io/crates/moss-core)
 [![docs.rs](https://docs.rs/moss-core/badge.svg)](https://docs.rs/moss-core)
-[![license](https://img.shields.io/crates/l/moss-core)](./LICENSE)
-[![MSRV](https://img.shields.io/crates/msrv/moss-core.svg)](./Cargo.toml)
-[![status](https://img.shields.io/badge/status-experimental-orange)](#stability)
-[![discussions](https://img.shields.io/github/discussions/Symbiosis-Lab/moss-core)](https://github.com/Symbiosis-Lab/moss-core/discussions)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.80-blue.svg)](./Cargo.toml)
 
 > **Read-only mirror.** Source lives in the private moss monorepo. PRs cannot be merged here — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
