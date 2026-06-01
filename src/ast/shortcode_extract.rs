@@ -91,6 +91,14 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> (Option<Shortcod
                         .to_string(),
                 );
             }
+            if let Some(ref v) = sc.mobile {
+                if v != "overlay" {
+                    warns.push(format!(
+                        "shortcode `:::hero` has unrecognized `mobile={v}`. \
+                         Only `mobile=overlay` is recognized. The attribute is ignored."
+                    ));
+                }
+            }
             (Some(Shortcode::Hero(sc)), warns)
         }
         "grid" => {
@@ -2760,6 +2768,19 @@ mod tests {
             }
             other => panic!("expected Hero, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn hero_unknown_mobile_value_emits_warning() {
+        let md = ":::hero {image=hero.jpg mobile=fullscreen}\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        assert!(
+            result.warnings.iter().any(|w| w.contains("unrecognized") && w.contains("fullscreen")),
+            "expected warning for unknown mobile value, got: {:?}",
+            result.warnings,
+        );
+        // The shortcode is still extracted (not dropped).
+        assert_eq!(result.extracted.len(), 1);
     }
 
     #[test]
