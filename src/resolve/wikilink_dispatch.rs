@@ -360,6 +360,23 @@ fn dispatch_wikilink_embed_with_lookup(
     }
 }
 
+/// Reassemble a `SplitDestUrl` back into a single URL string.
+///
+/// Inverse of `split_dest_url`. Used before external-URL provider detection
+/// so the full URL (including `?query` and `#fragment`) is available.
+fn reassemble_url(split: &SplitDestUrl<'_>) -> String {
+    let mut url = split.file.to_string();
+    if let Some(q) = split.query {
+        url.push('?');
+        url.push_str(q);
+    }
+    if let Some(s) = split.section {
+        url.push('#');
+        url.push_str(s);
+    }
+    url
+}
+
 /// Dispatch for `![[…]]` (embed form). Mirrors `resolve_embed`'s body.
 fn dispatch_embed_form(
     split: &SplitDestUrl<'_>,
@@ -370,6 +387,24 @@ fn dispatch_embed_form(
     lookup: &dyn Fn(&str) -> Option<&dyn EmbedRenderer>,
 ) -> WikilinkEmit {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // External URL embed: bypass ContentGraph resolution entirely.
+    // Any http:// or https:// URL is synthesized as an iframe directly.
+    // Provider detection (YouTube/Vimeo/CodePen) happens inside
+    // synthesize_url_embed_html; unrecognised URLs get a generic <iframe>.
+    if split.file.starts_with("http://") || split.file.starts_with("https://") {
+        let full_url = reassemble_url(split);
+        let html = crate::render::url_embed::synthesize_url_embed_html(
+            &full_url,
+            &pothole,
+            assets,
+        );
+        return WikilinkEmit {
+            output: EmitKind::Html(html),
+            outgoing_link: None,
+            diagnostics: vec![],
+        };
+    }
 
     // Phase 3 PR2: trailing-slash dispatch is the folder-list embed
     // (`![[/journal/]]`). We must check this BEFORE `resolve_reference`
@@ -1719,6 +1754,87 @@ mod tests {
         let html = render_figure(&emit);
         let n = html.matches("style=").count();
         assert_eq!(n, 1, "exactly one style= attr, got {n}: {html}");
+    }
+
+    // --- External URL dispatch ---
+
+    #[test]
+    fn dispatch_external_url_youtube_emits_html() {
+        let graph = build_graph(&[]);
+        let emit = dispatch_wikilink_embed(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            None,
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains("<iframe"), "got: {s}");
+                assert!(s.contains("youtube.com/embed"), "got: {s}");
+                assert!(s.contains(r#"data-provider="youtube""#), "got: {s}");
+            }
+            other => panic!("expected Html, got: {other:?}"),
+        }
+        assert!(emit.outgoing_link.is_none(), "external URLs must not register in ContentGraph");
+        assert!(emit.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn dispatch_external_url_generic_emits_html() {
+        let graph = build_graph(&[]);
+        let emit = dispatch_wikilink_embed(
+            "https://example.com/embed",
+            None,
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains("<iframe"), "got: {s}");
+                assert!(s.contains(r#"src="https://example.com/embed""#), "got: {s}");
+                assert!(!s.contains("data-provider="), "generic must not have data-provider, got: {s}");
+            }
+            other => panic!("expected Html, got: {other:?}"),
+        }
+        assert!(emit.outgoing_link.is_none());
+    }
+
+    #[test]
+    fn dispatch_external_url_http_also_works() {
+        let graph = build_graph(&[]);
+        let emit = dispatch_wikilink_embed(
+            "http://example.com/embed",
+            None,
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => assert!(s.contains("<iframe"), "got: {s}"),
+            other => panic!("expected Html, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_external_url_with_width_pothole() {
+        let graph = build_graph(&[]);
+        let emit = dispatch_wikilink_embed(
+            "https://vimeo.com/123456789",
+            Some("wide"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => assert!(s.contains(r#"data-width="wide""#), "got: {s}"),
+            other => panic!("expected Html, got: {other:?}"),
+        }
     }
 
 }
