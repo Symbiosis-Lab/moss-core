@@ -175,7 +175,7 @@ pub trait RenderHooks {
     /// styles, gallery grids) lives in src-tauri's `PipelineHooks` impl
     /// because it depends on filesystem context (site_id, lang, asset
     /// paths) that moss-core doesn't have.
-    fn render_shortcode(&self, out: &mut String, sc: &Shortcode) {
+    fn render_shortcode(&self, out: &mut String, sc: &Shortcode, source_line: Option<usize>) {
         match sc {
             Shortcode::Subscribe(args) => {
                 // Test-harness skeleton; src-tauri's PipelineHooks renders
@@ -382,6 +382,17 @@ pub trait RenderHooks {
                     out.push_str(w);
                     out.push('"');
                 }
+                // Click-to-source: emit a point source range on the Hero's
+                // outermost element so the bridge's `resolveSourceTarget`
+                // (`data-source-range`) routes a click back to the `:::hero`
+                // line. Same start/end = point range (mirrors the Grid arm).
+                if let Some(n) = source_line {
+                    out.push_str(r#" data-source-range=""#);
+                    out.push_str(&n.to_string());
+                    out.push('-');
+                    out.push_str(&n.to_string());
+                    out.push('"');
+                }
                 out.push('>');
                 if let Some(image) = &args.image {
                     let src = match image {
@@ -463,6 +474,17 @@ pub trait RenderHooks {
                 if let Some(w) = &args.width {
                     out.push_str(r#" data-width=""#);
                     out.push_str(w);
+                    out.push('"');
+                }
+                // Click-to-source: emit a point source range on the Grid's
+                // outermost element so the bridge's `resolveSourceTarget`
+                // (`data-source-range`) routes a click back to the `:::grid`
+                // line. Same start/end = point range.
+                if let Some(n) = source_line {
+                    out.push_str(r#" data-source-range=""#);
+                    out.push_str(&n.to_string());
+                    out.push('-');
+                    out.push_str(&n.to_string());
                     out.push('"');
                 }
                 out.push('>');
@@ -866,8 +888,8 @@ impl<'a> RenderHooks for HeroOverlayHooks<'a> {
         self.inner.gallery_assets()
     }
 
-    fn render_shortcode(&self, out: &mut String, sc: &Shortcode) {
-        self.inner.render_shortcode(out, sc);
+    fn render_shortcode(&self, out: &mut String, sc: &Shortcode, source_line: Option<usize>) {
+        self.inner.render_shortcode(out, sc, source_line);
     }
 
     fn render_heading(
@@ -1193,7 +1215,7 @@ mod tests {
 
     fn render_shortcode_html(sc: &Shortcode) -> String {
         let mut out = String::new();
-        DefaultHooks::new().render_shortcode(&mut out, sc);
+        DefaultHooks::new().render_shortcode(&mut out, sc, None);
         out
     }
 
@@ -1339,7 +1361,7 @@ mod tests {
         // absent paths modulo the dim/style attribute values.
         let sc = gallery_with_one_item("photos/cat.jpg");
         let mut out = String::new();
-        DefaultHooks::new().render_shortcode(&mut out, &sc);
+        DefaultHooks::new().render_shortcode(&mut out, &sc, None);
         assert!(
             out.contains("<picture"),
             "expected <picture> wrap even without snapshot (PR1: every <img> is synth), got: {out}",
@@ -1363,7 +1385,7 @@ mod tests {
 
         let sc = gallery_with_one_item(src);
         let mut out = String::new();
-        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc);
+        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc, None);
         assert!(out.contains("<picture"), "expected <picture> wrap, got: {out}");
         assert!(
             out.contains(r#"srcset="photos/cat.webp""#),
@@ -1385,7 +1407,7 @@ mod tests {
 
         let sc = gallery_with_one_item(src);
         let mut out = String::new();
-        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc);
+        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc, None);
         assert!(out.contains(r#"width="800""#), "expected width=800, got: {out}");
         assert!(out.contains(r#"height="600""#), "expected height=600, got: {out}");
     }
@@ -1419,7 +1441,7 @@ mod tests {
         // `<section class="moss-hero"` parent + absent `loading=`.
         let sc = hero_with_image("hero.jpg");
         let mut out = String::new();
-        DefaultHooks::new().render_shortcode(&mut out, &sc);
+        DefaultHooks::new().render_shortcode(&mut out, &sc, None);
         assert!(
             out.contains(r#"<section class="moss-hero""#),
             "expected hero section wrap, got: {out}",
@@ -1451,7 +1473,7 @@ mod tests {
 
         let sc = hero_with_image(src);
         let mut out = String::new();
-        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc);
+        DefaultHooks::with_snapshot(&snap).render_shortcode(&mut out, &sc, None);
         assert!(
             out.contains(r#"<section class="moss-hero""#),
             "expected hero section wrap, got: {out}",
@@ -1580,7 +1602,7 @@ mod tests {
         });
         let hooks = DefaultHooks::new();
         let mut out = String::new();
-        hooks.render_shortcode(&mut out, &sc);
+        hooks.render_shortcode(&mut out, &sc, None);
         assert!(
             !out.contains("moss-heading-anchor"),
             "hero overlay heading must not carry a permalink anchor via DefaultHooks; got: {out}"
@@ -1588,6 +1610,52 @@ mod tests {
         assert!(
             out.contains(r#"id="understanding-climate-extremes""#),
             "hero overlay heading must still carry its id; got: {out}"
+        );
+    }
+
+    #[test]
+    fn render_shortcode_accepts_source_line_param() {
+        use crate::ast::shortcode::{Shortcode, SubscribeShortcode};
+        let sc = Shortcode::Subscribe(SubscribeShortcode {
+            placeholder: None,
+            button: None,
+        });
+        let mut out = String::new();
+        let hooks = DefaultHooks::new();
+        // Compiles only after the signature change.
+        hooks.render_shortcode(&mut out, &sc, Some(7));
+        let _ = out;
+    }
+
+    #[test]
+    fn render_shortcode_grid_emits_data_source_range_when_some() {
+        use crate::ast::shortcode::{GridShortcode, Shortcode};
+        let sc = Shortcode::Grid(GridShortcode {
+            cells: vec![vec![]],
+            columns: 1,
+            ..Default::default()
+        });
+        let mut out = String::new();
+        DefaultHooks::new().render_shortcode(&mut out, &sc, Some(12));
+        assert!(
+            out.contains(r#"data-source-range="12-12""#),
+            "grid should carry a point source range; got: {out}"
+        );
+    }
+
+    #[test]
+    fn render_shortcode_grid_omits_data_source_range_when_none() {
+        use crate::ast::shortcode::{GridShortcode, Shortcode};
+        let sc = Shortcode::Grid(GridShortcode {
+            cells: vec![vec![]],
+            columns: 1,
+            ..Default::default()
+        });
+        let mut out = String::new();
+        DefaultHooks::new().render_shortcode(&mut out, &sc, None);
+        assert!(
+            !out.contains("data-source-range"),
+            "grid must omit source range when no source line; got: {out}"
         );
     }
 }

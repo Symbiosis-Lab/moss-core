@@ -78,6 +78,9 @@ pub fn extract_hero(doc: &mut Document, hooks: &dyn RenderHooks) -> Option<HeroE
     // Pop the block from the document. Keep `block_meta` in sync — both
     // vecs must remain the same length per the Document invariant
     // asserted in `render_document`.
+    // Capture source_line before removing meta so the hero template slot
+    // can carry data-source-range for click-to-source in the preview.
+    let hero_source_line = doc.block_meta.get(hero_idx).and_then(|m| m.source_line);
     let hero_block = doc.blocks.remove(hero_idx);
     if hero_idx < doc.block_meta.len() {
         doc.block_meta.remove(hero_idx);
@@ -137,7 +140,10 @@ pub fn extract_hero(doc: &mut Document, hooks: &dyn RenderHooks) -> Option<HeroE
     // dispatches to `render_hero_html_typed` which produces the full
     // section+slot+overlay HTML.
     let mut html = String::new();
-    hooks.render_shortcode(&mut html, hero_shortcode);
+    // Hero is hoisted out of the body to the article template's hero slot.
+    // The slot IS in the preview DOM and clickable, so we pass source_line
+    // so the rendered section carries data-source-range for click-to-source.
+    hooks.render_shortcode(&mut html, hero_shortcode, hero_source_line);
 
     Some(HeroExtraction {
         html,
@@ -189,6 +195,7 @@ fn inlines_plain_text(inlines: &[Inline]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::document::BlockMeta;
     use super::super::hooks::DefaultHooks;
     use super::super::node::Inline;
     use super::super::shortcode::HeroShortcode;
@@ -295,6 +302,37 @@ mod tests {
         assert_eq!(extraction.image_url.as_deref(), Some("a.jpg"));
         // After extraction: paragraph + remaining second hero.
         assert_eq!(doc.blocks.len(), 2);
+    }
+
+    #[test]
+    fn extract_hero_passes_source_line_to_render_shortcode() {
+        // The hoisted hero is placed in the article template slot and IS
+        // visible/clickable in the preview — it needs data-source-range.
+        let hero = hero_block(None, vec![]);
+        let meta_with_line = BlockMeta { source_line: Some(3), ..BlockMeta::default() };
+        let mut doc = Document::from_blocks_with_meta(vec![hero], vec![meta_with_line]);
+        let hooks = DefaultHooks::new();
+        let extraction = extract_hero(&mut doc, &hooks).expect("hero found");
+        assert!(
+            extraction.html.contains(r#"data-source-range="3-3""#),
+            "hoisted hero should carry data-source-range from block_meta, got: {}",
+            &extraction.html[..extraction.html.len().min(300)]
+        );
+    }
+
+    #[test]
+    fn extract_hero_source_line_none_when_meta_absent() {
+        // When block_meta has no source_line (e.g. emit_source_lines=false),
+        // no data-source-range attribute should appear.
+        let hero = hero_block(None, vec![]);
+        let mut doc = Document::from_blocks(vec![hero]); // default BlockMeta, source_line=None
+        let hooks = DefaultHooks::new();
+        let extraction = extract_hero(&mut doc, &hooks).expect("hero found");
+        assert!(
+            !extraction.html.contains("data-source-range"),
+            "no source_line in meta → no data-source-range, got: {}",
+            &extraction.html[..extraction.html.len().min(300)]
+        );
     }
 
     #[test]

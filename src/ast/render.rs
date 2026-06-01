@@ -314,7 +314,7 @@ fn render_block<H: RenderHooks + ?Sized>(
             out.push_str("</blockquote>\n");
         }
         Block::Shortcode(sc) => {
-            hooks.render_shortcode(out, sc);
+            hooks.render_shortcode(out, sc, meta.source_line);
             out.push('\n');
         }
         Block::ThematicBreak => {
