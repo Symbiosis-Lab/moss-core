@@ -3,7 +3,9 @@
 //! Lives in moss-core so validation, the resolver, and src-tauri's pipeline
 //! all share one definition. See ADR-018 for the boundary rule.
 
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use serde_yaml::Value;
 
 /// Series declaration field: sequential mode (`series: true`) or explicit
 /// wikilink order (`series: ["[[Ch 1]]", "[[Ch 2]]"]`).
@@ -15,6 +17,646 @@ pub enum SeriesField {
     Flag(bool),
     /// `series: ["[[Ch 1]]", "[[Ch 2]]"]` — explicit wikilink order.
     Ordered(Vec<String>),
+}
+
+/// Analytics configuration for script injection.
+///
+/// Supports two frontmatter formats:
+/// - String shorthand: `analytics: "https://guo.goatcounter.com/count"` (provider auto-detected from URL)
+/// - Object form: `analytics: { provider: goatcounter, url: "..." }`
+#[derive(Debug, Serialize, Default, Clone)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct AnalyticsConfig {
+    /// Analytics provider: "goatcounter", "umami" (default when absent)
+    pub provider: Option<String>,
+    /// URL — script src for Umami, count endpoint for GoatCounter
+    pub url: String,
+    /// Site ID for the analytics service (Umami only)
+    pub site_id: Option<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for AnalyticsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct AnalyticsVisitor;
+
+        impl<'de> de::Visitor<'de> for AnalyticsVisitor {
+            type Value = AnalyticsConfig;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a URL string or an analytics config object")
+            }
+
+            fn visit_str<E: de::Error>(self, url: &str) -> Result<Self::Value, E> {
+                Ok(AnalyticsConfig {
+                    provider: None,
+                    url: url.to_string(),
+                    site_id: None,
+                })
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                #[derive(Deserialize)]
+                struct Inner {
+                    provider: Option<String>,
+                    url: String,
+                    site_id: Option<String>,
+                }
+                let inner =
+                    Inner::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(AnalyticsConfig {
+                    provider: inner.provider,
+                    url: inner.url,
+                    site_id: inner.site_id,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(AnalyticsVisitor)
+    }
+}
+
+impl AnalyticsConfig {
+    /// Generate the HTML script tag for this analytics configuration.
+    /// When `provider` is None, auto-detects from the URL domain.
+    pub fn to_script_tag(&self) -> String {
+        let provider = self.provider.as_deref().unwrap_or_else(|| {
+            if self.url.contains("goatcounter.com") {
+                "goatcounter"
+            } else {
+                "umami"
+            }
+        });
+        match provider {
+            "goatcounter" => {
+                format!(
+                    r#"<script data-goatcounter="{}" async src="//gc.zgo.at/count.js"></script>"#,
+                    self.url
+                )
+            }
+            _ => {
+                format!(
+                    r#"<script defer src="{}" data-website-id="{}"></script>"#,
+                    self.url,
+                    self.site_id.as_deref().unwrap_or("")
+                )
+            }
+        }
+    }
+
+    /// Generate a tracking pixel URL for the given path, if the provider supports it.
+    /// GoatCounter's /count endpoint returns a 1x1 GIF when accessed without JavaScript,
+    /// making it suitable as an `<img>` src for RSS feed tracking.
+    pub fn to_pixel_url(&self, path: &str) -> Option<String> {
+        let provider = self.provider.as_deref().unwrap_or_else(|| {
+            if self.url.contains("goatcounter.com") {
+                "goatcounter"
+            } else {
+                "umami"
+            }
+        });
+        match provider {
+            "goatcounter" => {
+                let clean_path = if path.starts_with('/') {
+                    path.to_string()
+                } else {
+                    format!("/{}", path) // allow:served-path-url-construct (GoatCounter analytics page path, not a framework asset URL)
+                };
+                Some(format!("{}?p={}", self.url, clean_path))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Frontmatter structure for parsing YAML metadata from markdown files
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct FrontMatter {
+    /// Optional title override from frontmatter
+    pub title: Option<String>,
+    /// Optional publication date
+    pub date: Option<String>,
+    /// Navigation weight for ordering (lower numbers = higher priority)
+    pub weight: Option<i32>,
+    /// Custom URL path override (e.g., "links" -> "/links/")
+    /// Takes priority over filename-based slug generation
+    pub url: Option<String>,
+    /// Author name. Single name or pre-formatted list ("A and B", "A, B, and C").
+    /// Captured automatically by `moss import` from JSON-LD / OpenGraph metadata.
+    pub author: Option<String>,
+    /// Publishing outlet name (for imported pages). `moss import` resolves this
+    /// from schema.org `publisher` (via `@id` ref to an `Organization` entry)
+    /// or OpenGraph `og:site_name`, falling back to the URL host.
+    pub publisher: Option<String>,
+    /// Linkblog target: when set, internal references to this page (cards,
+    /// link rewrites, canonical, sitemap) point here instead of the local URL.
+    /// The page is still built locally — direct visits to its slug still
+    /// work — but the canonical home is elsewhere on the web. Pattern from
+    /// [JSON Feed 1.1](https://www.jsonfeed.org/version/1.1/): `external_url`
+    /// is the same as the href in a linkblog post.
+    ///
+    /// `moss import` populates this from the captured source URL so imported
+    /// pages route every internal link (card href, wikilink rewrite, canonical,
+    /// sitemap) to the outlet's URL while the local archive remains addressable
+    /// at its slug.
+    ///
+    /// `source_url` alias — accepts existing files with the previous (one-PR)
+    /// field name without breaking. Single-direction back-compat: writes use
+    /// `external_url` only. Remove the alias one release after merge.
+    #[serde(alias = "source_url")]
+    pub external_url: Option<String>,
+    /// Analytics configuration for privacy-focused analytics
+    pub analytics: Option<AnalyticsConfig>,
+    /// Site logo image path (rendered before site name in nav)
+    pub logo: Option<String>,
+    /// Cover image URL for collection pages
+    pub cover: Option<String>,
+    /// Explicit cover type override: "image", "video", or "iframe"
+    pub cover_type: Option<String>,
+    /// Whether to show in navigation
+    pub nav: Option<bool>,
+    /// Whether this is a draft (don't generate page)
+    pub draft: Option<bool>,
+    /// Whether page is unlisted (generated but hidden from lists)
+    pub unlisted: Option<bool>,
+    /// Page description for SEO and list previews
+    pub description: Option<String>,
+    /// Content tags for organization
+    pub tags: Option<Vec<String>>,
+    /// Whether to render child pages below content.
+    /// Accepts bool (true/false) or a wikilink/path string like "[[News]]".
+    /// The lenient deserializer resolves ANY non-bool string to `Some(true)`
+    /// (= render children on); the folder reference itself is extracted into
+    /// `children_source` by `crate::frontmatter_union::normalize_children`
+    /// in the pipeline. This `Option<bool>` is the RESOLVED form the render
+    /// layer consumes — its type is unchanged so no render-layer ripple.
+    #[serde(default, deserialize_with = "deserialize_children_lenient")]
+    pub children: Option<bool>,
+    /// Wikilink reference for targeted children rendering (e.g. "[[News]]").
+    /// When set, only the referenced folder's articles are rendered as
+    /// children, instead of all direct children of the current page.
+    pub children_source: Option<String>,
+    /// Wikilink to folder whose children appear in sidebar (e.g. "[[News]]")
+    pub sidebar: Option<String>,
+    /// How child pages are rendered: "list" (default), "card"
+    pub children_style: Option<String>,
+    /// How children are grouped: "year" or "none"
+    pub children_group: Option<String>,
+    /// What children to include: "direct" (default), "all" descendants
+    pub children_depth: Option<String>,
+    /// Where to render the children feed: "body" (default) or "sidebar".
+    /// Resolved at consumer; absent means body.
+    pub children_in: Option<String>,
+    /// Cap the children feed at N items. If truncated, a "More →" link
+    /// is added. Absent = no cap.
+    pub children_limit: Option<u32>,
+    /// Internal: marks frontmatter that came from the deprecated `sidebar:` alias.
+    /// Used by the sidebar callsite to apply the legacy default-3 limit on cross-ref.
+    /// Skip-serialize so the form doesn't round-trip the synthetic flag back into the file.
+    ///
+    /// The sidebar callsite reads this flag (not `sidebar.is_some()`) so a
+    /// conflict like `sidebar: "[[A]]" + children: "[[B]]"` — where the alias
+    /// yields and warns "sidebar ignored" — actually skips the right rail
+    /// rather than rendering it. Removed alongside the alias itself (#633).
+    #[serde(skip_serializing, default)]
+    pub _from_sidebar_alias: Option<bool>,
+    /// Listing sort: axis (date/weight/title) or explicit list of child stems.
+    #[serde(alias = "order")]
+    pub sort: Option<crate::sort::SortField>,
+    /// Series declaration: bool for prev/next chrome. Legacy list form
+    /// (SeriesField::Ordered) preserved for back-compat but normalized away
+    /// at deserialize time — see FrontMatter::normalize (Task 5).
+    pub series: Option<SeriesField>,
+    /// Override site-wide breadcrumb setting
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
+    pub breadcrumb: Option<bool>,
+    /// Override site-wide footer setting
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
+    pub footer: Option<bool>,
+    /// Frontmatter values to cascade to all descendants
+    pub cascade: Option<HashMap<String, Value>>,
+    /// Folder paths where this article also appears in lists
+    #[serde(alias = "also")]
+    pub also_in: Option<Vec<String>>,
+    /// Language override (e.g., "en", "zh-hans", "zh-hant")
+    pub lang: Option<String>,
+    /// Translation key for linking arbitrary files as translations
+    #[serde(rename = "translationKey")]
+    pub translation_key: Option<String>,
+    /// Whether to show comments on this page (default: true)
+    pub comments: Option<bool>,
+    /// Content-addressable unique identifier (first 8 chars of SHA-256 of relative path)
+    pub uid: Option<String>,
+    /// Typesetting direction: "horizontal" (default) or "vertical"
+    pub typesetting: Option<String>,
+    /// Content width preset: "wide" or "full"
+    pub content_width: Option<String>,
+    /// Template layout override: "page" or "article"
+    pub layout: Option<String>,
+    /// URL of item being reviewed (activates review feature for this page)
+    pub review_of: Option<String>,
+    /// Author's rating of the reviewed item (1-5)
+    pub rating: Option<u8>,
+    /// Named slot this page injects into (e.g. `footer-left`).
+    /// Validation against the recognized slot vocabulary happens at consumer
+    /// time in the build pipeline, so authors get a deferred warning rather
+    /// than a hard parse error.
+    pub slot: Option<String>,
+    /// Override for the email subject. When None, send uses title.
+    /// When the modal's edit equals title, this field is cleared (writer
+    /// can revert to "no override" by typing the title back in).
+    #[serde(default)]
+    pub email_subject: Option<String>,
+    /// Override for the email preheader (the inbox-preview text).
+    /// When None, send uses description. When the modal's edit equals
+    /// description, this field is cleared.
+    #[serde(default)]
+    pub email_preview: Option<String>,
+}
+
+impl FrontMatter {
+    /// One-time normalization after deserialize: consume legacy
+    /// `series: [list]` (SeriesField::Ordered) into `sort: List + series: Flag(true)`.
+    /// Idempotent. If `sort:` is already set explicitly, only the `series` field
+    /// flips to Flag(true) (preserving the chrome-implied semantics).
+    pub fn normalize(&mut self) {
+        if let Some(SeriesField::Ordered(items)) = &self.series {
+            if self.sort.is_none() {
+                self.sort = Some(crate::sort::SortField::List(items.clone()));
+            }
+            self.series = Some(SeriesField::Flag(true));
+        }
+    }
+}
+
+/// Deserialize a bool that may be a YAML string ("true"/"false") or a native bool.
+/// Returns None for missing values, Some(bool) for valid values, errors for invalid strings.
+pub fn deserialize_bool_lenient<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct BoolLenientVisitor;
+
+    impl<'de> de::Visitor<'de> for BoolLenientVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a boolean or string \"true\"/\"false\"")
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            match v {
+                "true" => Ok(Some(true)),
+                "false" => Ok(Some(false)),
+                _ => Err(E::custom(format!("invalid bool string: {}", v))),
+            }
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(BoolLenientVisitor)
+}
+
+/// Lenient deserializer for the `children` union field.
+///
+/// Accepts `bool` OR a string. A bool passes through; a string is resolved via
+/// the SHARED `crate::frontmatter_union::normalize_children` so the build
+/// pipeline and the editor agree byte-for-byte on what a value means. The folder
+/// reference carried by a string is recovered separately by calling
+/// `normalize_children` on the raw value in the pipeline (this deserializer only
+/// produces the resolved `Option<bool>`; it cannot write the sibling
+/// `children_source`). This replaces the old pre-parse YAML rewrite.
+pub fn deserialize_children_lenient<'de, D>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct ChildrenLenientVisitor;
+
+    impl<'de> de::Visitor<'de> for ChildrenLenientVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a boolean or a wikilink/path string")
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let norm = crate::frontmatter_union::normalize_children(
+                &serde_yaml::Value::String(v.to_string()),
+            );
+            Ok(Some(norm.children))
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(ChildrenLenientVisitor)
+}
+
+/// Extract a meaningful name from a frontmatter reference that may be either
+/// a wikilink (`[[Departure]]`), a resolved path (`travel/departure.md`),
+/// or a plain name (`Departure`).
+///
+/// **Note:** Wikilink resolution is centralized in `crates/moss-core/src/resolve/`.
+/// Frontmatter values like sidebar, cover, and series are already resolved paths
+/// by the time they reach this module. Do not add wikilink handling here.
+///
+/// After `resolve_frontmatter_wikilinks`, series/sidebar entries are resolved
+/// to file paths.  This helper extracts a name for matching against
+/// `ParsedDocument::clean_stem` or folder slugs.
+///
+/// For folder notes (`index.md`), returns the parent folder name since
+/// the meaningful identifier is the folder, not "index".
+///
+/// Examples:
+///   - `"[[Departure]]"` → `"Departure"` (wikilink fallback)
+///   - `"travel/departure.md"` → `"departure"` (path → filename stem)
+///   - `"blog/index.md"` → `"blog"` (folder note → folder name)
+///   - `"news.md"` → `"news"` (root file → stem)
+///   - `"Departure"` → `"Departure"` (plain name, pass-through)
+#[allow(clippy::string_slice)] // char-aligned: starts_with/ends_with already checked ASCII quote chars (single-byte)
+pub fn frontmatter_ref_to_stem(s: &str) -> String {
+    let trimmed = s.trim();
+
+    // Strip optional surrounding quotes (simplified frontmatter preserves them)
+    let unquoted = if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+
+    // Safety fallback: handle wikilink brackets for direct callers that
+    // bypass the resolve phase (e.g. direct process_markdown_file calls).
+    #[allow(clippy::string_slice)] // char-aligned: starts_with/ends_with already verified ASCII bracket chars (single-byte)
+    let cleaned = if unquoted.starts_with("[[") && unquoted.ends_with("]]") {
+        let inner = &unquoted[2..unquoted.len() - 2];
+        // Strip leading / (Obsidian root-relative paths)
+        inner.trim_start_matches('/')
+    } else {
+        unquoted
+    };
+
+    // If the result looks like a file path (has / or .md extension),
+    // extract the meaningful name.
+    if cleaned.contains('/') || cleaned.ends_with(".md") {
+        #[allow(clippy::unwrap_used)] // rsplit always has at least one element
+        let filename = cleaned.rsplit('/').next().unwrap_or(cleaned);
+        #[allow(clippy::string_slice)] // byte index from rfind is char-aligned (ASCII dot)
+        let stem = match filename.rfind('.') {
+            Some(pos) if pos > 0 => &filename[..pos],
+            _ => filename,
+        };
+        // For folder notes (index.md), use the parent folder name
+        if stem == "index" {
+            let parent = cleaned.rsplit('/').nth(1);
+            match parent {
+                Some(folder) => folder.to_string(),
+                None => stem.to_string(),
+            }
+        } else {
+            stem.to_string()
+        }
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// Translate the deprecated `sidebar:` field into the unified `children` family.
+///
+/// Fires when `sidebar:` is set AND there is no positive `children:` intent
+/// (children unset, or `false`). Sets `children_source`, `children = true`,
+/// `children_in = "sidebar"`, and the `_from_sidebar_alias` provenance flag
+/// so the sidebar callsite can apply the legacy default-3 limit on cross-ref.
+///
+/// If `children:` is `true` or a wikilink, the alias yields and `sidebar:` is
+/// ignored — explicit children intent wins. Returns deprecation/conflict
+/// warnings for the build log.
+pub fn apply_sidebar_alias(fm: &mut FrontMatter) -> Vec<String> {
+    let Some(sidebar_ref) = fm.sidebar.clone() else {
+        return Vec::new();
+    };
+
+    let mut warnings = Vec::new();
+    let has_positive_children_intent =
+        fm.children_source.is_some() || matches!(fm.children, Some(true));
+
+    if has_positive_children_intent {
+        warnings.push(
+            "`sidebar:` ignored because `children:` is set; remove `sidebar:` and use `children_in: sidebar`"
+                .to_string(),
+        );
+    } else {
+        fm.children = Some(true);
+        fm.children_source = Some(sidebar_ref.clone());
+        fm.children_in = Some("sidebar".to_string());
+        fm._from_sidebar_alias = Some(true);
+        warnings.push(format!(
+            "`sidebar:` is deprecated; use `children: {} + children_in: sidebar`",
+            sidebar_ref
+        ));
+    }
+
+    warnings
+}
+
+/// Detects if content uses simplified frontmatter syntax.
+/// Simplified frontmatter:
+/// - Does NOT start with `---`
+/// - Has lines before a standalone `---` delimiter
+/// - Uses format: `key` (boolean) or `key: value`
+pub fn is_simplified_frontmatter(content: &str) -> bool {
+    // If starts with ---, it's traditional YAML frontmatter
+    if content.trim_start().starts_with("---") {
+        return false;
+    }
+    // Check if there's a standalone --- line (not at the start)
+    // but ignore --- inside ::: directive blocks (e.g., :::grid uses --- as cell separator)
+    let mut in_directive = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(":::") && trimmed.len() > 3 {
+            in_directive = true;
+        } else if trimmed == ":::" && in_directive {
+            in_directive = false;
+        } else if trimmed == "---" && !in_directive {
+            return true;
+        }
+    }
+    false
+}
+
+/// Parse simplified frontmatter format into FrontMatter struct.
+/// Format:
+/// - Boolean flags: just the word (e.g., `nav` → nav: true)
+/// - Key-value: `key: value`
+/// - Comma lists: `key: a, b, c`
+pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
+    let mut frontmatter = FrontMatter::default();
+    let mut body_start = 0;
+    let in_frontmatter = true;
+
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+
+        // End of frontmatter
+        if trimmed == "---" {
+            // Calculate byte offset for the body
+            body_start = content.lines()
+                .take(i + 1)
+                .map(|l| l.len() + 1) // +1 for newline
+                .sum();
+            break;
+        }
+
+        if !in_frontmatter || trimmed.is_empty() {
+            continue;
+        }
+
+        // Parse the line
+        if let Some(colon_pos) = trimmed.find(':') {
+            // Key-value pair
+            #[allow(clippy::string_slice)] // byte index from find(':') is char-aligned (ASCII colon)
+            let key = trimmed[..colon_pos].trim();
+            #[allow(clippy::string_slice)] // byte index from find(':') + 1 is char-aligned (ASCII colon is single-byte)
+            let value = trimmed[colon_pos + 1..].trim();
+
+            match key {
+                "title" => frontmatter.title = Some(value.to_string()),
+                "date" => frontmatter.date = Some(value.to_string()),
+                "weight" => frontmatter.weight = value.parse().ok(),
+                "url" => frontmatter.url = Some(value.to_string()),
+                "cover" => frontmatter.cover = Some(value.to_string()),
+                // D1: children is boolean — "true" → Some(true), "false" → Some(false)
+                // D5: `list` alias removed (breaking change) — see docs/plans/2026-03-05-sidebar-redesign.md
+                "children" => {
+                    match value {
+                        "true" | "" => frontmatter.children = Some(true),
+                        "false" => frontmatter.children = Some(false),
+                        v if v.starts_with("[[") && v.ends_with("]]") => {
+                            // Wikilink reference: render children from the target folder
+                            frontmatter.children = Some(true);
+                            frontmatter.children_source = Some(v.to_string());
+                        }
+                        _ => {
+                            eprintln!("Warning: children: \"{}\" is not valid. Use true, false, or \"[[Folder]]\".", value);
+                        }
+                    }
+                }
+                "sidebar" => frontmatter.sidebar = Some(value.to_string()),
+                "children_style" => frontmatter.children_style = Some(value.to_string()),
+                "children_group" => frontmatter.children_group = Some(value.to_string()),
+                "children_depth" => frontmatter.children_depth = Some(value.to_string()),
+                "children_in" => match value {
+                    "body" | "sidebar" => frontmatter.children_in = Some(value.to_string()),
+                    _ => eprintln!(
+                        "Warning: children_in: \"{}\" is not valid. Use \"body\" or \"sidebar\".",
+                        value
+                    ),
+                },
+                "children_limit" => frontmatter.children_limit = value.parse().ok(),
+                "description" => frontmatter.description = Some(value.to_string()),
+                "lang" => frontmatter.lang = Some(value.to_string()),
+                "translationKey" | "translation_key" => {
+                    frontmatter.translation_key = Some(value.to_string())
+                }
+                "also" | "also_in" => {
+                    let items: Vec<String> = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !items.is_empty() {
+                        frontmatter.also_in = Some(items);
+                    }
+                }
+                "tags" => {
+                    let items: Vec<String> = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !items.is_empty() {
+                        frontmatter.tags = Some(items);
+                    }
+                }
+                // Handle boolean with explicit value
+                "nav" => frontmatter.nav = Some(value == "true" || value.is_empty()),
+                "draft" => frontmatter.draft = Some(value == "true" || value.is_empty()),
+                "unlisted" => frontmatter.unlisted = Some(value == "true" || value.is_empty()),
+                "breadcrumb" => frontmatter.breadcrumb = Some(value == "true" || value.is_empty()),
+                "footer" => frontmatter.footer = Some(value == "true" || value.is_empty()),
+                "comments" => frontmatter.comments = Some(value == "true" || value.is_empty()),
+                "slot" => {
+                    if !value.is_empty() {
+                        // Validation against known slot names happens at
+                        // consumer time in `build::footer::collect_footer_slots`,
+                        // so authors get a deferred warning rather than a
+                        // hard parse error.
+                        frontmatter.slot = Some(value.to_string());
+                    }
+                }
+                "email_subject" => frontmatter.email_subject = Some(value.to_string()),
+                "email_preview" => frontmatter.email_preview = Some(value.to_string()),
+                _ => {} // Unknown key, ignore
+            }
+        } else {
+            // Boolean flag (just the word)
+            match trimmed {
+                "nav" => frontmatter.nav = Some(true),
+                "draft" => frontmatter.draft = Some(true),
+                "unlisted" => frontmatter.unlisted = Some(true),
+                "breadcrumb" => frontmatter.breadcrumb = Some(true),
+                "footer" => frontmatter.footer = Some(true),
+                "comments" => frontmatter.comments = Some(true),
+                "children" => frontmatter.children = Some(true),
+                _ => {} // Unknown flag, ignore
+            }
+        }
+    }
+
+    #[allow(clippy::string_slice)] // body_start is a byte offset computed by summing line lengths + newlines (ASCII-safe)
+    let body = if body_start < content.len() {
+        content[body_start..].to_string()
+    } else {
+        String::new()
+    };
+
+    (frontmatter, body)
 }
 
 #[cfg(test)]
