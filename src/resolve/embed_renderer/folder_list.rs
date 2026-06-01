@@ -1,4 +1,4 @@
-//! Folder-listing embed: ![[/folder/|limit:N,more,sort:axis]]
+//! Folder-listing embed: ![[/folder/|limit:N,sort:axis]]
 //!
 //! Pure-Rust path parsing + marker emission. The actual children
 //! lookup + sort + HTML render happens in src-tauri (which has I/O).
@@ -10,7 +10,6 @@ use crate::sort::SortAxis;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FolderEmbedParams {
     pub limit: Option<usize>,
-    pub more: bool,
     pub sort: Option<SortAxis>,
     pub style: Option<String>,   // "list" | "summary" | "grid"
     pub depth: Option<String>,   // "direct" | "all"
@@ -25,7 +24,7 @@ pub struct FolderEmbedParams {
 
 /// Parse pipe-encoded params from the portion after `|`.
 ///
-/// Format: `key:value,key:value,flag` (e.g. `limit:5,more,sort:date`).
+/// Format: `key:value,key:value` (e.g. `limit:5,sort:date`).
 /// Unknown keys are silently ignored.
 pub fn parse_params(raw: &str) -> FolderEmbedParams {
     let mut out = FolderEmbedParams::default();
@@ -50,9 +49,8 @@ pub fn parse_params(raw: &str) -> FolderEmbedParams {
                 "group" => out.group = Some(v.trim().to_string()),
                 _ => {}
             }
-        } else if tok == "more" {
-            out.more = true;
         }
+        // unknown bare flags (e.g. legacy "more") silently ignored
     }
     out
 }
@@ -79,9 +77,6 @@ pub fn emit_marker(path: &str, from: &str, params: &FolderEmbedParams) -> String
     }
     if let Some(n) = params.limit {
         parts.push(format!("limit={}", n));
-    }
-    if params.more {
-        parts.push("more".to_string());
     }
     if let Some(ref lt) = params.lang_tree {
         parts.push(format!("lang_tree={}", lt));
@@ -112,10 +107,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_more_flag() {
+    fn parses_more_flag_ignored() {
+        // "more" is a legacy bare flag that is now silently ignored; limit still parses
         let p = parse_params("limit:5,more");
         assert_eq!(p.limit, Some(5));
-        assert!(p.more);
     }
 
     #[test]
@@ -139,20 +134,15 @@ mod tests {
     fn marker_roundtrips() {
         let p = FolderEmbedParams {
             limit: Some(3),
-            more: true,
             sort: Some(SortAxis::Date),
-            style: None,
-            depth: None,
-            group: None,
-            lang_tree: None,
-            exclude_nav: false,
+            ..Default::default()
         };
         let m = emit_marker("/journal/", "index.md", &p);
         assert!(m.starts_with(MARKER_FOLDER_LIST));
         assert!(m.contains("path=/journal/"));
         assert!(m.contains("from=index.md"));
         assert!(m.contains("limit=3"));
-        assert!(m.contains("more"));
+        assert!(!m.contains("more"));
         assert!(m.contains("sort=date"));
         assert!(m.ends_with(MARKER_END));
     }
@@ -179,16 +169,13 @@ mod tests {
             depth: Some("all".to_string()),
             group: Some("year".to_string()),
             limit: Some(5),
-            more: false,
-            sort: None,
-            lang_tree: None,
-            exclude_nav: false,
+            ..Default::default()
         };
         let m = emit_marker("/p/", "index.md", &p);
         assert!(m.contains("style=grid"));
         assert!(m.contains("depth=all"));
         assert!(m.contains("group=year"));
         assert!(m.contains("limit=5"));
-        assert!(!m.contains("more")); // not set
+        assert!(!m.contains("more"));
     }
 }
