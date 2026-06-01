@@ -364,6 +364,12 @@ fn dispatch_wikilink_embed_with_lookup(
 ///
 /// Inverse of `split_dest_url`. Used before external-URL provider detection
 /// so the full URL (including `?query` and `#fragment`) is available.
+///
+/// Note: always emits in canonical `?query#fragment` order regardless of the
+/// original source order. For well-formed URLs (query before fragment) this is
+/// byte-identical to the input. Degenerate `#fragment?query` inputs are silently
+/// reordered — acceptable for external URL embeds where providers only accept
+/// canonical query-first URLs.
 fn reassemble_url(split: &SplitDestUrl<'_>) -> String {
     let mut url = split.file.to_string();
     if let Some(q) = split.query {
