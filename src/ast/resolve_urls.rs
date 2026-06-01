@@ -525,9 +525,9 @@ fn slug_wikilink_suffix(suffix: &str) -> String {
 pub fn classify_remaining_urls(doc: &mut Document) {
     visit_urls_mut(doc, |url| {
         if let Url::Unresolved(raw) = url {
-            // Conservative fallback: treat as External (renders verbatim,
-            // no class/target attrs, no graph lookup). External is the
-            // least-special UrlKind — safer than guessing Internal.
+            // Conservative fallback: treat as External (opens in new tab,
+            // no graph lookup). Unknown URLs are external by nature;
+            // guessing Internal would be wrong and new-tab is safe.
             let kind = classify_unresolved_kind(raw);
             let raw_owned = std::mem::take(raw);
             *url = Url::Resolved(ResolvedUrl::new(raw_owned, kind));

@@ -66,7 +66,7 @@ pub struct ResolvedUrl {
 /// |---------------|--------------------------------------------------|
 /// | `Internal`    | none (already-pretty internal URL)               |
 /// | `Wikilink`    | `class="wikilink"` (resolved internal markdown)  |
-/// | `External`    | nothing here (host code may add `rel`)           |
+/// | `External`    | `target="_blank" rel="noopener"` (http/https)    |
 /// | `AssetNewtab` | `target="_blank" rel="noopener"` (HTML/PDF asset)|
 /// | `Asset`       | none (img/video src; no special attributes)      |
 /// | `Anchor`      | none (in-page `#fragment`)                       |

@@ -44,10 +44,10 @@ pub trait RenderHooks {
     ///
     /// The default impl carries forward moss's existing post-render
     /// conventions: `class="wikilink"` when `is_wikilink: true`,
-    /// `target="_blank" rel="noopener"` when `url.kind ==
-    /// UrlKind::AssetNewtab`. Both flags are **orthogonal** — a wikilink
-    /// that resolves to an asset-newtab target emits BOTH `class="wikilink"`
-    /// AND `target="_blank" rel="noopener"`.
+    /// `target="_blank" rel="noopener"` when `url.kind` is
+    /// `UrlKind::AssetNewtab` or `UrlKind::External`. Both flags are
+    /// **orthogonal** — a wikilink that resolves to an asset-newtab target
+    /// emits BOTH `class="wikilink"` AND `target="_blank" rel="noopener"`.
     ///
     /// # `is_wikilink` parameter (PR7a-flip-core-A)
     ///
@@ -93,7 +93,7 @@ pub trait RenderHooks {
         // production resolved-URL kind classification still drives the
         // class injection for inline links that pre-date the flag).
         let want_wikilink_class = is_wikilink || matches!(url.kind, UrlKind::Wikilink);
-        let want_newtab = matches!(url.kind, UrlKind::AssetNewtab);
+        let want_newtab = matches!(url.kind, UrlKind::AssetNewtab | UrlKind::External);
         out.push_str(r#"<a"#);
         if want_wikilink_class {
             out.push_str(r#" class="wikilink""#);
@@ -1150,6 +1150,24 @@ mod tests {
             "x",
         );
         assert!(out.contains(r#"href="q=a&amp;b=&quot;c&quot;""#));
+        // External links open in a new tab.
+        assert!(out.contains(r#"target="_blank""#), "got: {out}");
+    }
+
+    #[test]
+    fn default_hooks_render_link_external_opens_new_tab() {
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_link(
+            &mut out,
+            &ResolvedUrl::new("https://example.com", UrlKind::External),
+            false,
+            "Example",
+        );
+        assert_eq!(
+            out,
+            r#"<a target="_blank" rel="noopener" href="https://example.com">Example</a>"#
+        );
     }
 
     #[test]
