@@ -242,7 +242,7 @@ fn is_name_start(b: u8) -> bool {
 }
 
 fn is_word_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 /// CSS class names can contain hyphens in addition to word chars.
