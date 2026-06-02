@@ -73,12 +73,31 @@ fn nested_arity_parity() {
 }
 
 #[test]
-fn hyphenated_names_parity() {
-    // Uses :::gallery (a typed-known name) to verify that both parsers agree
-    // on a standard single-block fixture. Hyphenated plugin names are an
-    // intentional asymmetry covered by editor_scan's own unit tests.
+fn gallery_single_block_parity() {
+    // Uses :::gallery (a known typed name) to verify single-block agreement.
+    // (Fixture file is still named hyphenated-names.md but contains :::gallery;
+    //  see module comment for why the original :::my-widget was swapped out.)
     let md = include_str!("../../../tests/fixtures/parser-parity/hyphenated-names.md");
     check_parity(md, "hyphenated-names");
+}
+
+#[test]
+fn hyphenated_name_editor_scan_recognises_unknown() {
+    // Documents the INTENTIONAL asymmetry: editor_scan recognises :::my-widget
+    // as a top-level block (name parsing allows hyphens), but extract_shortcodes
+    // returns 0 in .extracted because unknown shortcode names are rendered as
+    // fallback divs, not typed AST nodes. This is not a parity bug — it is
+    // by design. This test locks in the contract so a future refactor doesn't
+    // accidentally change one side without the other.
+    use moss_core::ast::editor_scan::editor_scan;
+    use moss_core::ast::shortcode_extract::extract_shortcodes;
+    let md = ":::my-widget\nbody\n:::\n";
+    let scan = editor_scan(md);
+    let extract = extract_shortcodes(md);
+    assert_eq!(scan.blocks.len(), 1, "editor_scan must recognise :::my-widget");
+    assert_eq!(scan.blocks[0].name, "my-widget");
+    assert_eq!(extract.extracted.len(), 0,
+        "extract_shortcodes must return 0 typed nodes for unknown names (intentional asymmetry)");
 }
 
 #[test]

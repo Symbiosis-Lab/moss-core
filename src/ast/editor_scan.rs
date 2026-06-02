@@ -449,4 +449,16 @@ mod tests {
         assert_eq!(r.blocks[0].open.from, 0);
         assert_eq!(r.blocks[0].close.from, 20); // after "::::gallery\nimg.jpg\n"
     }
+
+    #[test]
+    fn mismatched_arity_close_drops_both_blocks() {
+        // If ::::buttons (4-colon) is closed with ::: (3-colon), the inner
+        // block never closes. The outer :::grid is also dropped as unclosed.
+        // Correct: malformed markup produces no blocks.
+        let md = ":::grid\n::::buttons\nbody\n:::\n:::\n";
+        //                              ^^^ wrong arity — should be ::::
+        let r = editor_scan(md);
+        assert!(r.blocks.is_empty(),
+            "mismatched inner close should leave outer block unclosed too");
+    }
 }
