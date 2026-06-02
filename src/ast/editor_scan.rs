@@ -116,7 +116,6 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
                     name: name.to_string(),
                     args: args.to_string(),
                     dividers: Vec::new(),
-                    arity,
                 });
                 arity_stack.push(arity);
                 depth = 1;
@@ -127,7 +126,9 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
             depth += 1;
         } else {
             // Check if this line closes the CURRENT depth level's block.
-            let current_arity = arity_stack.last().copied().unwrap_or(3);
+            // SAFETY: arity_stack.len() == depth, and depth > 0 in this branch.
+            let current_arity = arity_stack.last().copied()
+                .expect("arity_stack is non-empty when depth > 0");
             if is_close_fence(line_content, current_arity) {
                 arity_stack.pop();
                 depth -= 1;
@@ -206,7 +207,6 @@ struct PartialBlock {
     name: String,
     args: String,
     dividers: Vec<EditorRange>,
-    arity: usize, // number of colons in the opening fence (≥ 3)
 }
 
 /// Match `:::name args...` or `::::name args...` etc. (arity ≥ 3).
