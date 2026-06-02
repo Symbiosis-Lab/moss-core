@@ -63,6 +63,9 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
 
     let mut current: Option<PartialBlock> = None;
     let mut depth: usize = 0;
+    // Stack of arities for each nesting level. Entry 0 = outermost block's arity.
+    // This prevents an inner ::: from accidentally closing an outer :::grid.
+    let mut arity_stack: Vec<usize> = Vec::new();
     let mut current_is_grid: bool = false;
 
     let mut in_code_fence = false;
@@ -103,7 +106,7 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
         }
 
         if depth == 0 {
-            if let Some((name, args)) = match_open_fence(line_content) {
+            if let Some((arity, name, args)) = match_open_fence(line_content) {
                 current_is_grid = name == "grid";
                 current = Some(PartialBlock {
                     open: EditorRange {
@@ -113,35 +116,45 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
                     name: name.to_string(),
                     args: args.to_string(),
                     dividers: Vec::new(),
+                    arity,
                 });
+                arity_stack.push(arity);
                 depth = 1;
             }
-        } else if match_open_fence(line_content).is_some() {
+        } else if let Some((inner_arity, _, _)) = match_open_fence(line_content) {
+            // Nested opener — push its arity; depth increments.
+            arity_stack.push(inner_arity);
             depth += 1;
-        } else if is_close_fence(line_content) {
-            depth -= 1;
-            if depth == 0 {
-                if let Some(partial) = current.take() {
-                    blocks.push(EditorShortcodeBlock {
-                        open: partial.open,
-                        close: EditorRange {
-                            from: line_start,
-                            to: line_end,
-                        },
-                        name: partial.name,
-                        args: partial.args,
-                        dividers: partial.dividers,
-                    });
+        } else {
+            // Check if this line closes the CURRENT depth level's block.
+            let current_arity = arity_stack.last().copied().unwrap_or(3);
+            if is_close_fence(line_content, current_arity) {
+                arity_stack.pop();
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(partial) = current.take() {
+                        blocks.push(EditorShortcodeBlock {
+                            open: partial.open,
+                            close: EditorRange {
+                                from: line_start,
+                                to: line_end,
+                            },
+                            name: partial.name,
+                            args: partial.args,
+                            dividers: partial.dividers,
+                        });
+                    }
+                    current_is_grid = false;
                 }
-                current_is_grid = false;
-            }
-        } else if depth == 1 && current_is_grid {
-            // Divider check only applies at depth 1 inside a grid block.
-            if let Some(divider_range) =
-                match_divider(line_content, line_start, &mut legacy_dash)
-            {
-                if let Some(c) = current.as_mut() {
-                    c.dividers.push(divider_range);
+            } else if depth == 1 && current_is_grid {
+                // Divider check only applies at depth 1 inside a grid block,
+                // and only on lines that are not open/close fences.
+                if let Some(divider_range) =
+                    match_divider(line_content, line_start, &mut legacy_dash)
+                {
+                    if let Some(c) = current.as_mut() {
+                        c.dividers.push(divider_range);
+                    }
                 }
             }
         }
@@ -193,41 +206,41 @@ struct PartialBlock {
     name: String,
     args: String,
     dividers: Vec<EditorRange>,
+    arity: usize, // number of colons in the opening fence (≥ 3)
 }
 
-/// Match `:::name args...` opening fence. Returns `(name, args)` if matched.
-/// Mirrors the `SHORTCODE_OPEN` regex previously in `cm-shortcode.ts` but
-/// without depending on the regex crate.
-fn match_open_fence(line: &str) -> Option<(&str, &str)> {
+/// Match `:::name args...` or `::::name args...` etc. (arity ≥ 3).
+/// Returns `(arity, name, args)` if matched.
+fn match_open_fence(line: &str) -> Option<(usize, &str, &str)> {
     let trimmed = line.trim_start();
     let leading_ws = line.len() - trimmed.len();
-    let rest = trimmed.strip_prefix(":::")?;
-
-    // The name starts immediately after `:::` (no space).
-    let name_start_in_line = leading_ws + 3;
+    let arity = trimmed.bytes().take_while(|b| *b == b':').count();
+    if arity < 3 {
+        return None;
+    }
+    let rest = &trimmed[arity..];
+    let name_start_in_line = leading_ws + arity;
     // Match the name-char set used by `parse_shortcode_opener` in
     // `shortcode_extract.rs`: alphanumeric, underscore, hyphen. Plugins can
     // register names like `:::my-widget`, and the editor must recognize them
     // or its depth counter drifts from the build pipeline.
     let name_bytes = rest
         .bytes()
-        .take_while(|b| {
-            b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-'
-        })
+        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
         .count();
     if name_bytes == 0 {
         return None;
     }
     let name = &line[name_start_in_line..name_start_in_line + name_bytes];
-
     let after_name = &line[name_start_in_line + name_bytes..];
     let args = after_name.trim();
-    Some((name, args))
+    Some((arity, name, args))
 }
 
-/// Match `:::` closing fence (no name).
-fn is_close_fence(line: &str) -> bool {
-    line.trim() == ":::"
+/// Match a closing fence of the given arity (exactly `arity` colons, nothing else).
+fn is_close_fence(line: &str, arity: usize) -> bool {
+    let trimmed = line.trim();
+    trimmed.len() == arity && trimmed.bytes().all(|b| b == b':')
 }
 
 /// Return the fence string (sequence of `` ` `` or `~`) if the line is a
@@ -410,5 +423,30 @@ mod tests {
         // With correct fence tracking: grid is the only top-level block.
         assert_eq!(r.blocks.len(), 1);
         assert_eq!(r.blocks[0].name, "grid");
+    }
+
+    #[test]
+    fn nested_four_colon_block_closes_correctly() {
+        // ::::buttons inside :::grid uses 4-colon arity.
+        // The outer :::grid must close at the final :::, not be corrupted.
+        // Byte offsets: ":::grid 2\n"=10, "::::buttons\n"=12, "[a](#)\n"=7, "::::\n"=5, "cell two\n"=9 → 43
+        let md = ":::grid 2\n::::buttons\n[a](#)\n::::\ncell two\n:::\n";
+        let r = editor_scan(md);
+
+        assert_eq!(r.blocks.len(), 1, "only outer grid should be emitted");
+        assert_eq!(r.blocks[0].name, "grid");
+        assert_eq!(r.blocks[0].close.from, 43);
+    }
+
+    #[test]
+    fn four_colon_top_level_block_is_recognized() {
+        // A top-level ::::gallery block (4-colon arity) must be scanned correctly.
+        let md = "::::gallery\nimg.jpg\n::::\n";
+        let r = editor_scan(md);
+
+        assert_eq!(r.blocks.len(), 1);
+        assert_eq!(r.blocks[0].name, "gallery");
+        assert_eq!(r.blocks[0].open.from, 0);
+        assert_eq!(r.blocks[0].close.from, 20); // after "::::gallery\nimg.jpg\n"
     }
 }
