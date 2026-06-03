@@ -39,6 +39,7 @@ pub fn classify_link(target: &str, from_source: &str, index: &impl UrlIndex) -> 
     let asset_shaped = last.contains('.') && !last.ends_with('.');
 
     // 3. Absolute path: look up against the deployed URL space directly.
+    // Note: trailing-slash differences (/research vs /research/) both Resolve — they redirect on hosts, they don't 404.
     if path.starts_with('/') {
         if index.lookup_exact(path.trim_start_matches('/')) || index.lookup_exact(path) {
             return LinkClass::Resolved { url: path.to_string() };
@@ -90,7 +91,7 @@ mod tests {
         refs: std::collections::HashMap<String, String>,               // reference -> url
     }
     impl UrlIndex for FakeIndex {
-        fn lookup_exact(&self, u: &str) -> bool { self.exact.contains(u) }
+        fn lookup_exact(&self, u: &str) -> bool { self.exact.contains(u.trim_matches('/')) }
         fn lookup_normalized(&self, u: &str) -> Option<String> {
             self.normalized.get(&norm(u)).cloned().flatten()
         }
@@ -102,7 +103,7 @@ mod tests {
 
     fn idx() -> FakeIndex {
         let mut exact = std::collections::HashSet::new();
-        exact.insert("research/".to_string());
+        exact.insert("research".to_string());
         let mut normalized = std::collections::HashMap::new();
         normalized.insert("research".to_string(), Some("/research/".to_string()));
         let mut refs = std::collections::HashMap::new();
