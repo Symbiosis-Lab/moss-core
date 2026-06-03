@@ -15,6 +15,7 @@ pub mod block_refs;
 pub mod embed_renderer;
 pub mod embeds;
 pub mod fuzzy_path;
+pub mod link_class;
 pub mod registry;
 pub mod title_params;
 pub mod wikilink_dispatch;
