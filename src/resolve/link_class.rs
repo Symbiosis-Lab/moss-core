@@ -17,6 +17,57 @@ pub enum LinkClass {
     Anchor,
 }
 
+/// Split off `?query`/`#fragment`. Returns the path portion only.
+fn split_suffix(url: &str) -> &str {
+    let cut = url.find(['?', '#']).unwrap_or(url.len());
+    &url[..cut]
+}
+
+pub fn classify_link(target: &str, from_source: &str, index: &impl UrlIndex) -> LinkClass {
+    // 1. Author-facing short-circuits.
+    if target.starts_with("http://") || target.starts_with("https://")
+        || target.starts_with("//") || target.starts_with("mailto:")
+        || target.starts_with("tel:") || target.starts_with("data:")
+    {
+        return LinkClass::External;
+    }
+    if target.starts_with('#') {
+        return LinkClass::Anchor;
+    }
+
+    let path = split_suffix(target);
+    if path.is_empty() {
+        return LinkClass::Anchor; // pure ?query/#frag on current page
+    }
+
+    // 2. Asset-shaped (has a file extension) and not a known page → stay silent.
+    let last = path.rsplit('/').next().unwrap_or(path);
+    let asset_shaped = last.contains('.') && !last.ends_with('.');
+
+    // 3. Absolute path: look up against the deployed URL space directly.
+    if path.starts_with('/') {
+        if index.lookup_exact(path.trim_start_matches('/')) || index.lookup_exact(path) {
+            return LinkClass::Resolved { url: path.to_string() };
+        }
+        if let Some(canonical) = index.lookup_normalized(path) {
+            return LinkClass::Mismatch { canonical };
+        }
+        if asset_shaped {
+            return LinkClass::External; // silent
+        }
+        return LinkClass::Broken;
+    }
+
+    // 4. Reference (relative/bare): resolve to a canonical URL.
+    if let Some(url) = index.resolve_reference_to_url(path, from_source) {
+        return LinkClass::Resolved { url };
+    }
+    if asset_shaped {
+        return LinkClass::External; // silent (relative asset the map doesn't index)
+    }
+    LinkClass::Broken
+}
+
 /// Backing data for classification, injected by the caller (zero-I/O in core).
 pub trait UrlIndex {
     /// Case-sensitive presence of a URL path in the deployed space (host-accurate).
@@ -31,8 +82,67 @@ pub trait UrlIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn linkclass_constructs() {
         assert_eq!(LinkClass::Broken, LinkClass::Broken);
+    }
+
+    // A tiny in-memory UrlIndex fixture:
+    struct FakeIndex {
+        exact: std::collections::HashSet<String>,
+        normalized: std::collections::HashMap<String, Option<String>>, // norm_key -> Some(canonical)|None(ambiguous)
+        refs: std::collections::HashMap<String, String>,               // reference -> url
+    }
+    impl UrlIndex for FakeIndex {
+        fn lookup_exact(&self, u: &str) -> bool { self.exact.contains(u) }
+        fn lookup_normalized(&self, u: &str) -> Option<String> {
+            self.normalized.get(&norm(u)).cloned().flatten()
+        }
+        fn resolve_reference_to_url(&self, r: &str, _from: &str) -> Option<String> {
+            self.refs.get(r).cloned()
+        }
+    }
+    fn norm(u: &str) -> String { u.trim_matches('/').to_lowercase() }
+
+    fn idx() -> FakeIndex {
+        let mut exact = std::collections::HashSet::new();
+        exact.insert("research/".to_string());
+        let mut normalized = std::collections::HashMap::new();
+        normalized.insert("research".to_string(), Some("/research/".to_string()));
+        let mut refs = std::collections::HashMap::new();
+        refs.insert("Research".to_string(), "/research/".to_string());
+        FakeIndex { exact, normalized, refs }
+    }
+
+    #[test] fn external_passthrough() {
+        assert_eq!(classify_link("https://x.com", "a.md", &idx()), LinkClass::External);
+        assert_eq!(classify_link("mailto:a@b.c", "a.md", &idx()), LinkClass::External);
+    }
+    #[test] fn anchor_only() {
+        assert_eq!(classify_link("#sec", "a.md", &idx()), LinkClass::Anchor);
+    }
+    #[test] fn absolute_exact_resolved() {
+        assert_eq!(classify_link("/research/", "a.md", &idx()),
+                   LinkClass::Resolved { url: "/research/".into() });
+    }
+    #[test] fn absolute_case_mismatch() { // the yinlab bug
+        assert_eq!(classify_link("/Research/", "a.md", &idx()),
+                   LinkClass::Mismatch { canonical: "/research/".into() });
+    }
+    #[test] fn absolute_mismatch_keeps_fragment_out_of_lookup() {
+        assert_eq!(classify_link("/Research/#theme-1", "a.md", &idx()),
+                   LinkClass::Mismatch { canonical: "/research/".into() });
+    }
+    #[test] fn reference_resolved() {
+        assert_eq!(classify_link("Research", "a.md", &idx()),
+                   LinkClass::Resolved { url: "/research/".into() });
+    }
+    #[test] fn asset_shaped_unknown_is_silent_not_broken() {
+        // has an extension, not in index → treat as External (silent), never Broken
+        assert_eq!(classify_link("/img/Logo.PNG", "a.md", &idx()), LinkClass::External);
+    }
+    #[test] fn unknown_reference_is_broken() {
+        assert_eq!(classify_link("nope-no-page", "a.md", &idx()), LinkClass::Broken);
     }
 }
