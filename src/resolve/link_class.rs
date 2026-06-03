@@ -17,12 +17,6 @@ pub enum LinkClass {
     Anchor,
 }
 
-/// Split off `?query`/`#fragment`. Returns the path portion only.
-fn split_suffix(url: &str) -> &str {
-    let cut = url.find(['?', '#']).unwrap_or(url.len());
-    &url[..cut]
-}
-
 pub fn classify_link(target: &str, from_source: &str, index: &impl UrlIndex) -> LinkClass {
     // 1. Author-facing short-circuits.
     if target.starts_with("http://") || target.starts_with("https://")
@@ -35,7 +29,7 @@ pub fn classify_link(target: &str, from_source: &str, index: &impl UrlIndex) -> 
         return LinkClass::Anchor;
     }
 
-    let path = split_suffix(target);
+    let path = crate::resolve::fuzzy_path::split_url_path(target).0;
     if path.is_empty() {
         return LinkClass::Anchor; // pure ?query/#frag on current page
     }
@@ -71,6 +65,7 @@ pub fn classify_link(target: &str, from_source: &str, index: &impl UrlIndex) -> 
 /// Backing data for classification, injected by the caller (zero-I/O in core).
 pub trait UrlIndex {
     /// Case-sensitive presence of a URL path in the deployed space (host-accurate).
+    /// Implementors MUST normalize `url_path` by stripping leading and trailing slashes before comparison; callers MAY pass paths with either or both.
     fn lookup_exact(&self, url_path: &str) -> bool;
     /// Case/slug-normalized match → canonical URL. MUST return Some only when the
     /// normalized bucket has exactly one member (else None — ambiguous).
