@@ -37,20 +37,46 @@ fn lexical_join(base_dir: &str, target: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-#[allow(dead_code)]
 fn has_separator(t: &str) -> bool {
     t.contains('/')
 }
 
 pub fn resolve_asset_ref(target: &str, from_source: &str, index: &impl AssetIndex) -> AssetResolution {
-    // (filled out across Tasks 2-6)
     let from_dir = parent_dir(from_source);
+
+    // Step 1: `/`-absolute → root.
+    if let Some(stripped) = target.strip_prefix('/') {
+        return finish(stripped.to_string(), AssetProvenance::Literal, index);
+    }
+
+    // Step 2: literal source-relative (all targets).
     if let Some(cand) = lexical_join(from_dir, target) {
-        if index.contains(&cand) {
-            return AssetResolution::Resolved { root_rel: cand, provenance: AssetProvenance::Literal };
+        if let Some(res) = finish_opt(&cand, AssetProvenance::Literal, index) { return res; }
+    }
+
+    // Step 3: project-root-relative — SEPARATOR targets only (bare handled in step 4).
+    if has_separator(target) {
+        if let Some(cand) = lexical_join("", target) {
+            if let Some(res) = finish_opt(&cand, AssetProvenance::SeparatorFallback, index) { return res; }
         }
     }
+
+    // Step 4 added in Task 3.
     AssetResolution::NotFound
+}
+
+/// Exact hit → Resolved(provenance); case-only hit → Resolved(CaseMismatch, canonical); else None.
+fn finish_opt(cand: &str, prov: AssetProvenance, index: &impl AssetIndex) -> Option<AssetResolution> {
+    if index.contains(cand) {
+        return Some(AssetResolution::Resolved { root_rel: cand.to_string(), provenance: prov });
+    }
+    if let Some(canon) = index.contains_ci(cand) {
+        return Some(AssetResolution::Resolved { root_rel: canon, provenance: AssetProvenance::CaseMismatch });
+    }
+    None
+}
+fn finish(cand: String, prov: AssetProvenance, index: &impl AssetIndex) -> AssetResolution {
+    finish_opt(&cand, prov, index).unwrap_or(AssetResolution::NotFound)
 }
 
 #[cfg(test)]
@@ -91,5 +117,23 @@ mod tests {
         let r = resolve_asset_ref("./photo.jpg", "team/Team.md", &idx);
         assert_eq!(r, AssetResolution::Resolved {
             root_rel: "team/photo.jpg".into(), provenance: AssetProvenance::Literal });
+    }
+    #[test]
+    fn separator_fallback_to_root() {
+        // ./assets/AGU2025.jpg from a subfolder; real file at root assets/
+        let idx = FakeIndex::new(&["assets/AGU2025.jpg"]);
+        let r = resolve_asset_ref("./assets/AGU2025.jpg", "News/2025-12-agu.md", &idx);
+        assert_eq!(r, AssetResolution::Resolved {
+            root_rel: "assets/AGU2025.jpg".into(),
+            provenance: AssetProvenance::SeparatorFallback });
+    }
+    #[test]
+    fn case_mismatch_on_literal() {
+        // ./assets/Hoon.jpg authored at root; disk is Hoon.JPG
+        let idx = FakeIndex::new(&["assets/Hoon.JPG"]);
+        let r = resolve_asset_ref("./assets/Hoon.jpg", "Team.md", &idx);
+        assert_eq!(r, AssetResolution::Resolved {
+            root_rel: "assets/Hoon.JPG".into(),  // canonical real case
+            provenance: AssetProvenance::CaseMismatch });
     }
 }
