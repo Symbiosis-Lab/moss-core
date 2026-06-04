@@ -140,6 +140,7 @@ impl AnalyticsConfig {
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct FrontMatter {
     /// Optional title override from frontmatter
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub title: Option<String>,
     /// Optional publication date
     pub date: Option<String>,
@@ -253,6 +254,7 @@ pub struct FrontMatter {
     /// Whether to show comments on this page (default: true)
     pub comments: Option<bool>,
     /// Content-addressable unique identifier (first 8 chars of SHA-256 of relative path)
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub uid: Option<String>,
     /// Typesetting direction: "horizontal" (default) or "vertical"
     pub typesetting: Option<String>,
@@ -294,6 +296,68 @@ impl FrontMatter {
             self.series = Some(SeriesField::Flag(true));
         }
     }
+}
+
+/// One dropped field, for build advisories and (later) chip diagnostics (ADR-020).
+///
+/// Only `Dropped` outcomes exist today — a field whose value couldn't satisfy
+/// its typed field and was removed so its neighbours survive. Severity tiers
+/// (coerced/lossy) are added in Phase 3c alongside their first real consumer
+/// (the chip UI), per the "consumer before it ships" rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldWarning {
+    /// Frontmatter key that was dropped.
+    pub key: String,
+    /// Author-facing message (the serde error that rejected the value).
+    pub message: String,
+}
+
+/// Project the canonical parsed frontmatter map into the typed `FrontMatter`.
+///
+/// The single typed projection shared by the build (publish) and, later, the
+/// editor. `serde_yaml::from_value` reuses every `#[derive(Deserialize)]` +
+/// `deserialize_with` on `FrontMatter` — no per-field code — and serde_yaml
+/// coerces YAML scalars, so a numeric uid/title becomes a string here.
+///
+/// Resilience (ADR-020): if a value genuinely cannot satisfy its typed field
+/// (e.g. `weight: high`, or an `analytics` object missing its required `url`),
+/// that ONE field is dropped and every good neighbour survives. Offending
+/// fields are found by deserializing each field in ISOLATION — this is
+/// serde-driven, not schema-driven, so it also covers `skip_schema` fields and
+/// custom-deserializer fields the validation engine can't see (the gap that an
+/// earlier schema-driven attempt missed). Pure; no I/O.
+pub fn project_typed(values: &serde_yaml::Mapping) -> (FrontMatter, Vec<FieldWarning>) {
+    // Happy path: serde_yaml coerces scalars (numeric uid/title → string) and
+    // ignores unknown fields, so all coercible inputs succeed with no warnings.
+    if let Ok(fm) = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(values.clone())) {
+        return (fm, Vec::new());
+    }
+    // One or more fields can't satisfy the typed schema. Identify them by
+    // deserializing each field in ISOLATION: `FrontMatter` fields are
+    // independent `Option`s with no required cross-field state, so a field that
+    // fails on its own is exactly a field that poisons the whole struct. Drop
+    // those, keep the rest. Unknown fields are ignored by `from_value` and so
+    // never appear here.
+    let mut sanitized = values.clone();
+    let mut warnings: Vec<FieldWarning> = Vec::new();
+    for (k, v) in values.iter() {
+        let Some(key) = k.as_str() else { continue };
+        let mut single = serde_yaml::Mapping::new();
+        single.insert(k.clone(), v.clone());
+        if let Err(e) = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(single)) {
+            sanitized.remove(k);
+            warnings.push(FieldWarning {
+                key: key.to_string(),
+                message: format!("{key}: {e}"),
+            });
+        }
+    }
+    // With every poisoning field removed, the re-projection succeeds. The
+    // defensive `unwrap_or_default` covers only the theoretical residual case
+    // of a cross-field interaction (none exist in `FrontMatter` today).
+    let fm = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(sanitized))
+        .unwrap_or_default();
+    (fm, warnings)
 }
 
 /// Deserialize a bool that may be a YAML string ("true"/"false") or a native bool.
@@ -384,6 +448,39 @@ where
     }
 
     deserializer.deserialize_any(ChildrenLenientVisitor)
+}
+
+/// Lenient deserializer for string fields YAML may have implicitly typed as a
+/// non-string scalar. `uid: 46160604` -> integer, `uid: 753659e7` -> float,
+/// `title: 2024` -> integer. serde struct deserialize is atomic, so without this
+/// one such field fails the WHOLE `FrontMatter` (and the pipeline blanks every
+/// field). Stringify int/float/bool scalars so a numeric value can't poison its
+/// neighbors. Integer round-trips exactly; a float token is lossy (YAML already
+/// collapsed it to f64) — accepted because losing the whole block is worse. See
+/// ADR-020.
+pub fn deserialize_string_lenient<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    struct StringLenientVisitor;
+    impl<'de> de::Visitor<'de> for StringLenientVisitor {
+        type Value = Option<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string, or a number/bool YAML coerced from one")
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> { Ok(Some(v)) }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+        fn visit_some<D2>(self, d: D2) -> Result<Self::Value, D2::Error>
+        where D2: de::Deserializer<'de> { d.deserialize_any(StringLenientVisitor) }
+    }
+    deserializer.deserialize_any(StringLenientVisitor)
 }
 
 /// Extract a meaningful name from a frontmatter reference that may be either
@@ -727,8 +824,191 @@ pub fn compute_url_path(
 }
 
 #[cfg(test)]
+mod project_typed_tests {
+    use super::*;
+
+    fn map_of(pairs: &[(&str, serde_yaml::Value)]) -> serde_yaml::Mapping {
+        let mut m = serde_yaml::Mapping::new();
+        for (k, v) in pairs {
+            m.insert(serde_yaml::Value::String((*k).to_string()), v.clone());
+        }
+        m
+    }
+
+    #[test]
+    fn project_typed_clean_map_no_warnings() {
+        use serde_yaml::Value;
+        let m = map_of(&[
+            ("title", Value::String("Hello".into())),
+            ("date", Value::String("2025-05-28".into())),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("Hello"));
+        assert_eq!(fm.date.as_deref(), Some("2025-05-28"));
+        assert!(warnings.is_empty(), "clean frontmatter yields no warnings");
+    }
+
+    #[test]
+    fn project_typed_numeric_uid_coerces() {
+        use serde_yaml::Value;
+        // The canonical parse produced a YAML integer for uid (the real-world bug).
+        let m = map_of(&[
+            ("title", Value::String("Paper".into())),
+            ("uid", Value::Number(serde_yaml::Number::from(46160604u64))),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.uid.as_deref(), Some("46160604"));
+        assert_eq!(fm.title.as_deref(), Some("Paper"));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn project_typed_ignores_unknown_fields() {
+        use serde_yaml::Value;
+        let m = map_of(&[
+            ("title", Value::String("T".into())),
+            ("syndicated", Value::String("https://example.com".into())),
+            ("some_plugin_field", Value::Number(serde_yaml::Number::from(7u64))),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("T"));
+        assert!(warnings.is_empty(), "unknown fields are ignored, not errors");
+    }
+
+    #[test]
+    fn project_typed_drops_only_the_unrepresentable_field() {
+        use serde_yaml::Value;
+        // `weight: high` cannot become i32. Field-granular: weight is dropped, but
+        // every good field (title) survives. One bad field can't poison neighbors.
+        let m = map_of(&[
+            ("title", Value::String("Kept".into())),
+            ("weight", Value::String("high".into())),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("Kept"), "good field survives");
+        assert_eq!(fm.weight, None, "bad field defaulted");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].key, "weight");
+        assert!(!warnings[0].message.is_empty());
+    }
+
+    #[test]
+    fn project_typed_drops_malformed_skip_schema_field_keeps_neighbors() {
+        use serde_yaml::Value;
+        // `analytics` is skip_schema (invisible to validate_frontmatter) and has
+        // a custom Deserialize requiring `url`. A malformed analytics must NOT
+        // blank the whole block — the gap a schema-driven drop loop missed.
+        // Isolation testing catches it because from_value fails on it alone.
+        let mut analytics = serde_yaml::Mapping::new();
+        analytics.insert(Value::String("provider".into()), Value::String("goatcounter".into()));
+        let m = map_of(&[
+            ("title", Value::String("Important Title".into())),
+            ("date", Value::String("2025-05-28".into())),
+            ("analytics", Value::Mapping(analytics)),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("Important Title"), "title survives malformed analytics");
+        assert_eq!(fm.date.as_deref(), Some("2025-05-28"), "date survives too");
+        assert!(warnings.iter().any(|w| w.key == "analytics"), "analytics is flagged dropped");
+    }
+
+    #[test]
+    fn project_typed_keeps_coercible_uid_drops_bad_weight() {
+        use serde_yaml::Value;
+        let m = map_of(&[
+            ("title", Value::String("Paper".into())),
+            ("uid", Value::Number(46160604u64.into())),
+            ("weight", Value::String("high".into())),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("Paper"));
+        assert_eq!(fm.uid.as_deref(), Some("46160604"), "numeric uid is coerced, NOT dropped");
+        assert_eq!(fm.weight, None);
+        assert_eq!(warnings.len(), 1, "only weight warns; uid is coerced silently");
+        assert_eq!(warnings[0].key, "weight");
+    }
+
+    #[test]
+    fn project_typed_drops_multiple_bad_fields_keeps_good() {
+        use serde_yaml::Value;
+        let m = map_of(&[
+            ("title", Value::String("T".into())),
+            ("weight", Value::String("high".into())),
+            ("tags", Value::String("not-an-array".into())),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("T"), "good field survives multiple bad neighbors");
+        let keys: std::collections::HashSet<_> = warnings.iter().map(|w| w.key.as_str()).collect();
+        assert!(keys.contains("weight"));
+        assert!(keys.contains("tags"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    // serde_yaml coerces numbers→String on its own, so these document behavior; the real
+    // build-path guards are the *_via_json_path tests below.
+    #[test]
+    fn numeric_title_coerces_to_string() {
+        let fm: FrontMatter = serde_yaml::from_str("title: 2024\ndate: 2024-01-01\n").expect("parse");
+        assert_eq!(fm.title.as_deref(), Some("2024"));
+        assert_eq!(fm.date.as_deref(), Some("2024-01-01"));
+    }
+
+    #[test]
+    fn numeric_uid_coerces_and_preserves_siblings() {
+        let yaml = "title: Kept Title\nuid: 46160604\ndate: 2025-05-28\n";
+        let fm: FrontMatter = serde_yaml::from_str(yaml).expect("must not fail to parse");
+        assert_eq!(fm.uid.as_deref(), Some("46160604"), "integer uid round-trips exactly");
+        assert_eq!(fm.title.as_deref(), Some("Kept Title"), "sibling title must survive");
+        assert_eq!(fm.date.as_deref(), Some("2025-05-28"), "sibling date must survive");
+    }
+    #[test]
+    fn float_like_uid_does_not_blank_struct() {
+        let yaml = "title: T\nuid: 753659e7\n";
+        let fm: FrontMatter = serde_yaml::from_str(yaml).expect("must not fail to parse");
+        assert!(fm.uid.is_some(), "float-like uid yields some string");
+        assert_eq!(fm.title.as_deref(), Some("T"));
+    }
+    #[test]
+    fn string_uid_unchanged() {
+        let fm: FrontMatter = serde_yaml::from_str("title: T\nuid: 54ddc5c0\n").expect("parse");
+        assert_eq!(fm.uid.as_deref(), Some("54ddc5c0"));
+    }
+    #[test]
+    fn missing_uid_is_none() {
+        let fm: FrontMatter = serde_yaml::from_str("title: T\n").expect("parse");
+        assert_eq!(fm.uid, None);
+        assert_eq!(fm.title.as_deref(), Some("T"));
+    }
+    #[test]
+    fn null_uid_is_none() {
+        let fm: FrontMatter = serde_yaml::from_str("title: T\nuid:\n").expect("parse");
+        assert_eq!(fm.uid, None);
+    }
+
+    // These mirror the BUILD path: gray_matter's Pod::deserialize lowers to
+    // serde_json::Value (Pod::Integer => json!(val)) then serde_json::from_value,
+    // which — unlike serde_yaml — does NOT coerce numbers to String. Without
+    // deserialize_string_lenient these FAIL ("invalid type: integer, expected a
+    // string") and the whole FrontMatter would blank. See ADR-020.
+    #[test]
+    fn numeric_uid_via_json_path_coerces_and_preserves_siblings() {
+        let v = serde_json::json!({ "title": "Kept Title", "uid": 46160604u64, "date": "2025-05-28" });
+        let fm: FrontMatter = serde_json::from_value(v).expect("build path must not fail on numeric uid");
+        assert_eq!(fm.uid.as_deref(), Some("46160604"));
+        assert_eq!(fm.title.as_deref(), Some("Kept Title"));
+        assert_eq!(fm.date.as_deref(), Some("2025-05-28"));
+    }
+    #[test]
+    fn numeric_title_via_json_path_coerces() {
+        let v = serde_json::json!({ "title": 2024u64, "date": "2024-01-01" });
+        let fm: FrontMatter = serde_json::from_value(v).expect("build path must not fail on numeric title");
+        assert_eq!(fm.title.as_deref(), Some("2024"));
+        assert_eq!(fm.date.as_deref(), Some("2024-01-01"));
+    }
 
     #[test]
     fn frontmatter_ref_to_stem_single_char_quote_no_panic() {
