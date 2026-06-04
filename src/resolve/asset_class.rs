@@ -55,10 +55,30 @@ pub fn resolve_asset_ref(target: &str, from_source: &str, index: &impl AssetInde
     }
 
     // Step 3: project-root-relative — SEPARATOR targets only (bare handled in step 4).
-    if has_separator(target) {
-        if let Some(cand) = lexical_join("", target) {
+    //
+    // Also detect containment escape: a separator target whose lexical resolution
+    // underflows the project root in BOTH step 2 and step 3 (i.e. both lexical_join
+    // calls return None) must never fall through to basename fuzzy matching. An explicit
+    // relative path like "../../etc/x.jpg" that escapes the project root is invalid;
+    // resolving it by basename would silently return an unrelated file. Containment rule:
+    // escaped paths → NotFound, always.
+    let escaped = if has_separator(target) {
+        let step2_escaped = lexical_join(from_dir, target).is_none();
+        let step3_cand = lexical_join("", target);
+        if let Some(cand) = step3_cand {
             if let Some(res) = finish_opt(&cand, AssetProvenance::SeparatorFallback, index) { return res; }
+            false // step 3 resolved a valid path (even if index miss); not an escape
+        } else {
+            // Both step 2 and step 3 underflowed — target escapes the root.
+            step2_escaped
         }
+    } else {
+        false
+    };
+
+    // Containment guard: an escaping explicit path must not fuzzy-resolve by basename.
+    if escaped {
+        return AssetResolution::NotFound;
     }
 
     // Step 4: fuzzy. Separator targets: try path-suffix then basename. Bare: basename.
@@ -171,5 +191,26 @@ mod tests {
         let r = resolve_asset_ref("photo.jpg", "News/post.md", &idx);
         assert_eq!(r, AssetResolution::Resolved {
             root_rel: "News/photo.jpg".into(), provenance: AssetProvenance::Literal });
+    }
+    #[test]
+    fn ambiguous_picks_shortest_then_lexical() {
+        let idx = FakeIndex::new(&["a/photo.jpg", "deep/dir/photo.jpg"]);
+        let r = resolve_asset_ref("photo.jpg", "post.md", &idx);
+        assert_eq!(r, AssetResolution::Ambiguous {
+            chosen: "a/photo.jpg".into(),
+            candidates: vec!["a/photo.jpg".into(), "deep/dir/photo.jpg".into()] });
+    }
+    #[test]
+    fn absolute_path_resolves_from_root() {
+        let idx = FakeIndex::new(&["assets/x.jpg"]);
+        let r = resolve_asset_ref("/assets/x.jpg", "News/post.md", &idx);
+        assert_eq!(r, AssetResolution::Resolved {
+            root_rel: "assets/x.jpg".into(), provenance: AssetProvenance::Literal });
+    }
+    #[test]
+    fn escapes_root_is_not_found() {
+        let idx = FakeIndex::new(&["assets/x.jpg"]);
+        // ../../etc from a depth-1 file escapes the project → NotFound (never resolve outside)
+        assert_eq!(resolve_asset_ref("../../etc/x.jpg", "News/post.md", &idx), AssetResolution::NotFound);
     }
 }
