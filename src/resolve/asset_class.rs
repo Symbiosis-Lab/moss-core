@@ -61,8 +61,28 @@ pub fn resolve_asset_ref(target: &str, from_source: &str, index: &impl AssetInde
         }
     }
 
-    // Step 4 added in Task 3.
-    AssetResolution::NotFound
+    // Step 4: fuzzy. Separator targets: try path-suffix then basename. Bare: basename.
+    let basename = target.rsplit('/').next().unwrap_or(target);
+    let mut matches = if has_separator(target) {
+        let mut m = index.find_by_suffix(target);
+        if m.is_empty() { m = index.find_by_suffix(basename); }
+        m
+    } else {
+        index.find_by_suffix(basename)
+    };
+    matches.sort_by(|a, b| a.matches('/').count().cmp(&b.matches('/').count()).then(a.cmp(b)));
+    match matches.len() {
+        0 => AssetResolution::NotFound,
+        1 => {
+            let prov = if has_separator(target) {
+                AssetProvenance::SeparatorFallback
+            } else {
+                AssetProvenance::BareFuzzy
+            };
+            AssetResolution::Resolved { root_rel: matches.remove(0), provenance: prov }
+        }
+        _ => AssetResolution::Ambiguous { chosen: matches[0].clone(), candidates: matches },
+    }
 }
 
 /// Exact hit → Resolved(provenance); case-only hit → Resolved(CaseMismatch, canonical); else None.
@@ -135,5 +155,21 @@ mod tests {
         assert_eq!(r, AssetResolution::Resolved {
             root_rel: "assets/Hoon.JPG".into(),  // canonical real case
             provenance: AssetProvenance::CaseMismatch });
+    }
+    #[test]
+    fn bare_basename_fuzzy_silent() {
+        // bare from subfolder; not adjacent; unique basename at root → BareFuzzy (no warn)
+        let idx = FakeIndex::new(&["assets/AGU2025.jpg"]);
+        let r = resolve_asset_ref("AGU2025.jpg", "News/post.md", &idx);
+        assert_eq!(r, AssetResolution::Resolved {
+            root_rel: "assets/AGU2025.jpg".into(), provenance: AssetProvenance::BareFuzzy });
+    }
+    #[test]
+    fn bare_prefers_source_adjacent_sibling() {
+        // R2: documented, TESTED behaviour — adjacent sibling wins over a root copy.
+        let idx = FakeIndex::new(&["News/photo.jpg", "assets/photo.jpg"]);
+        let r = resolve_asset_ref("photo.jpg", "News/post.md", &idx);
+        assert_eq!(r, AssetResolution::Resolved {
+            root_rel: "News/photo.jpg".into(), provenance: AssetProvenance::Literal });
     }
 }
