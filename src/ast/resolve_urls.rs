@@ -62,7 +62,14 @@ use crate::resolve::{LinkType, OutgoingLink};
 // engine (resolve_asset_ref) can run against a real content graph.
 // ---------------------------------------------------------------------------
 
-struct GraphAssetIndex<'a>(&'a ContentGraph);
+/// Adapts [`ContentGraph`] to the [`AssetIndex`] trait.
+///
+/// Wraps a borrowed `ContentGraph` so that `resolve_asset_ref` (the pure
+/// shared engine in `moss_core::resolve::asset_class`) can be driven by the
+/// build-time in-memory index — identical to how `FsAssetIndex` in src-tauri
+/// drives it from the live filesystem. Exposed `pub` so integration tests and
+/// editor↔build parity tests can construct both adapters over the same file set.
+pub struct GraphAssetIndex<'a>(pub &'a ContentGraph);
 
 impl<'a> AssetIndex for GraphAssetIndex<'a> {
     fn contains(&self, p: &str) -> bool {

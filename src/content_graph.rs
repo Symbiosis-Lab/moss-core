@@ -472,10 +472,12 @@ impl ContentGraph {
         v
     }
 
-    /// Build a graph from a bare list of file paths (no slugs). For use in
-    /// tests only — each file gets an empty slug.
-    #[cfg(test)]
-    fn from_paths(paths: &[&str]) -> ContentGraph {
+    /// Build a graph from a bare list of file paths (no slugs).
+    ///
+    /// Each file is registered with an empty slug. Useful for tests and for
+    /// lightweight index construction in integration scenarios where only asset
+    /// lookup (not slug routing) is needed.
+    pub fn from_paths(paths: &[&str]) -> ContentGraph {
         let mut b = ContentGraphBuilder::new();
         for &p in paths {
             b.add_file(p, "");
