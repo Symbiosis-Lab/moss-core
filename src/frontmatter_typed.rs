@@ -140,6 +140,7 @@ impl AnalyticsConfig {
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct FrontMatter {
     /// Optional title override from frontmatter
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub title: Option<String>,
     /// Optional publication date
     pub date: Option<String>,
@@ -763,6 +764,13 @@ pub fn compute_url_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_title_coerces_to_string() {
+        let fm: FrontMatter = serde_yaml::from_str("title: 2024\ndate: 2024-01-01\n").expect("parse");
+        assert_eq!(fm.title.as_deref(), Some("2024"));
+        assert_eq!(fm.date.as_deref(), Some("2024-01-01"));
+    }
 
     #[test]
     fn numeric_uid_coerces_and_preserves_siblings() {
