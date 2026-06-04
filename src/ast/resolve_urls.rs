@@ -53,8 +53,28 @@ use super::shortcode::Shortcode;
 use super::url::{ResolvedUrl, Url, UrlKind};
 use super::visit::visit_urls_mut;
 use crate::content_graph::ContentGraph;
+use crate::resolve::asset_class::{resolve_asset_ref, AssetIndex, AssetResolution};
 use crate::resolve::fuzzy_path::{relative_asset_path, resolve_reference, ResolvedRef};
 use crate::resolve::{LinkType, OutgoingLink};
+
+// ---------------------------------------------------------------------------
+// GraphAssetIndex: adapts ContentGraph to the AssetIndex trait so the pure
+// engine (resolve_asset_ref) can run against a real content graph.
+// ---------------------------------------------------------------------------
+
+struct GraphAssetIndex<'a>(&'a ContentGraph);
+
+impl<'a> AssetIndex for GraphAssetIndex<'a> {
+    fn contains(&self, p: &str) -> bool {
+        self.0.asset_contains(p)
+    }
+    fn contains_ci(&self, p: &str) -> Option<String> {
+        self.0.asset_contains_ci(p)
+    }
+    fn find_by_suffix(&self, s: &str) -> Vec<String> {
+        self.0.asset_find_by_suffix(s)
+    }
+}
 
 /// Walk every URL in `doc` and classify it into [`Url::Resolved`].
 ///
@@ -159,10 +179,14 @@ fn resolve_image_urls(
 /// args (Hero, Gallery). Behavior:
 /// - Already `Url::Resolved` → no-op.
 /// - Pipe-bearing → pass through verbatim (Phase 3 PR3 contract).
-/// - Not a bare filename (external/anchor/data/has separator) → pass through.
-/// - Bare filename + graph hit → rewrite to `relative_asset_path`,
-///   push an OutgoingLink for the dependency edge.
-/// - Bare filename + graph miss → leave as authored, mark Asset.
+/// - External, anchor, data URLs → pass through (engine returns NotFound for
+///   these, so they fall through to the verbatim passthrough arm).
+/// - Separator-bearing or bare filename → routed through [`resolve_asset_ref`]
+///   (the unified engine). On `Resolved`: rewrite to relative asset path and
+///   push an OutgoingLink. On `Ambiguous`: pick the shortest match, warn, push.
+///   On `NotFound`: leave as authored (matches Stage 1 behavior, no hard fail).
+/// - `/`-absolute: the engine resolves from root; re-emit as `/<root_rel>` so
+///   the absolute form is preserved in the rendered HTML (no pretty-URL nesting).
 fn resolve_asset_url(
     url: &mut Url,
     alt: &str,
@@ -183,26 +207,55 @@ fn resolve_asset_url(
         return;
     }
 
-    if !is_bare_filename(&raw) {
-        // Pass through unchanged — external, anchor, data, relative-prefix,
-        // path-with-separator. Mark as Asset kind for image URLs.
+    // External, anchor, and data URLs are not asset filesystem references.
+    // Pass them through before invoking the engine (which only understands
+    // filesystem paths) so we don't misinterpret `https://...` as a path.
+    if raw.starts_with('#')
+        || raw.starts_with("http://")
+        || raw.starts_with("https://")
+        || raw.starts_with("//")
+        || raw.starts_with("data:")
+        || raw.starts_with("mailto:")
+    {
         *url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
         return;
     }
 
-    match resolve_reference(&raw, graph, source_path) {
-        ResolvedRef::Found(target_path) => {
-            let resolved_url = relative_asset_path(source_path, &target_path);
+    // Route ALL remaining refs (bare filenames, separator paths, absolute
+    // `/…` paths) through the unified asset engine. This replaces BOTH the
+    // old `is_bare_filename` branch (which called `resolve_reference`) and
+    // the old passthrough branch (which emitted the verbatim separator path,
+    // causing 404s for cross-directory relative paths).
+    let is_absolute = raw.starts_with('/');
+    match resolve_asset_ref(&raw, source_path, &GraphAssetIndex(graph)) {
+        AssetResolution::Resolved { root_rel, provenance: _ } => {
+            if is_absolute {
+                // R3: absolute paths stay absolute — re-emit with leading `/`
+                // so the browser resolves from the site root, not from the
+                // pretty-URL directory. Never run through relative_asset_path.
+                *url = Url::Resolved(ResolvedUrl::new(format!("/{root_rel}"), UrlKind::Asset));
+                return;
+            }
+            let rel = relative_asset_path(source_path, &root_rel);
             outgoing.push(OutgoingLink {
-                target_path,
+                target_path: root_rel,
                 display_text: alt.to_string(),
                 link_type: LinkType::Standard,
             });
-            *url = Url::Resolved(ResolvedUrl::new(resolved_url, UrlKind::Asset));
+            *url = Url::Resolved(ResolvedUrl::new(rel, UrlKind::Asset));
         }
-        ResolvedRef::Unresolved => {
-            // Leave as-is (matches Stage 1 behavior: pass through, no
-            // diagnostic). Mark Asset so render invariant holds.
+        AssetResolution::Ambiguous { chosen, candidates: _ } => {
+            let rel = relative_asset_path(source_path, &chosen);
+            outgoing.push(OutgoingLink {
+                target_path: chosen,
+                display_text: alt.to_string(),
+                link_type: LinkType::Standard,
+            });
+            *url = Url::Resolved(ResolvedUrl::new(rel, UrlKind::Asset));
+        }
+        AssetResolution::NotFound => {
+            // Unchanged: pass through verbatim. Matches Stage 1 behavior —
+            // the build never hard-fails on unresolved asset refs.
             *url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
         }
     }
@@ -275,41 +328,6 @@ fn resolve_shortcode_image_urls(
         | Block::CodeBlock { .. }
         | Block::ThematicBreak
         | Block::Other(_) => {}
-    }
-}
-
-/// Bare-filename detection — inherited shape from the deleted Stage 1
-/// `resolve::markdown_refs::is_bare_filename` (preserved verbatim during
-/// the PR7a migration).
-///
-/// A URL is a "bare filename" when it has no path separator, no protocol,
-/// no fragment-only `#`, no relative `./` `../` prefix, and carries a
-/// file extension (one or more chars after the rightmost `.`).
-fn is_bare_filename(url: &str) -> bool {
-    if url.is_empty() {
-        return false;
-    }
-    if url.starts_with('#') {
-        return false;
-    }
-    if url.starts_with("./") || url.starts_with("../") {
-        return false;
-    }
-    if url.starts_with("http://")
-        || url.starts_with("https://")
-        || url.starts_with("//")
-        || url.starts_with("data:")
-        || url.starts_with("mailto:")
-    {
-        return false;
-    }
-    if url.contains('/') || url.contains('\\') {
-        return false;
-    }
-    if let Some(dot_pos) = url.rfind('.') {
-        dot_pos > 0 && dot_pos < url.len() - 1
-    } else {
-        false
     }
 }
 
@@ -1339,6 +1357,16 @@ mod tests {
         // production consumer). With Stage 1 deleted we assert on the
         // visitor's behavior directly: load-bearing fields (target_path,
         // link_type) plus the documented display_text.
+        //
+        // Task 6 (asset-engine routing, 2026-06-03): the engine now also
+        // resolves separator-path image references through the graph and
+        // emits an OutgoingLink for the discovered dependency edge. So
+        // this test now expects TWO OutgoingLink entries:
+        //   [0] — image: assets/scale-compare.png (phase 1, image resolver)
+        //   [1] — link: assets/scale-compare.html (phase 2, link resolver)
+        // Previously [0] was absent because separator-path images were
+        // passed through verbatim (the 404 bug). The href for the image
+        // is unchanged ("assets/scale-compare.png" from index.md root).
         let source = "index.md";
         let content = "[![scale-compare](assets/scale-compare.png)](scale-compare.html?a=major_pent&r=major_pent%3AD)";
         let mut b = ContentGraphBuilder::new();
@@ -1350,10 +1378,20 @@ mod tests {
         let mut doc = parse(content);
         let visitor = resolve_urls(&mut doc, &graph, source);
 
-        assert_eq!(visitor.len(), 1);
-        assert_eq!(visitor[0].target_path, "assets/scale-compare.html");
-        assert_eq!(visitor[0].link_type, LinkType::Standard);
-        assert_eq!(visitor[0].display_text, "scale-compare");
+        // Phase 1 emits the image dependency edge; phase 2 emits the link.
+        assert_eq!(visitor.len(), 2, "expected image + link OutgoingLinks, got: {visitor:?}");
+        // Find the link entry by target (order: phase 1 image first, then phase 2 link).
+        let link_entry = visitor
+            .iter()
+            .find(|o| o.target_path == "assets/scale-compare.html")
+            .expect("OutgoingLink for scale-compare.html not found");
+        assert_eq!(link_entry.link_type, LinkType::Standard);
+        assert_eq!(link_entry.display_text, "scale-compare");
+        // Image dependency edge also present.
+        assert!(
+            visitor.iter().any(|o| o.target_path == "assets/scale-compare.png"),
+            "OutgoingLink for scale-compare.png not found"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -1601,5 +1639,84 @@ mod tests {
         assert_eq!(slug_wikilink_suffix("#My Heading"), "#my-heading");
         // Block ref keeps id raw (caret stripped).
         assert_eq!(slug_wikilink_suffix("#^Block Id"), "#Block Id");
+    }
+
+    // -----------------------------------------------------------------
+    // Task 6: engine routing tests for resolve_asset_url
+    //
+    // These tests exercise the unified asset engine (resolve_asset_ref)
+    // through the resolve_asset_url path. They cover:
+    //   - Separator-bearing paths that the old code passed through verbatim
+    //     (the 404 bug), now rebased via SeparatorFallback.
+    //   - Absolute `/`-prefixed paths that must stay absolute (R3).
+    //   - Case-mismatched paths that the engine canonicalises.
+    //   - Bare filenames that must behave identically to the old
+    //     resolve_reference path (the `image_bare_unchanged_from_today` gate).
+    // -----------------------------------------------------------------
+
+    /// Test seam: build a `Url::Unresolved(raw)`, run it through `resolve_asset_url`,
+    /// and return the resolved `href` string. The `graph` is built with
+    /// `ContentGraph::from_paths`.
+    fn resolve_image_src(raw: &str, source_path: &str, graph: &crate::content_graph::ContentGraph) -> String {
+        let mut url = Url::Unresolved(raw.to_string());
+        let mut outgoing = Vec::new();
+        resolve_asset_url(&mut url, "", graph, source_path, &mut outgoing);
+        match url {
+            Url::Resolved(r) => r.href,
+            Url::Unresolved(s) => s,
+        }
+    }
+
+    #[test]
+    fn image_separator_fallback_rebases_to_root() {
+        // The 404 bug: `./assets/AGU2025.jpg` authored in `News/post.md` is
+        // not adjacent (no `News/assets/` dir). Old code passed it verbatim →
+        // 404. New engine: SeparatorFallback → root `assets/AGU2025.jpg` →
+        // `relative_asset_path("News/post.md", "assets/AGU2025.jpg")` = "../assets/AGU2025.jpg".
+        // (The downstream +1 ../ for pretty-URL nesting is added by
+        // adjust_relative_paths_for_pretty_urls in src-tauri, not here.)
+        let graph = graph_with(&["assets/AGU2025.jpg", "News/post.md"]);
+        assert_eq!(
+            resolve_image_src("./assets/AGU2025.jpg", "News/post.md", &graph),
+            "../assets/AGU2025.jpg"
+        );
+    }
+
+    #[test]
+    fn image_absolute_stays_absolute() {
+        // R3: an absolute `/`-prefixed asset reference must be emitted with
+        // its leading `/` intact, never run through relative_asset_path.
+        let graph = graph_with(&["assets/x.jpg"]);
+        assert_eq!(
+            resolve_image_src("/assets/x.jpg", "News/post.md", &graph),
+            "/assets/x.jpg"
+        );
+    }
+
+    #[test]
+    fn image_case_mismatch_emits_canonical() {
+        // `./assets/Hoon.jpg` authored in `Team.md` (root); disk is `Hoon.JPG`.
+        // Engine: CaseMismatch → root_rel = "assets/Hoon.JPG".
+        // relative_asset_path("Team.md", "assets/Hoon.JPG"):
+        //   from_dir = "" (Team.md is at root) → ups = 0 → "assets/Hoon.JPG"
+        //   (no leading `../` because the source is at the project root).
+        let graph = graph_with(&["assets/Hoon.JPG"]);
+        assert_eq!(
+            resolve_image_src("./assets/Hoon.jpg", "Team.md", &graph),
+            "assets/Hoon.JPG"
+        );
+    }
+
+    #[test]
+    fn image_bare_unchanged_from_today() {
+        // Gate: bare-filename resolution must produce the SAME result via the
+        // engine as the old resolve_reference path did. `photo.jpg` from
+        // `post.md` (root) → BareFuzzy → root_rel = "assets/photo.jpg" →
+        // relative_asset_path("post.md", "assets/photo.jpg") = "assets/photo.jpg".
+        let graph = graph_with(&["assets/photo.jpg", "post.md"]);
+        assert_eq!(
+            resolve_image_src("photo.jpg", "post.md", &graph),
+            "assets/photo.jpg"
+        );
     }
 }
