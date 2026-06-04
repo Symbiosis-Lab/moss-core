@@ -226,6 +226,14 @@ fn resolve_asset_url(
     // old `is_bare_filename` branch (which called `resolve_reference`) and
     // the old passthrough branch (which emitted the verbatim separator path,
     // causing 404s for cross-directory relative paths).
+    //
+    // NOTE: provenance (SeparatorFallback / CaseMismatch / Ambiguous) is
+    // intentionally NOT logged here — moss-core is the pure, side-effect-free
+    // kernel (no `log`/I/O). The advisory author-facing warning is surfaced by
+    // the editor adapter (`editor::asset_resolver`) via the `@codemirror/lint`
+    // hover tooltip. The build's job here is only to emit a correct URL; a
+    // build-time console warning is a deferred follow-up (would require
+    // surfacing provenance to the src-tauri build layer).
     let is_absolute = raw.starts_with('/');
     match resolve_asset_ref(&raw, source_path, &GraphAssetIndex(graph)) {
         AssetResolution::Resolved { root_rel, provenance: _ } => {
