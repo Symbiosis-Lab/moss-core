@@ -6,7 +6,7 @@
 //!
 //! Pure Rust, zero I/O.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::path_ext::path_extension;
@@ -210,6 +210,12 @@ pub struct ContentGraph {
 
     /// Normalized full path -> Vec<block_id>.
     blocks: HashMap<String, Vec<String>>,
+
+    /// Exact-case asset index: original-case paths for O(1) membership checks.
+    asset_exact: HashSet<String>,
+
+    /// Lowercased path -> Vec<original-case paths> for case-insensitive lookup.
+    asset_ci: HashMap<String, Vec<String>>,
 }
 
 impl ContentGraph {
@@ -435,6 +441,47 @@ impl ContentGraph {
     pub fn all_files(&self) -> &[String] {
         &self.files
     }
+
+    // -----------------------------------------------------------------------
+    // Exact-case asset index — backed by real-case paths, NOT the lowercased
+    // path_index / filename_index. Task 6 wires these to the AssetIndex trait.
+    // -----------------------------------------------------------------------
+
+    /// Return `true` iff `p` is present in the graph with exactly this casing.
+    pub fn asset_contains(&self, p: &str) -> bool {
+        self.asset_exact.contains(p)
+    }
+
+    /// Case-insensitive membership: return the first canonical real-case path
+    /// whose lowercased form equals `p.to_lowercase()`, or `None`.
+    pub fn asset_contains_ci(&self, p: &str) -> Option<String> {
+        self.asset_ci.get(&p.to_lowercase()).and_then(|v| v.first().cloned())
+    }
+
+    /// Return all real-case paths whose lowercased form ends with `/<suffix>`
+    /// (or equals `suffix` exactly). Results are sorted for determinism.
+    pub fn asset_find_by_suffix(&self, suffix: &str) -> Vec<String> {
+        let ls = suffix.to_lowercase();
+        let mut v: Vec<String> = self.asset_exact.iter().filter(|p| {
+            let lp = p.to_lowercase();
+            lp.ends_with(&ls)
+                && (lp.len() == ls.len()
+                    || lp.as_bytes()[lp.len() - ls.len() - 1] == b'/')
+        }).cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// Build a graph from a bare list of file paths (no slugs). For use in
+    /// tests only — each file gets an empty slug.
+    #[cfg(test)]
+    fn from_paths(paths: &[&str]) -> ContentGraph {
+        let mut b = ContentGraphBuilder::new();
+        for &p in paths {
+            b.add_file(p, "");
+        }
+        b.build()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +500,8 @@ pub struct ContentGraphBuilder {
     slug_map: HashMap<String, String>,
     headings: HashMap<String, Vec<(String, String)>>,
     blocks: HashMap<String, Vec<String>>,
+    asset_exact: HashSet<String>,
+    asset_ci: HashMap<String, Vec<String>>,
 }
 
 impl ContentGraphBuilder {
@@ -488,6 +537,13 @@ impl ContentGraphBuilder {
 
         // Store original path (preserve casing for filesystem operations)
         self.files.push(relative_path.to_string());
+
+        // Exact-case asset index: keyed on real-case path, NOT normalized.
+        self.asset_exact.insert(relative_path.to_string());
+        self.asset_ci
+            .entry(relative_path.to_lowercase())
+            .or_default()
+            .push(relative_path.to_string());
     }
 
     /// Register headings for a file. Each entry is `(heading_text, anchor_id)`.
@@ -516,6 +572,8 @@ impl ContentGraphBuilder {
             slug_map: self.slug_map,
             headings: self.headings,
             blocks: self.blocks,
+            asset_exact: self.asset_exact,
+            asset_ci: self.asset_ci,
         }
     }
 }
@@ -1152,6 +1210,21 @@ mod tests {
         assert_eq!(
             g.resolve_path("photo.png", "interactive/article.md"),
             Some("interactive/photo.PNG".into())
+        );
+    }
+
+    #[test]
+    fn exact_case_asset_index() {
+        let g = ContentGraph::from_paths(&["assets/Hoon.JPG", "News/post.md"]);
+        assert!(g.asset_contains("assets/Hoon.JPG"));
+        assert!(!g.asset_contains("assets/hoon.jpg")); // exact case
+        assert_eq!(
+            g.asset_contains_ci("assets/hoon.jpg").as_deref(),
+            Some("assets/Hoon.JPG")
+        );
+        assert_eq!(
+            g.asset_find_by_suffix("Hoon.JPG"),
+            vec!["assets/Hoon.JPG".to_string()]
         );
     }
 }
