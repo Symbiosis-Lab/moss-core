@@ -298,27 +298,18 @@ impl FrontMatter {
     }
 }
 
-/// One field's non-recoverable parse outcome, for build advisories and chip states (ADR-020).
-#[cfg_attr(feature = "specta", derive(specta::Type))]
+/// One dropped field, for build advisories and (later) chip diagnostics (ADR-020).
+///
+/// Only `Dropped` outcomes exist today — a field whose value couldn't satisfy
+/// its typed field and was removed so its neighbours survive. Severity tiers
+/// (coerced/lossy) are added in Phase 3c alongside their first real consumer
+/// (the chip UI), per the "consumer before it ships" rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldWarning {
-    /// Frontmatter key the warning is about (empty = whole-block, Phase 2 coarse).
+    /// Frontmatter key that was dropped.
     pub key: String,
-    pub kind: FieldWarningKind,
-    /// Author-facing message.
+    /// Author-facing message (the serde error that rejected the value).
     pub message: String,
-}
-
-/// Severity of a field warning, tracking recoverability.
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FieldWarningKind {
-    /// Value coerced to fit its field (e.g. numeric → string). Info-level.
-    Coerced,
-    /// Coerced but fidelity may be lost (e.g. float-like uid). Warning-level.
-    Lossy,
-    /// Value could not satisfy the typed schema; field/block defaulted. Error-level.
-    Dropped,
 }
 
 /// Project the canonical parsed frontmatter map into the typed `FrontMatter`.
@@ -328,57 +319,42 @@ pub enum FieldWarningKind {
 /// `deserialize_with` on `FrontMatter` — no per-field code — and serde_yaml
 /// coerces YAML scalars, so a numeric uid/title becomes a string here.
 ///
-/// ADR-020 Phase 3a: a value that genuinely cannot satisfy the typed schema
-/// (e.g. `weight: high`) is dropped FIELD-BY-FIELD via the schema — every good
-/// neighbour survives. The signature is stable from Phase 2 through Phase 3.
-/// Pure; no I/O.
+/// Resilience (ADR-020): if a value genuinely cannot satisfy its typed field
+/// (e.g. `weight: high`, or an `analytics` object missing its required `url`),
+/// that ONE field is dropped and every good neighbour survives. Offending
+/// fields are found by deserializing each field in ISOLATION — this is
+/// serde-driven, not schema-driven, so it also covers `skip_schema` fields and
+/// custom-deserializer fields the validation engine can't see (the gap that an
+/// earlier schema-driven attempt missed). Pure; no I/O.
 pub fn project_typed(values: &serde_yaml::Mapping) -> (FrontMatter, Vec<FieldWarning>) {
     // Happy path: serde_yaml coerces scalars (numeric uid/title → string) and
     // ignores unknown fields, so all coercible inputs succeed with no warnings.
     if let Ok(fm) = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(values.clone())) {
         return (fm, Vec::new());
     }
-    // A field genuinely can't satisfy its typed schema. Use the schema to drop
-    // ONLY the offending field(s) — every good field survives (ADR-020 Phase 3a).
-    let schema = crate::schema::builtin_schema();
-    let map: std::collections::HashMap<String, serde_yaml::Value> = values
-        .iter()
-        .filter_map(|(k, v)| k.as_str().map(|s| (s.to_string(), v.clone())))
-        .collect();
-    let diags = crate::validation::validate_frontmatter(&map, &schema);
-
+    // One or more fields can't satisfy the typed schema. Identify them by
+    // deserializing each field in ISOLATION: `FrontMatter` fields are
+    // independent `Option`s with no required cross-field state, so a field that
+    // fails on its own is exactly a field that poisons the whole struct. Drop
+    // those, keep the rest. Unknown fields are ignored by `from_value` and so
+    // never appear here.
     let mut sanitized = values.clone();
     let mut warnings: Vec<FieldWarning> = Vec::new();
-    for d in &diags {
-        if d.severity != crate::validation::Severity::Error {
-            continue;
+    for (k, v) in values.iter() {
+        let Some(key) = k.as_str() else { continue };
+        let mut single = serde_yaml::Mapping::new();
+        single.insert(k.clone(), v.clone());
+        if let Err(e) = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(single)) {
+            sanitized.remove(k);
+            warnings.push(FieldWarning {
+                key: key.to_string(),
+                message: format!("{key}: {e}"),
+            });
         }
-        let Some(path) = d.path.as_deref() else { continue };
-        // Top-level field name (strip array index / nested path).
-        let field = path.split(['[', '.']).next().unwrap_or(path);
-        // Keep a String-typed field that received a scalar — the lenient
-        // deserializer coerces it, so it is NOT what made from_value fail.
-        let is_coercible_string = schema
-            .frontmatter
-            .fields
-            .get(field)
-            .map(|def| def.field_type == crate::schema::FieldType::String)
-            .unwrap_or(false)
-            && map.get(field).map(|v| v.is_string() || v.is_number() || v.is_bool()).unwrap_or(false);
-        if is_coercible_string {
-            continue;
-        }
-        // Drop the offending field and warn (dedup by key).
-        if warnings.iter().any(|w| w.key == field) {
-            continue;
-        }
-        sanitized.remove(serde_yaml::Value::String(field.to_string()));
-        warnings.push(FieldWarning {
-            key: field.to_string(),
-            kind: FieldWarningKind::Dropped,
-            message: d.message.clone(),
-        });
     }
+    // With every poisoning field removed, the re-projection succeeds. The
+    // defensive `unwrap_or_default` covers only the theoretical residual case
+    // of a cross-field interaction (none exist in `FrontMatter` today).
     let fm = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(sanitized))
         .unwrap_or_default();
     (fm, warnings)
@@ -913,8 +889,27 @@ mod project_typed_tests {
         assert_eq!(fm.weight, None, "bad field defaulted");
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].key, "weight");
-        assert_eq!(warnings[0].kind, FieldWarningKind::Dropped);
         assert!(!warnings[0].message.is_empty());
+    }
+
+    #[test]
+    fn project_typed_drops_malformed_skip_schema_field_keeps_neighbors() {
+        use serde_yaml::Value;
+        // `analytics` is skip_schema (invisible to validate_frontmatter) and has
+        // a custom Deserialize requiring `url`. A malformed analytics must NOT
+        // blank the whole block — the gap a schema-driven drop loop missed.
+        // Isolation testing catches it because from_value fails on it alone.
+        let mut analytics = serde_yaml::Mapping::new();
+        analytics.insert(Value::String("provider".into()), Value::String("goatcounter".into()));
+        let m = map_of(&[
+            ("title", Value::String("Important Title".into())),
+            ("date", Value::String("2025-05-28".into())),
+            ("analytics", Value::Mapping(analytics)),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("Important Title"), "title survives malformed analytics");
+        assert_eq!(fm.date.as_deref(), Some("2025-05-28"), "date survives too");
+        assert!(warnings.iter().any(|w| w.key == "analytics"), "analytics is flagged dropped");
     }
 
     #[test]
