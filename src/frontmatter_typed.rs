@@ -328,23 +328,60 @@ pub enum FieldWarningKind {
 /// `deserialize_with` on `FrontMatter` — no per-field code — and serde_yaml
 /// coerces YAML scalars, so a numeric uid/title becomes a string here.
 ///
-/// Phase 2 contract: a value that genuinely cannot satisfy the typed schema
-/// (e.g. `weight: high`) makes the whole projection fall back to
-/// `FrontMatter::default()` with one `Dropped` warning. Phase 3 makes this
-/// field-granular via the schema; this signature is stable across that change.
+/// ADR-020 Phase 3a: a value that genuinely cannot satisfy the typed schema
+/// (e.g. `weight: high`) is dropped FIELD-BY-FIELD via the schema — every good
+/// neighbour survives. The signature is stable from Phase 2 through Phase 3.
 /// Pure; no I/O.
 pub fn project_typed(values: &serde_yaml::Mapping) -> (FrontMatter, Vec<FieldWarning>) {
-    match serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(values.clone())) {
-        Ok(fm) => (fm, Vec::new()),
-        Err(e) => (
-            FrontMatter::default(),
-            vec![FieldWarning {
-                key: String::new(),
-                kind: FieldWarningKind::Dropped,
-                message: format!("frontmatter could not be fully parsed: {e}"),
-            }],
-        ),
+    // Happy path: serde_yaml coerces scalars (numeric uid/title → string) and
+    // ignores unknown fields, so all coercible inputs succeed with no warnings.
+    if let Ok(fm) = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(values.clone())) {
+        return (fm, Vec::new());
     }
+    // A field genuinely can't satisfy its typed schema. Use the schema to drop
+    // ONLY the offending field(s) — every good field survives (ADR-020 Phase 3a).
+    let schema = crate::schema::builtin_schema();
+    let map: std::collections::HashMap<String, serde_yaml::Value> = values
+        .iter()
+        .filter_map(|(k, v)| k.as_str().map(|s| (s.to_string(), v.clone())))
+        .collect();
+    let diags = crate::validation::validate_frontmatter(&map, &schema);
+
+    let mut sanitized = values.clone();
+    let mut warnings: Vec<FieldWarning> = Vec::new();
+    for d in &diags {
+        if d.severity != crate::validation::Severity::Error {
+            continue;
+        }
+        let Some(path) = d.path.as_deref() else { continue };
+        // Top-level field name (strip array index / nested path).
+        let field = path.split(['[', '.']).next().unwrap_or(path);
+        // Keep a String-typed field that received a scalar — the lenient
+        // deserializer coerces it, so it is NOT what made from_value fail.
+        let is_coercible_string = schema
+            .frontmatter
+            .fields
+            .get(field)
+            .map(|def| def.field_type == crate::schema::FieldType::String)
+            .unwrap_or(false)
+            && map.get(field).map(|v| v.is_string() || v.is_number() || v.is_bool()).unwrap_or(false);
+        if is_coercible_string {
+            continue;
+        }
+        // Drop the offending field and warn (dedup by key).
+        if warnings.iter().any(|w| w.key == field) {
+            continue;
+        }
+        sanitized.remove(serde_yaml::Value::String(field.to_string()));
+        warnings.push(FieldWarning {
+            key: field.to_string(),
+            kind: FieldWarningKind::Dropped,
+            message: d.message.clone(),
+        });
+    }
+    let fm = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(sanitized))
+        .unwrap_or_default();
+    (fm, warnings)
 }
 
 /// Deserialize a bool that may be a YAML string ("true"/"false") or a native bool.
@@ -863,19 +900,52 @@ mod project_typed_tests {
     }
 
     #[test]
-    fn project_typed_unrepresentable_field_falls_back_with_warning() {
+    fn project_typed_drops_only_the_unrepresentable_field() {
         use serde_yaml::Value;
-        // `weight: high` cannot become i32. Phase 2 coarse behavior: whole struct
-        // defaults + one Dropped warning. (Phase 3 makes this field-granular.)
+        // `weight: high` cannot become i32. Field-granular: weight is dropped, but
+        // every good field (title) survives. One bad field can't poison neighbors.
         let m = map_of(&[
-            ("title", Value::String("T".into())),
+            ("title", Value::String("Kept".into())),
             ("weight", Value::String("high".into())),
         ]);
         let (fm, warnings) = project_typed(&m);
-        assert_eq!(fm.title, None, "Phase 2 coarse fallback defaults the whole struct");
+        assert_eq!(fm.title.as_deref(), Some("Kept"), "good field survives");
+        assert_eq!(fm.weight, None, "bad field defaulted");
         assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].key, "weight");
         assert_eq!(warnings[0].kind, FieldWarningKind::Dropped);
         assert!(!warnings[0].message.is_empty());
+    }
+
+    #[test]
+    fn project_typed_keeps_coercible_uid_drops_bad_weight() {
+        use serde_yaml::Value;
+        let m = map_of(&[
+            ("title", Value::String("Paper".into())),
+            ("uid", Value::Number(46160604u64.into())),
+            ("weight", Value::String("high".into())),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("Paper"));
+        assert_eq!(fm.uid.as_deref(), Some("46160604"), "numeric uid is coerced, NOT dropped");
+        assert_eq!(fm.weight, None);
+        assert_eq!(warnings.len(), 1, "only weight warns; uid is coerced silently");
+        assert_eq!(warnings[0].key, "weight");
+    }
+
+    #[test]
+    fn project_typed_drops_multiple_bad_fields_keeps_good() {
+        use serde_yaml::Value;
+        let m = map_of(&[
+            ("title", Value::String("T".into())),
+            ("weight", Value::String("high".into())),
+            ("tags", Value::String("not-an-array".into())),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("T"), "good field survives multiple bad neighbors");
+        let keys: std::collections::HashSet<_> = warnings.iter().map(|w| w.key.as_str()).collect();
+        assert!(keys.contains("weight"));
+        assert!(keys.contains("tags"));
     }
 }
 
