@@ -9,7 +9,9 @@ pub trait AssetIndex {
     fn find_by_suffix(&self, suffix: &str) -> Vec<String>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum AssetProvenance {
     Literal,
     BareFuzzy,
