@@ -253,6 +253,7 @@ pub struct FrontMatter {
     /// Whether to show comments on this page (default: true)
     pub comments: Option<bool>,
     /// Content-addressable unique identifier (first 8 chars of SHA-256 of relative path)
+    #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub uid: Option<String>,
     /// Typesetting direction: "horizontal" (default) or "vertical"
     pub typesetting: Option<String>,
@@ -384,6 +385,39 @@ where
     }
 
     deserializer.deserialize_any(ChildrenLenientVisitor)
+}
+
+/// Lenient deserializer for string fields YAML may have implicitly typed as a
+/// non-string scalar. `uid: 46160604` -> integer, `uid: 753659e7` -> float,
+/// `title: 2024` -> integer. serde struct deserialize is atomic, so without this
+/// one such field fails the WHOLE `FrontMatter` (and the pipeline blanks every
+/// field). Stringify int/float/bool scalars so a numeric value can't poison its
+/// neighbors. Integer round-trips exactly; a float token is lossy (YAML already
+/// collapsed it to f64) — accepted because losing the whole block is worse. See
+/// ADR-020.
+pub fn deserialize_string_lenient<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    struct StringLenientVisitor;
+    impl<'de> de::Visitor<'de> for StringLenientVisitor {
+        type Value = Option<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string, or a number/bool YAML coerced from one")
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> { Ok(Some(v)) }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> { Ok(Some(v.to_string())) }
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+        fn visit_some<D2>(self, d: D2) -> Result<Self::Value, D2::Error>
+        where D2: de::Deserializer<'de> { d.deserialize_any(StringLenientVisitor) }
+    }
+    deserializer.deserialize_any(StringLenientVisitor)
 }
 
 /// Extract a meaningful name from a frontmatter reference that may be either
@@ -729,6 +763,38 @@ pub fn compute_url_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_uid_coerces_and_preserves_siblings() {
+        let yaml = "title: Kept Title\nuid: 46160604\ndate: 2025-05-28\n";
+        let fm: FrontMatter = serde_yaml::from_str(yaml).expect("must not fail to parse");
+        assert_eq!(fm.uid.as_deref(), Some("46160604"), "integer uid round-trips exactly");
+        assert_eq!(fm.title.as_deref(), Some("Kept Title"), "sibling title must survive");
+        assert_eq!(fm.date.as_deref(), Some("2025-05-28"), "sibling date must survive");
+    }
+    #[test]
+    fn float_like_uid_does_not_blank_struct() {
+        let yaml = "title: T\nuid: 753659e7\n";
+        let fm: FrontMatter = serde_yaml::from_str(yaml).expect("must not fail to parse");
+        assert!(fm.uid.is_some(), "float-like uid yields some string");
+        assert_eq!(fm.title.as_deref(), Some("T"));
+    }
+    #[test]
+    fn string_uid_unchanged() {
+        let fm: FrontMatter = serde_yaml::from_str("title: T\nuid: 54ddc5c0\n").expect("parse");
+        assert_eq!(fm.uid.as_deref(), Some("54ddc5c0"));
+    }
+    #[test]
+    fn missing_uid_is_none() {
+        let fm: FrontMatter = serde_yaml::from_str("title: T\n").expect("parse");
+        assert_eq!(fm.uid, None);
+        assert_eq!(fm.title.as_deref(), Some("T"));
+    }
+    #[test]
+    fn null_uid_is_none() {
+        let fm: FrontMatter = serde_yaml::from_str("title: T\nuid:\n").expect("parse");
+        assert_eq!(fm.uid, None);
+    }
 
     #[test]
     fn frontmatter_ref_to_stem_single_char_quote_no_panic() {
