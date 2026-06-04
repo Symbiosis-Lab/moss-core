@@ -1171,6 +1171,19 @@ fn extract_with_state(
                     let index = extracted.len();
                     output.push_str(&placeholder_for(&nonce, index));
                     output.push('\n');
+                    // Preserve the block's original line count. The block spanned
+                    // lines i..=j (opener..closer); the sentinel is a single line,
+                    // so pad with (j - i) blank lines. This keeps the post-
+                    // extraction LineLookup (parser.rs) line-accurate: without it,
+                    // a multi-line shortcode (grid/hero) collapses to one line and
+                    // every data-source-line AFTER it drifts, breaking editor↔
+                    // preview scroll sync (the home page grid scrolled the preview
+                    // to the bottom). Trailing blank lines after the sentinel HTML
+                    // comment produce no pulldown-cmark events, so the AST is
+                    // unchanged. See docs/architecture/editor-preview-sync.md.
+                    for _ in 0..(j - i) {
+                        output.push('\n');
+                    }
                     extracted.push(ExtractedShortcode {
                         index,
                         shortcode: sc,
@@ -2781,6 +2794,30 @@ mod tests {
         );
         // The shortcode is still extracted (not dropped).
         assert_eq!(result.extracted.len(), 1);
+    }
+
+    #[test]
+    fn placeholder_preserves_block_line_count_for_source_line_accuracy() {
+        // A multi-line shortcode must collapse to a placeholder occupying the
+        // SAME number of lines, so the post-extraction LineLookup stays line-
+        // accurate. Without padding, data-source-line drifts after the block →
+        // broken editor↔preview scroll sync (the home-page grid bug).
+        let md = "# Title\n\n:::grid 3\n[\n![](a.jpg)\n](/x)\n+++\n[\n![](b.jpg)\n](/y)\n:::\n\n## After\n";
+        let input_lines = md.lines().count();
+        let result = extract_shortcodes(md);
+        assert_eq!(
+            result.markdown_with_placeholders.lines().count(),
+            input_lines,
+            "placeholder must preserve the block's line count; got:\n{}",
+            result.markdown_with_placeholders
+        );
+        // The heading after the grid must still be on its original line 13.
+        let after_line = result
+            .markdown_with_placeholders
+            .lines()
+            .position(|l| l.contains("## After"))
+            .map(|p| p + 1);
+        assert_eq!(after_line, Some(13), "## After should stay on line 13");
     }
 
     #[test]

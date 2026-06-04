@@ -62,6 +62,21 @@ pub struct ParseConfig {
     /// implicit-figure pass: sites that prefer bare `<img>` (no `<figure>`
     /// wrap) can opt out.
     pub implicit_figure: bool,
+
+    /// Added to every computed `source_line` so the emitted
+    /// `data-source-line` / `data-source-range` values match the editor's
+    /// REAL FILE line numbers (CM6 `doc.lineAt`), not body-relative lines.
+    ///
+    /// The parser only ever sees the markdown BODY (frontmatter is stripped
+    /// upstream), so its byte offsets — and thus `LineLookup` — are
+    /// body-relative. The editor, however, reports raw-file lines including
+    /// the frontmatter. Without this offset, every annotation is short by the
+    /// frontmatter line count, so editor→preview scroll-sync maps to the wrong
+    /// element (the home page's grid scrolled the preview to the bottom). Set
+    /// to the number of lines the frontmatter consumes (0 when there is none).
+    /// See `process_markdown_file` and docs/architecture/editor-preview-sync.md
+    /// "Known defect — source-line coordinate-system mismatch".
+    pub source_line_offset: usize,
 }
 
 impl Default for ParseConfig {
@@ -72,6 +87,7 @@ impl Default for ParseConfig {
             // before ParseConfig existed; the ~40 in-crate `parse()`
             // callers all assume figure promotion happens.
             implicit_figure: true,
+            source_line_offset: 0,
         }
     }
 }
@@ -157,7 +173,10 @@ pub fn parse_with_config(markdown: &str, config: &ParseConfig) -> Document {
     //
     // For the source-line-off path, lookup is unused.
     let line_lookup = if config.emit_source_lines {
-        Some(LineLookup::build(&extraction.markdown_with_placeholders))
+        Some(LineLookup::build(
+            &extraction.markdown_with_placeholders,
+            config.source_line_offset,
+        ))
     } else {
         None
     };
@@ -305,28 +324,36 @@ struct LineLookup {
     /// construction. `newline_offsets[i]` is the byte index of the i-th
     /// newline (0-based).
     newline_offsets: Vec<usize>,
+    /// Added to every `line_at` result so body-relative lines become
+    /// raw-file lines (the frontmatter line count). See
+    /// `ParseConfig::source_line_offset`.
+    line_offset: usize,
 }
 
 impl LineLookup {
-    fn build(source: &str) -> Self {
+    fn build(source: &str, line_offset: usize) -> Self {
         let mut newline_offsets = Vec::new();
         for (i, b) in source.bytes().enumerate() {
             if b == b'\n' {
                 newline_offsets.push(i);
             }
         }
-        Self { newline_offsets }
+        Self {
+            newline_offsets,
+            line_offset,
+        }
     }
 
-    /// 1-based line number containing `byte_offset`.
+    /// 1-based line number containing `byte_offset`, plus `line_offset`.
     ///
     /// Offset 0 (before any newline) → line 1. After the first newline →
     /// line 2. Etc. Offsets past the end of the source clamp to the last
-    /// line + 1.
+    /// line + 1. `line_offset` (the frontmatter line count) is added so the
+    /// result is a raw-file line, matching the editor's `doc.lineAt`.
     fn line_at(&self, byte_offset: usize) -> usize {
         // Find the number of newlines strictly before `byte_offset`.
         // That count + 1 is the 1-based line number.
-        match self.newline_offsets.binary_search(&byte_offset) {
+        let body_line = match self.newline_offsets.binary_search(&byte_offset) {
             // Exact match: offset IS a newline byte; the newline belongs
             // to the line that ENDS at it, so line number = idx + 1.
             // (The next byte starts line idx + 2; this matches the legacy
@@ -334,7 +361,8 @@ impl LineLookup {
             // offset.)
             Ok(idx) => idx + 1,
             Err(idx) => idx + 1,
-        }
+        };
+        body_line + self.line_offset
     }
 }
 
@@ -2465,6 +2493,7 @@ mod tests {
         let config = ParseConfig {
             emit_source_lines: true,
             implicit_figure: true,
+            source_line_offset: 0,
         };
         let doc = parse_with_config(md, &config);
         // Expected blocks: H1, P, H2, P (4 blocks).
@@ -2478,11 +2507,63 @@ mod tests {
     }
 
     #[test]
+    fn source_line_offset_shifts_to_real_file_lines() {
+        // Frontmatter is stripped before parsing, so source lines are body-
+        // relative. source_line_offset (= the frontmatter line count) realigns
+        // them with the editor's real file lines (CM6 doc.lineAt).
+        let md = "# H1\n\npara on line 3\n";
+        let config = ParseConfig {
+            emit_source_lines: true,
+            implicit_figure: true,
+            source_line_offset: 7,
+        };
+        let doc = parse_with_config(md, &config);
+        assert_eq!(
+            doc.block_meta[0].source_line,
+            Some(8),
+            "H1 body-line 1 + offset 7"
+        );
+        assert_eq!(
+            doc.block_meta[1].source_line,
+            Some(10),
+            "P body-line 3 + offset 7"
+        );
+    }
+
+    #[test]
+    fn source_lines_not_collapsed_across_multiline_shortcode() {
+        // A multi-line shortcode (grid) must NOT collapse the source lines of
+        // blocks after it. The grid spans lines 3–11; the heading after is on
+        // line 13. Before the line-count-preserving placeholder fix it
+        // collapsed to ~line 5, so editor→preview scroll-sync sent any cursor
+        // past the block to the page bottom.
+        let md = "# Title\n\n:::grid 3\n[\n![](a.jpg)\n](/x)\n+++\n[\n![](b.jpg)\n](/y)\n:::\n\n## After\n";
+        let config = ParseConfig {
+            emit_source_lines: true,
+            implicit_figure: true,
+            source_line_offset: 0,
+        };
+        let doc = parse_with_config(md, &config);
+        // Blocks: H1 (line 1), Shortcode grid (line 3), H2 "After" (line 13).
+        let last = doc
+            .block_meta
+            .last()
+            .expect("at least one block")
+            .source_line;
+        assert_eq!(
+            last,
+            Some(13),
+            "heading after a multi-line grid must keep its real line 13, not a collapsed line"
+        );
+    }
+
+    #[test]
     fn parse_with_source_lines_lists_and_blockquotes() {
         let md = "- item one\n- item two\n\n> quote on line 4\n";
         let config = ParseConfig {
             emit_source_lines: true,
             implicit_figure: true,
+            source_line_offset: 0,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 2);
@@ -2503,6 +2584,7 @@ mod tests {
         let config = ParseConfig {
             emit_source_lines: true,
             implicit_figure: true,
+            source_line_offset: 0,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 1);
@@ -2556,6 +2638,7 @@ mod tests {
         let config = ParseConfig {
             emit_source_lines: true,
             implicit_figure: true,
+            source_line_offset: 0,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 1);
@@ -2675,6 +2758,7 @@ mod tests {
         let config = ParseConfig {
             emit_source_lines: true,
             implicit_figure: true,
+            source_line_offset: 0,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 2);
@@ -2707,6 +2791,7 @@ mod tests {
         let config = ParseConfig {
             emit_source_lines: false,
             implicit_figure: false,
+            source_line_offset: 0,
         };
         let doc = parse_with_config("![alt](photo.jpg)\n", &config);
         assert_eq!(doc.blocks.len(), 1);
@@ -2724,20 +2809,20 @@ mod tests {
 
     #[test]
     fn line_lookup_offset_zero_is_line_one() {
-        let lookup = LineLookup::build("hello\nworld\n");
+        let lookup = LineLookup::build("hello\nworld\n", 0);
         assert_eq!(lookup.line_at(0), 1);
     }
 
     #[test]
     fn line_lookup_after_first_newline_is_line_two() {
-        let lookup = LineLookup::build("hello\nworld\n");
+        let lookup = LineLookup::build("hello\nworld\n", 0);
         // Byte 6 is the 'w' of "world", which is on line 2.
         assert_eq!(lookup.line_at(6), 2);
     }
 
     #[test]
     fn line_lookup_handles_multiline_block_starts() {
-        let lookup = LineLookup::build("line1\nline2\nline3\n");
+        let lookup = LineLookup::build("line1\nline2\nline3\n", 0);
         // First non-newline byte of each line.
         assert_eq!(lookup.line_at(0), 1, "byte 0 → line 1");
         assert_eq!(lookup.line_at(6), 2, "byte 6 → line 2");
@@ -2746,7 +2831,7 @@ mod tests {
 
     #[test]
     fn line_lookup_empty_source() {
-        let lookup = LineLookup::build("");
+        let lookup = LineLookup::build("", 0);
         assert_eq!(lookup.line_at(0), 1, "empty source still has line 1");
     }
 }
