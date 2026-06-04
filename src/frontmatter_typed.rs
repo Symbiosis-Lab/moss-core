@@ -765,6 +765,8 @@ pub fn compute_url_path(
 mod tests {
     use super::*;
 
+    // serde_yaml coerces numbers→String on its own, so these document behavior; the real
+    // build-path guards are the *_via_json_path tests below.
     #[test]
     fn numeric_title_coerces_to_string() {
         let fm: FrontMatter = serde_yaml::from_str("title: 2024\ndate: 2024-01-01\n").expect("parse");
@@ -802,6 +804,27 @@ mod tests {
     fn null_uid_is_none() {
         let fm: FrontMatter = serde_yaml::from_str("title: T\nuid:\n").expect("parse");
         assert_eq!(fm.uid, None);
+    }
+
+    // These mirror the BUILD path: gray_matter's Pod::deserialize lowers to
+    // serde_json::Value (Pod::Integer => json!(val)) then serde_json::from_value,
+    // which — unlike serde_yaml — does NOT coerce numbers to String. Without
+    // deserialize_string_lenient these FAIL ("invalid type: integer, expected a
+    // string") and the whole FrontMatter would blank. See ADR-020.
+    #[test]
+    fn numeric_uid_via_json_path_coerces_and_preserves_siblings() {
+        let v = serde_json::json!({ "title": "Kept Title", "uid": 46160604u64, "date": "2025-05-28" });
+        let fm: FrontMatter = serde_json::from_value(v).expect("build path must not fail on numeric uid");
+        assert_eq!(fm.uid.as_deref(), Some("46160604"));
+        assert_eq!(fm.title.as_deref(), Some("Kept Title"));
+        assert_eq!(fm.date.as_deref(), Some("2025-05-28"));
+    }
+    #[test]
+    fn numeric_title_via_json_path_coerces() {
+        let v = serde_json::json!({ "title": 2024u64, "date": "2024-01-01" });
+        let fm: FrontMatter = serde_json::from_value(v).expect("build path must not fail on numeric title");
+        assert_eq!(fm.title.as_deref(), Some("2024"));
+        assert_eq!(fm.date.as_deref(), Some("2024-01-01"));
     }
 
     #[test]
