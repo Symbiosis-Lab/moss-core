@@ -298,6 +298,55 @@ impl FrontMatter {
     }
 }
 
+/// One field's non-recoverable parse outcome, for build advisories and chip states (ADR-020).
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldWarning {
+    /// Frontmatter key the warning is about (empty = whole-block, Phase 2 coarse).
+    pub key: String,
+    pub kind: FieldWarningKind,
+    /// Author-facing message.
+    pub message: String,
+}
+
+/// Severity of a field warning, tracking recoverability.
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FieldWarningKind {
+    /// Value coerced to fit its field (e.g. numeric → string). Info-level.
+    Coerced,
+    /// Coerced but fidelity may be lost (e.g. float-like uid). Warning-level.
+    Lossy,
+    /// Value could not satisfy the typed schema; field/block defaulted. Error-level.
+    Dropped,
+}
+
+/// Project the canonical parsed frontmatter map into the typed `FrontMatter`.
+///
+/// The single typed projection shared by the build (publish) and, later, the
+/// editor. `serde_yaml::from_value` reuses every `#[derive(Deserialize)]` +
+/// `deserialize_with` on `FrontMatter` — no per-field code — and serde_yaml
+/// coerces YAML scalars, so a numeric uid/title becomes a string here.
+///
+/// Phase 2 contract: a value that genuinely cannot satisfy the typed schema
+/// (e.g. `weight: high`) makes the whole projection fall back to
+/// `FrontMatter::default()` with one `Dropped` warning. Phase 3 makes this
+/// field-granular via the schema; this signature is stable across that change.
+/// Pure; no I/O.
+pub fn project_typed(values: &serde_yaml::Mapping) -> (FrontMatter, Vec<FieldWarning>) {
+    match serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(values.clone())) {
+        Ok(fm) => (fm, Vec::new()),
+        Err(e) => (
+            FrontMatter::default(),
+            vec![FieldWarning {
+                key: String::new(),
+                kind: FieldWarningKind::Dropped,
+                message: format!("frontmatter could not be fully parsed: {e}"),
+            }],
+        ),
+    }
+}
+
 /// Deserialize a bool that may be a YAML string ("true"/"false") or a native bool.
 /// Returns None for missing values, Some(bool) for valid values, errors for invalid strings.
 pub fn deserialize_bool_lenient<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -758,6 +807,75 @@ pub fn compute_url_path(
         } else {
             format!("{}/{}/index.html", slugify_path_segments(parent_path), slug)
         }
+    }
+}
+
+#[cfg(test)]
+mod project_typed_tests {
+    use super::*;
+
+    fn map_of(pairs: &[(&str, serde_yaml::Value)]) -> serde_yaml::Mapping {
+        let mut m = serde_yaml::Mapping::new();
+        for (k, v) in pairs {
+            m.insert(serde_yaml::Value::String((*k).to_string()), v.clone());
+        }
+        m
+    }
+
+    #[test]
+    fn project_typed_clean_map_no_warnings() {
+        use serde_yaml::Value;
+        let m = map_of(&[
+            ("title", Value::String("Hello".into())),
+            ("date", Value::String("2025-05-28".into())),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("Hello"));
+        assert_eq!(fm.date.as_deref(), Some("2025-05-28"));
+        assert!(warnings.is_empty(), "clean frontmatter yields no warnings");
+    }
+
+    #[test]
+    fn project_typed_numeric_uid_coerces() {
+        use serde_yaml::Value;
+        // The canonical parse produced a YAML integer for uid (the real-world bug).
+        let m = map_of(&[
+            ("title", Value::String("Paper".into())),
+            ("uid", Value::Number(serde_yaml::Number::from(46160604u64))),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.uid.as_deref(), Some("46160604"));
+        assert_eq!(fm.title.as_deref(), Some("Paper"));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn project_typed_ignores_unknown_fields() {
+        use serde_yaml::Value;
+        let m = map_of(&[
+            ("title", Value::String("T".into())),
+            ("syndicated", Value::String("https://example.com".into())),
+            ("some_plugin_field", Value::Number(serde_yaml::Number::from(7u64))),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("T"));
+        assert!(warnings.is_empty(), "unknown fields are ignored, not errors");
+    }
+
+    #[test]
+    fn project_typed_unrepresentable_field_falls_back_with_warning() {
+        use serde_yaml::Value;
+        // `weight: high` cannot become i32. Phase 2 coarse behavior: whole struct
+        // defaults + one Dropped warning. (Phase 3 makes this field-granular.)
+        let m = map_of(&[
+            ("title", Value::String("T".into())),
+            ("weight", Value::String("high".into())),
+        ]);
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title, None, "Phase 2 coarse fallback defaults the whole struct");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].kind, FieldWarningKind::Dropped);
+        assert!(!warnings[0].message.is_empty());
     }
 }
 
