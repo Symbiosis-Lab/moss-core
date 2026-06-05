@@ -432,6 +432,65 @@ pub fn split_alt_width(text: &str) -> (String, Option<String>) {
     (remaining.join("|"), width)
 }
 
+/// Rewrite the width token of a single image's markdown, preserving all
+/// other pipe segments (caption, alignment).
+///
+/// `width = Some("55%")` / `Some("wide")` sets (or replaces) the width;
+/// `width = None` (or an unrecognized string) removes it. Works on both
+/// standard `![alt|..](url)` and wikilink `![[file|..]]` syntaxes. Returns
+/// the input unchanged if it is not recognized as a single image.
+///
+/// This is the SINGLE SOURCE OF TRUTH for the editor's drag-resize and
+/// double-click-reset writes (via a Tauri command), so the produced text
+/// round-trips through the build's image-width parse.
+pub fn set_image_width(image_md: &str, width: Option<&str>) -> String {
+    // Normalize the requested width through the same validator the build
+    // uses. An unrecognized request becomes a removal.
+    let new_width: Option<String> = width.and_then(parse_image_width);
+
+    // ── Wikilink: ![[ inner ]] ───────────────────────────────────────
+    if let Some(inner) = image_md
+        .strip_prefix("![[")
+        .and_then(|s| s.strip_suffix("]]"))
+    {
+        let (path, pothole) = inner.split_once('|').unwrap_or((inner, ""));
+        // Strip any existing width from the pothole, keep other segments.
+        let (rest, _old) = split_alt_width(pothole);
+        let segments: Vec<&str> = rest.split('|').filter(|s| !s.is_empty()).collect();
+        let mut parts: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
+        if let Some(w) = new_width {
+            parts.push(w);
+        }
+        return if parts.is_empty() {
+            format!("![[{}]]", path)
+        } else {
+            format!("![[{}|{}]]", path, parts.join("|"))
+        };
+    }
+
+    // ── Standard: ![alt](url) ────────────────────────────────────────
+    if image_md.starts_with("![") {
+        if let Some(close) = image_md.rfind("](") {
+            if image_md.ends_with(')') {
+                let alt_raw = &image_md[2..close];
+                let url = &image_md[close + 2..image_md.len() - 1];
+                let (rest_alt, _old) = split_alt_width(alt_raw);
+                // Setting a width always emits `![{alt}|{w}]` — even when the
+                // remaining alt is empty (`![|55%]`), so it round-trips with
+                // the standard-image parser's empty-alt-with-width form
+                // (`Block::Figure` carries the width, caption stays None).
+                let alt_out = match new_width {
+                    Some(w) => format!("{}|{}", rest_alt, w),
+                    None => rest_alt,
+                };
+                return format!("![{}]({})", alt_out, url);
+            }
+        }
+    }
+
+    image_md.to_string()
+}
+
 /// Parse a wikilink alias for an embedded width token plus the remaining
 /// alias content.
 ///
@@ -1553,5 +1612,87 @@ mod tests {
             split_alt_width("40%|60%"),
             ("60%".to_string(), Some("40%".to_string()))
         );
+    }
+
+    // -- set_image_width ---------------------------------------------------
+
+    #[test]
+    fn set_image_width_standard_markdown() {
+        // add to a bare image
+        assert_eq!(
+            set_image_width("![alt](pic.jpg)", Some("55%")),
+            "![alt|55%](pic.jpg)"
+        );
+        // replace an existing percent
+        assert_eq!(
+            set_image_width("![alt|30%](pic.jpg)", Some("55%")),
+            "![alt|55%](pic.jpg)"
+        );
+        // replace an existing named token
+        assert_eq!(
+            set_image_width("![alt|wide](pic.jpg)", Some("55%")),
+            "![alt|55%](pic.jpg)"
+        );
+        // remove (double-click reset)
+        assert_eq!(
+            set_image_width("![alt|55%](pic.jpg)", None),
+            "![alt](pic.jpg)"
+        );
+        // add to empty-alt image
+        assert_eq!(
+            set_image_width("![](pic.jpg)", Some("55%")),
+            "![|55%](pic.jpg)"
+        );
+        // preserve a caption segment
+        assert_eq!(
+            set_image_width("![My cap|30%](pic.jpg)", Some("55%")),
+            "![My cap|55%](pic.jpg)"
+        );
+    }
+
+    #[test]
+    fn set_image_width_wikilink() {
+        assert_eq!(
+            set_image_width("![[pic.jpg]]", Some("55%")),
+            "![[pic.jpg|55%]]"
+        );
+        assert_eq!(
+            set_image_width("![[pic.jpg|30%]]", Some("55%")),
+            "![[pic.jpg|55%]]"
+        );
+        assert_eq!(
+            set_image_width("![[pic.jpg|wide]]", Some("55%")),
+            "![[pic.jpg|55%]]"
+        );
+        assert_eq!(set_image_width("![[pic.jpg|55%]]", None), "![[pic.jpg]]");
+        // preserve a caption pothole segment
+        assert_eq!(
+            set_image_width("![[pic.jpg|My cap|30%]]", Some("55%")),
+            "![[pic.jpg|My cap|55%]]"
+        );
+        assert_eq!(
+            set_image_width("![[pic.jpg|My cap]]", Some("55%")),
+            "![[pic.jpg|My cap|55%]]"
+        );
+    }
+
+    #[test]
+    fn set_image_width_validates() {
+        // out-of-range width is clamped/rejected by parse_image_width
+        assert_eq!(
+            set_image_width("![a](p.jpg)", Some("150%")),
+            "![a|100%](p.jpg)"
+        );
+        // an unrecognized width string is ignored → treated as removal-or-noop
+        assert_eq!(
+            set_image_width("![a|30%](p.jpg)", Some("garbage")),
+            "![a](p.jpg)"
+        );
+    }
+
+    #[test]
+    fn set_image_width_passthrough_non_image() {
+        // Not an image syntax → returned unchanged (defensive).
+        assert_eq!(set_image_width("plain text", Some("55%")), "plain text");
     }
 }
