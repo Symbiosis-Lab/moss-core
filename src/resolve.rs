@@ -16,6 +16,7 @@ pub mod block_refs;
 pub mod embed_renderer;
 pub mod embeds;
 pub mod ext_kind;
+pub mod folder_class;
 pub mod fuzzy_path;
 pub mod link_class;
 pub mod registry;
