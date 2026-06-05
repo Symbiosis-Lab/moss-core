@@ -701,18 +701,52 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
     if image_count != 1 {
         return Err(inlines);
     }
-    // Empty-alt guard: refuse to promote so production-equivalent
-    // `<p><img></p>` output is preserved for decorative images.
-    let image_has_alt = inlines.iter().any(|i| match i {
-        Inline::Image { alt, .. } => !alt.trim().is_empty(),
-        _ => false,
+
+    // Probe the width + remaining alt on a BORROW first, so the empty-alt
+    // guard can still return `Err(inlines)` with the original whitespace /
+    // line-break siblings intact (production `<p><img>…</p>` parity).
+    //
+    // Standard-markdown images carry no structured pothole — a `|55%`/`|wide`
+    // width rides in the raw alt text. Split it out so the figure carries the
+    // width and the caption is the remaining alt. (Wikilink images are handled
+    // in wikilink_dispatch; their alt arrives already classified, so their
+    // alt is left untouched here.)
+    let mut figure_width: Option<String> = None;
+    let mut rewritten_alt: Option<String> = None;
+    if let Some(Inline::Image {
+        alt,
+        is_wikilink: false,
+        ..
+    }) = inlines.iter().find(|i| matches!(i, Inline::Image { .. }))
+    {
+        let (rest_alt, w) = crate::media::split_alt_width(alt);
+        if w.is_some() {
+            figure_width = w;
+            rewritten_alt = Some(rest_alt);
+        }
+    }
+
+    // The figure's caption text is the effective alt (width-stripped if a
+    // width was present, else the raw alt), trimmed.
+    let raw_alt = inlines.iter().find_map(|i| match i {
+        Inline::Image { alt, .. } => Some(alt.as_str()),
+        _ => None,
     });
-    if !image_has_alt {
+    let alt_text = rewritten_alt
+        .as_deref()
+        .or(raw_alt)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // Empty-alt guard: refuse to promote a decorative image (preserve the
+    // original `<p><img></p>` shape with its whitespace siblings) — UNLESS it
+    // carries a width, which needs a figure to hold the inline
+    // `style="width:NN%"` / `data-width=`.
+    if alt_text.is_empty() && figure_width.is_none() {
         return Err(inlines);
     }
-    // Extract the single image; keep ownership of the original vec
-    // simple by re-walking with into_iter so we move out instead of
-    // cloning.
+
+    // Extract the single image, applying the width-stripped alt if any.
     let mut image_owned: Option<Inline> = None;
     for inline in inlines.into_iter() {
         if matches!(inline, Inline::Image { .. }) {
@@ -720,20 +754,24 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
             break;
         }
     }
-    let image = image_owned.expect("invariant: image_count == 1 implies one Image present");
-    // Caption is always Some here (empty-alt was filtered above), but
-    // keep the Option<Vec<Inline>> shape per shape-spec § 1.
-    let caption = match &image {
-        Inline::Image { alt, .. } => Some(vec![Inline::Text(alt.clone())]),
-        _ => None,
+    let mut image =
+        image_owned.expect("invariant: image_count == 1 implies one Image present");
+    if let (Some(new_alt), Inline::Image { alt, .. }) = (rewritten_alt, &mut image) {
+        *alt = new_alt;
+    }
+
+    // Caption defaults to the remaining alt text; empty alt yields None so no
+    // empty <figcaption> is emitted.
+    let caption = if alt_text.is_empty() {
+        None
+    } else {
+        Some(vec![Inline::Text(alt_text)])
     };
-    // CommonMark `![](url)` promotion carries no pipe params — the
-    // figure-level display fields stay at their defaults so this path's
-    // rendered output is byte-identical to before the synth-collapse.
+
     Ok(Block::Figure {
         image,
         caption,
-        width: None,
+        width: figure_width,
         align: None,
         class_names: Vec::new(),
         img_style: None,
@@ -2381,6 +2419,48 @@ mod tests {
                 assert_eq!(img_count, 2);
             }
             other => panic!("expected Paragraph (two images), got {other:?}"),
+        }
+    }
+
+    // Editor Image UX (2026-06-04): standard-image `|NN%` width carries
+    // into Block::Figure.width instead of leaking into the caption.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn standard_image_percent_promotes_with_width() {
+        // ![alt|55%](pic.jpg) → Figure { width: Some("55%"), caption "alt" }
+        match first_block("![alt|55%](pic.jpg)\n") {
+            Block::Figure { width, caption, .. } => {
+                assert_eq!(width.as_deref(), Some("55%"));
+                // caption is the remaining alt (width segment removed)
+                let cap = caption.expect("caption from remaining alt");
+                assert!(matches!(cap.as_slice(), [Inline::Text(t)] if t == "alt"));
+            }
+            other => panic!("expected a Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn standard_image_percent_empty_alt_still_promotes() {
+        // ![|55%](pic.jpg) → Figure (no caption) carrying the width.
+        match first_block("![|55%](pic.jpg)\n") {
+            Block::Figure { width, caption, .. } => {
+                assert_eq!(width.as_deref(), Some("55%"));
+                assert!(
+                    caption.is_none() || matches!(caption.as_deref(), Some([])),
+                    "empty-alt-with-width figure must not carry a caption: {caption:?}"
+                );
+            }
+            other => panic!("expected a Figure even with empty alt when width present, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn standard_image_no_width_unchanged() {
+        // ![alt](pic.jpg) → Figure { width: None } (existing behavior)
+        match first_block("![alt](pic.jpg)\n") {
+            Block::Figure { width, .. } => assert_eq!(width, None),
+            other => panic!("expected a Figure, got {other:?}"),
         }
     }
 
