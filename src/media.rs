@@ -386,8 +386,11 @@ pub fn match_width_token(s: &str) -> Option<&'static str> {
 /// content-relative widths in v1 (see design §"Out of scope").
 ///
 /// MIRROR: the editor's read-side `parseImageWidth` in
-/// `frontend/app/editor/cm-image-extract.ts` must agree byte-for-byte with
-/// this (named canonicalization, clamp, formatting) — keep the two in sync.
+/// `frontend/app/editor/cm-image-extract.ts` agrees with this for every
+/// canonical/moss-emitted width (named tokens, `NN%`, `NN.N%`) — the only
+/// widths the write path (`set_image_width`) ever produces. The two may
+/// diverge on malformed hand-typed input (this `f64::parse` accepts `"55 %"`,
+/// `".5%"`, `"+5%"` which the TS regex rejects); harmless, read-side only.
 /// `f64` (not `f32`) is used so fractional percents format identically to the
 /// JS side, preserving the editor↔build string-equality the design relies on.
 pub fn parse_image_width(seg: &str) -> Option<String> {
