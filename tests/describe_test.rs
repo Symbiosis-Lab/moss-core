@@ -12,6 +12,7 @@ fn describe_payload_serializes_with_versions() {
     assert_eq!(json["moss_html_version"], MOSS_HTML_VERSION);
     assert!(json["tokens"].is_object());
     assert!(json["components"].is_array());
+    // Payload must remain complete — no filtering in the JSON output.
     assert_eq!(json["components"].as_array().unwrap().len(), COMPONENTS.len());
 }
 
@@ -24,4 +25,39 @@ fn describe_payload_includes_token_groups() {
     let tokens_obj = json["tokens"].as_object().expect("tokens object");
     assert!(tokens_obj.contains_key("typography"));
     assert!(tokens_obj.contains_key("color"));
+}
+
+#[test]
+fn describe_payload_authorable_flag_is_set_correctly() {
+    let tokens = load_tokens().expect("tokens");
+    let payload = DescribePayload::new(&tokens);
+    let json = serde_json::to_value(&payload).expect("serialize");
+
+    let components = json["components"].as_array().expect("components array");
+
+    // At least one component must have authorable == true.
+    assert!(
+        components.iter().any(|c| c["authorable"] == true),
+        "at least one component must have authorable == true"
+    );
+
+    // moss-grid must be authorable (it is a ShortcodeKind::Grid root class).
+    let moss_grid = components
+        .iter()
+        .find(|c| c["class"] == "moss-grid")
+        .expect("moss-grid must be in payload");
+    assert_eq!(
+        moss_grid["authorable"], true,
+        "moss-grid must have authorable == true"
+    );
+
+    // moss-card is NOT authorable (it is not a shortcode root class).
+    let moss_card = components
+        .iter()
+        .find(|c| c["class"] == "moss-card")
+        .expect("moss-card must be in payload");
+    assert_eq!(
+        moss_card["authorable"], false,
+        "moss-card must have authorable == false"
+    );
 }

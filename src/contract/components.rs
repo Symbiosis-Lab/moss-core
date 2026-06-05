@@ -1883,6 +1883,18 @@ pub const COMPONENTS: &[ComponentEntry] = &[
     },
 ];
 
+impl ComponentEntry {
+    /// True for entries that belong in the public, agent/theme-facing surface.
+    /// v1 rule: simply "not retired" — keeps the full theme vocabulary
+    /// (moss-card, moss-cards, breadcrumbs, etc.) while dropping retired noise.
+    /// (A finer internal-subclass split is deliberately NOT attempted here —
+    /// it risks hiding theme-targetable classes. Agents get the precise
+    /// shortcode set via the `authorable` flag instead.)
+    pub fn is_public(&self) -> bool {
+        self.status != Status::Retired
+    }
+}
+
 /// Iterator over class names with `Status::Retired`. Used by the build
 /// pipeline's theme lint to warn users about pre-v1 vocabulary.
 ///
