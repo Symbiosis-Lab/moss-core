@@ -972,11 +972,11 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9.",
             },
         ],
-        example_html: r#"<figure class="moss-image" data-aspect="portrait" data-width="body"><img src="..." alt="..." /></figure>"#,
+        example_html: r#"<figure class="moss-image" style="width:55%"><img src="..." alt="..." /></figure>"#,
         example_markdown: "![alt](image.jpg)",
         status: Status::Confirmed,
         since: "0",
-        description: "Wrapper around an inline `<img>` for sizing and figure semantics. v1 adds `data-aspect` (collapses `--portrait`/`--square`/`--auto` modifiers) and `data-width` (P9).",
+        description: "Wrapper around an inline `<img>` for sizing and figure semantics. `data-width` carries a named width token (body|wide|page|screen); a content-relative width is instead emitted as inline `style=\"width:NN%\"` (set by the editor drag-resize). Images narrower than the content column center horizontally.",
     },
     ComponentEntry {
         class: "moss-align-left",
