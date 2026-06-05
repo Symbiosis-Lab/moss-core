@@ -562,7 +562,23 @@ fn dispatch_embed_form(
             // shape is always correct here.
             if matches!(ext.as_deref(), Some(e) if IMAGE_EXTENSIONS.iter().any(|x| *x == e)) {
                 let media = build_image_media_attrs(&pothole, parsed.attrs.as_ref());
-                let alias_class = crate::media::classify_image_alias(parsed.alias);
+                // Recover a content-relative percent (`|55%`) from the alias.
+                // A percent isn't a named width token, so `parse_pothole_params`
+                // classifies it as `Alias` and it would otherwise leak into the
+                // caption. Split it here so the figure carries the width and the
+                // caption is the remaining (width-stripped) alias. Recovered here
+                // (not in `parse_pothole_params`) so the shared pothole classifier
+                // stays width-vocabulary-agnostic.
+                let (alias_no_width, pct_width): (Option<String>, Option<String>) =
+                    match parsed.alias {
+                        Some(a) => {
+                            let (rest, w) = crate::media::split_alt_width(a);
+                            (Some(rest), w)
+                        }
+                        None => (None, None),
+                    };
+                let alias_class =
+                    crate::media::classify_image_alias(alias_no_width.as_deref());
                 let alt = alias_class.caption.clone().unwrap_or_default();
                 let caption: Option<Vec<crate::ast::node::Inline>> = alias_class
                     .caption
@@ -572,16 +588,20 @@ fn dispatch_embed_form(
                 // the same class the figure renderer appends.
                 let align = media.align.map(|side| side.css_class().to_string());
                 let img_style = media.to_inline_style();
-                // Width source: canonical pothole WidthToken (`|wide`) OR a
-                // width token embedded in a structural alias (`|wide cover`
-                // parses as Alias, so `width` is None) — recover it here so
-                // the figure `data-width` survives either spelling. The
-                // pre-collapse fast-path dropped the embedded case (the bug).
-                let figure_width: Option<&'static str> = width.or_else(|| {
-                    alias_class.display_keywords.as_deref().and_then(|kw| {
-                        kw.split_whitespace().find_map(crate::media::match_width_token)
+                // Width source, in priority order:
+                //  1. canonical pothole WidthToken (`|wide`) — `width`
+                //  2. a width token embedded in a structural alias (`|wide cover`)
+                //  3. a content-relative percent anywhere in the pothole (`|55%`)
+                let figure_width: Option<String> = width
+                    .map(|w| w.to_string())
+                    .or_else(|| {
+                        alias_class.display_keywords.as_deref().and_then(|kw| {
+                            kw.split_whitespace()
+                                .find_map(crate::media::match_width_token)
+                                .map(|w| w.to_string())
+                        })
                     })
-                });
+                    .or(pct_width);
                 let figure = crate::ast::node::Block::Figure {
                     image: crate::ast::node::Inline::Image {
                         // `Asset` is the canonical kind for an `<img src>`
@@ -596,9 +616,9 @@ fn dispatch_embed_form(
                         wikilink_pothole: None,
                     },
                     caption,
-                    // Canonical `&'static str` width token; the node stores
+                    // Named token OR `"NN%"` percent; the node stores
                     // `Option<String>` (for Deserialize).
-                    width: figure_width.map(|w| w.to_string()),
+                    width: figure_width,
                     align,
                     class_names: media.class_names,
                     img_style,
@@ -1760,6 +1780,42 @@ mod tests {
         let html = render_figure(&emit);
         let n = html.matches("style=").count();
         assert_eq!(n, 1, "exactly one style= attr, got {n}: {html}");
+    }
+
+    // Editor Image UX (2026-06-04): wikilink `|NN%` percent width carries
+    // into Block::Figure.width instead of leaking into the caption.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn wikilink_image_percent_carries_width() {
+        use crate::ast::node::Block;
+        // ![[pic.jpg|55%]] → Figure { width: Some("55%") }, no bogus caption
+        let emit = dispatch_img(Some("55%"));
+        match figure_of(&emit) {
+            Block::Figure { width, caption, .. } => {
+                assert_eq!(width.as_deref(), Some("55%"));
+                assert!(caption.is_none(), "percent must not become a caption");
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wikilink_image_percent_with_caption() {
+        use crate::ast::node::{Block, Inline};
+        // ![[pic.jpg|My cap|55%]] → width Some("55%"), caption "My cap"
+        let emit = dispatch_img(Some("My cap|55%"));
+        match figure_of(&emit) {
+            Block::Figure { width, caption, .. } => {
+                assert_eq!(width.as_deref(), Some("55%"));
+                let cap = caption.as_ref().expect("caption present");
+                assert!(
+                    matches!(cap.as_slice(), [Inline::Text(t)] if t == "My cap"),
+                    "caption should be the non-width segment, got {cap:?}"
+                );
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
     }
 
     // --- External URL dispatch ---
