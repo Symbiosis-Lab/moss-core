@@ -92,9 +92,70 @@ impl ResolvedReference {
     }
 }
 
+/// Classify a reference's inner text (target + optional |pothole / #anchor /
+/// ?query) into a kind + resolved source path. Pure.
+pub fn classify_reference(
+    inner: &str,
+    from_source: &str,
+    ctx: &ReferenceContext,
+) -> ResolvedReference {
+    let inner = inner.trim();
+
+    // External short-circuits (mirror classify_link's exception list).
+    const EXTERNAL_PREFIXES: &[&str] =
+        &["http://", "https://", "//", "mailto:", "tel:", "data:"];
+    if EXTERNAL_PREFIXES.iter().any(|p| inner.starts_with(p)) {
+        let mut r = ResolvedReference::not_found();
+        r.kind = ReferenceKind::External { url: inner.to_string() };
+        r.debug_check_invariant();
+        return r;
+    }
+    // Pure anchor / query (no path component).
+    if inner.starts_with('#') || inner.starts_with('?') {
+        let mut r = ResolvedReference::not_found();
+        r.kind = ReferenceKind::Anchor;
+        return r;
+    }
+
+    // Remaining arms (folder, file, link) are added in Tasks 6–8.
+    let _ = (from_source, ctx);
+    ResolvedReference::not_found()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::resolve::asset_class::FakeAssetIndex;
+    use crate::resolve::folder_class::{FakeFolderIndex, FolderIndex};
+    use crate::resolve::link_class::FakeUrlIndex;
+
+    fn ctx<'a>(
+        a: &'a FakeAssetIndex,
+        f: &'a FakeFolderIndex,
+        u: &'a FakeUrlIndex,
+    ) -> ReferenceContext<'a> {
+        ReferenceContext { assets: a, folders: f, urls: u }
+    }
+
+    #[test]
+    fn external_url_is_external() {
+        let a = FakeAssetIndex::new(&[]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("https://example.com/x", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::External { url: "https://example.com/x".into() });
+        assert!(r.target_path.is_none());
+    }
+
+    #[test]
+    fn bare_anchor_is_anchor() {
+        let a = FakeAssetIndex::new(&[]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("#section", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Anchor);
+    }
 
     #[test]
     fn not_found_has_no_path() {

@@ -121,6 +121,39 @@ fn finish(cand: String, prov: AssetProvenance, index: &impl AssetIndex) -> Asset
     finish_opt(&cand, prov, index).unwrap_or(AssetResolution::NotFound)
 }
 
+/// Cross-module test fake for `AssetIndex`. Module-level so `reference.rs` tests can import it.
+/// Logic mirrors the private `FakeIndex` inside `mod tests` below (duplication accepted —
+/// see task comment; dedup can happen later without affecting behaviour).
+#[cfg(test)]
+pub(crate) struct FakeAssetIndex(std::collections::HashSet<String>);
+
+#[cfg(test)]
+impl FakeAssetIndex {
+    pub fn new(paths: &[&str]) -> Self {
+        FakeAssetIndex(paths.iter().map(|s| s.to_string()).collect())
+    }
+}
+
+#[cfg(test)]
+impl AssetIndex for FakeAssetIndex {
+    fn contains(&self, p: &str) -> bool {
+        self.0.contains(p)
+    }
+    fn contains_ci(&self, p: &str) -> Option<String> {
+        let lp = p.to_lowercase();
+        self.0.iter().find(|x| x.to_lowercase() == lp).cloned()
+    }
+    fn find_by_suffix(&self, s: &str) -> Vec<String> {
+        let ls = s.to_lowercase();
+        let mut v: Vec<String> = self.0.iter()
+            .filter(|x| x.to_lowercase().ends_with(&ls)
+                && (x.len() == s.len() || x.as_bytes()[x.len() - s.len() - 1] == b'/'))
+            .cloned().collect();
+        v.sort();
+        v
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
