@@ -374,6 +374,42 @@ pub fn match_width_token(s: &str) -> Option<&'static str> {
     }
 }
 
+/// Recognize a single image-figure width segment: a named token
+/// (`body|wide|page|screen|full`) OR a content-relative percent (`55%`).
+///
+/// Returns the canonical string to store in `Block::Figure.width`:
+/// - named token → its canonical form (`full` → `screen`)
+/// - percent → normalized `"NN%"` (clamped to `(0, 100]`)
+///
+/// Returns `None` for anything else (captions, `200x150` box sizing, px).
+/// Box/px are intentionally rejected: image figures only support
+/// content-relative widths in v1 (see design §"Out of scope").
+pub fn parse_image_width(seg: &str) -> Option<String> {
+    let s = seg.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(named) = match_width_token(s) {
+        return Some(named.to_string());
+    }
+    // Percent only — reject px / vh / box by requiring a '%' suffix here.
+    if let Some(rest) = s.strip_suffix('%') {
+        let v: f32 = rest.trim().parse().ok()?;
+        if v <= 0.0 {
+            return None;
+        }
+        let clamped = v.min(100.0);
+        // Integer-preserving format: "55%" not "55.0%"; "50.5%" stays.
+        let text = if clamped.fract() == 0.0 {
+            format!("{}%", clamped as i64)
+        } else {
+            format!("{}%", clamped)
+        };
+        return Some(text);
+    }
+    None
+}
+
 /// Parse a wikilink alias for an embedded width token plus the remaining
 /// alias content.
 ///
@@ -1429,5 +1465,37 @@ mod tests {
         assert!(is_structural_alias("top left"));
         assert!(!is_structural_alias("My nice photo"));
         assert!(!is_structural_alias(""));
+    }
+
+    // -- parse_image_width -------------------------------------------------
+
+    #[test]
+    fn parse_image_width_named_tokens() {
+        assert_eq!(parse_image_width("wide").as_deref(), Some("wide"));
+        assert_eq!(parse_image_width("full").as_deref(), Some("screen")); // alias
+        assert_eq!(parse_image_width("body").as_deref(), Some("body"));
+    }
+
+    #[test]
+    fn parse_image_width_percent() {
+        assert_eq!(parse_image_width("55%").as_deref(), Some("55%"));
+        assert_eq!(parse_image_width("100%").as_deref(), Some("100%"));
+        assert_eq!(parse_image_width(" 40% ").as_deref(), Some("40%")); // trimmed
+    }
+
+    #[test]
+    fn parse_image_width_clamps_and_rejects() {
+        assert_eq!(parse_image_width("150%").as_deref(), Some("100%")); // clamp > 100
+        assert_eq!(parse_image_width("0%"), None); // reject <= 0
+        assert_eq!(parse_image_width("-5%"), None); // reject negative
+        assert_eq!(parse_image_width("50.5%").as_deref(), Some("50.5%")); // f32 ok
+    }
+
+    #[test]
+    fn parse_image_width_rejects_non_width() {
+        assert_eq!(parse_image_width("wide angle photo"), None); // multi-word caption
+        assert_eq!(parse_image_width("200x150"), None); // box sizing not a figure width
+        assert_eq!(parse_image_width("hello"), None);
+        assert_eq!(parse_image_width(""), None);
     }
 }
