@@ -1012,17 +1012,6 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Floats an image to the right of body text (editorial runaround). Symmetric counterpart to `.moss-align-left`. Mirrors WordPress's `alignright` convention.",
     },
     ComponentEntry {
-        class: "moss-visual",
-        kind: "standalone",
-        parent: "",
-        data_attrs: &[],
-        example_html: r#"<div class="moss-visual">...</div>"#,
-        example_markdown: "",
-        status: Status::Emerging,
-        since: "0",
-        description: "Generic visual block (figure-like surface).",
-    },
-    ComponentEntry {
         class: "moss-article-title",
         kind: "instance",
         parent: "",
