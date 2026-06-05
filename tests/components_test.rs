@@ -121,3 +121,43 @@ fn authorable_example_markdown_renders_its_class() {
         );
     }
 }
+
+/// Drift gate (arch-review #776): `ShortcodeKind::all()` is a hand-maintained
+/// array, the SSOT for "which shortcodes are authorable". This test makes a
+/// new enum variant impossible to add silently: the exhaustive `match` below
+/// fails to COMPILE until the new variant is handled, and the count/coverage
+/// assertions then fail until `all()` lists it — so a new shortcode can't skip
+/// the authorable flag, example_markdown enforcement, or the render round-trip.
+#[test]
+fn shortcode_kind_all_enumerates_every_variant() {
+    use moss_core::ast::shortcode::ShortcodeKind;
+    let all: Vec<ShortcodeKind> = ShortcodeKind::all().collect();
+    // Compile-time exhaustiveness: adding a variant breaks this match.
+    for k in &all {
+        match k {
+            ShortcodeKind::Subscribe
+            | ShortcodeKind::Buttons
+            | ShortcodeKind::Gallery
+            | ShortcodeKind::Hero
+            | ShortcodeKind::Grid
+            | ShortcodeKind::Recent => {}
+        }
+    }
+    let expected = [
+        ShortcodeKind::Subscribe,
+        ShortcodeKind::Buttons,
+        ShortcodeKind::Gallery,
+        ShortcodeKind::Hero,
+        ShortcodeKind::Grid,
+        ShortcodeKind::Recent,
+    ];
+    assert_eq!(all.len(), expected.len(), "ShortcodeKind::all() must list every variant");
+    for e in expected {
+        assert!(all.contains(&e), "ShortcodeKind::all() is missing {e:?}");
+        assert!(
+            COMPONENTS.iter().any(|c| c.class == e.root_class()),
+            "authorable shortcode {:?} maps to {} which is not in COMPONENTS",
+            e, e.root_class()
+        );
+    }
+}
