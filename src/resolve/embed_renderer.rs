@@ -165,7 +165,8 @@ pub enum RenderedEmbed {
 }
 
 /// A single dimension with a unit.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Dim {
     Px(u32),
     Percent(f32),
@@ -215,7 +216,8 @@ impl Dim {
 }
 
 /// Parsed `|WxH` sizing hint from a wikilink pipe segment.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Sizing {
     /// `|200` or `|100%` — width only.
     Width(Dim),
