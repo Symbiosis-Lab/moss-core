@@ -192,6 +192,72 @@ pub fn detect_home_file_in_folder<'a>(
     doc_files.first().map(|f| **f)
 }
 
+/// Resolve the site name from the home page, structurally.
+///
+/// This is the single decision that both the static `<title>` path and the
+/// bundled-SPA `og:title` path route through, so the two never disagree (#775).
+///
+/// Inputs:
+/// - `homepage_filename`: the home file's basename (e.g. `"index.md"`,
+///   `"刘果.md"`), or `None` when the project has no home page.
+/// - `homepage_title`: the home page's title candidate — either the genuine
+///   frontmatter `title:` (callers that read frontmatter directly, e.g.
+///   `resolve_site_name`) or the pipeline's already-resolved `doc.title` (the
+///   render sites). For an index home with no `title:`, the resolved candidate
+///   is the folder name (post root-aware fix #775); for a genuine `title:` it
+///   is that title. `None`/empty when unavailable.
+/// - `folder_name`: the project's root folder basename — the structural
+///   fallback.
+///
+/// Decision:
+/// 1. No candidate title → `folder_name` (normalized via
+///    [`crate::heading::filename_text`] for hyphen/underscore → space).
+/// 2. The home file is an index-stem / self-named folder note AND the candidate
+///    is a bare stem fallback (equals the folder-name fallback, or is itself a
+///    raw index stem like "index"/"readme") → `folder_name`. This is the
+///    STRUCTURAL guard: it keys off the FILENAME being an index home, so a page
+///    GENUINELY titled "Index" in a non-index file is NOT suppressed (the old
+///    value-string `is_index_stem(title)` heuristic mis-fired on that).
+/// 3. Otherwise → the candidate title (a genuine user-chosen title, including a
+///    `title:` set on an index home).
+pub fn site_name(
+    homepage_filename: Option<&str>,
+    homepage_title: Option<&str>,
+    folder_name: &str,
+) -> String {
+    let folder_label = crate::heading::filename_text(folder_name);
+    let folder_label = if folder_label.is_empty() {
+        folder_name.to_string()
+    } else {
+        folder_label
+    };
+
+    let title = match homepage_title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => t,
+        None => return folder_label, // (1)
+    };
+
+    let is_index_home = homepage_filename
+        .map(|f| {
+            let stem = std::path::Path::new(f)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(f);
+            is_home_file(stem, folder_name)
+        })
+        .unwrap_or(false);
+
+    // (2) Structural guard: only on an index/self-named home, and only when the
+    // candidate is a filename fallback (the resolved folder-name fallback, or a
+    // bare index stem that leaked from a non-root-aware path). A genuine title:
+    // on an index home (candidate != fallback, not a raw stem) flows to (3).
+    if is_index_home && (title == folder_label || is_index_stem(title)) {
+        return folder_label;
+    }
+
+    title.to_string() // (3)
+}
+
 /// Find the home file among a list of filenames in a single folder.
 ///
 /// Convenience wrapper around [`detect_home_file_in_folder`] without
@@ -463,6 +529,79 @@ mod tests {
         assert_eq!(
             detect_home_file_in_folder(&files, "root"),
             Some("index.zh.md")
+        );
+    }
+
+    // --- site_name (#775): one structural decision for <title> + og:title ---
+
+    #[test]
+    fn test_site_name_root_index_no_title_uses_folder() {
+        // The bug: a root index.md with no frontmatter title. Post root-aware
+        // fix the title is already "My Site", but even if a stem leaked in,
+        // the structural index-stem check resolves to the folder name.
+        assert_eq!(
+            site_name(Some("index.md"), Some("My Site"), "My Site"),
+            "My Site"
+        );
+        assert_eq!(site_name(Some("index.md"), Some("index"), "My Site"), "My Site");
+        assert_eq!(site_name(Some("index.md"), None, "My Site"), "My Site");
+    }
+
+    #[test]
+    fn test_site_name_frontmatter_title_on_index_home_wins() {
+        // A genuine `title: My Blog` on a root `index.md` must be the site name
+        // — the structural index-stem guard only fires for stem FALLBACKS, not
+        // real titles.
+        assert_eq!(
+            site_name(Some("index.md"), Some("My Blog"), "site-folder"),
+            "My Blog"
+        );
+    }
+
+    #[test]
+    fn test_site_name_titled_index_not_suppressed() {
+        // A page GENUINELY titled "Index" living in a non-index file must keep
+        // its title — the old value-string heuristic wrongly suppressed this.
+        assert_eq!(
+            site_name(Some("about.md"), Some("Index"), "My Site"),
+            "Index"
+        );
+    }
+
+    #[test]
+    fn test_site_name_frontmatter_title_wins_for_article_home() {
+        // A self-named or non-index home file with a real title keeps it.
+        assert_eq!(
+            site_name(Some("about.md"), Some("My Blog"), "folder"),
+            "My Blog"
+        );
+    }
+
+    #[test]
+    fn test_site_name_self_named_home_uses_folder() {
+        // `recipes/recipes.md` style self-named home — folder name wins.
+        assert_eq!(
+            site_name(Some("recipes.md"), Some("recipes"), "recipes"),
+            "recipes"
+        );
+    }
+
+    #[test]
+    fn test_site_name_no_homepage_falls_back_to_folder() {
+        assert_eq!(site_name(None, None, "My Site"), "My Site");
+    }
+
+    #[test]
+    fn test_site_name_folder_name_normalized() {
+        // Folder name hyphens/underscores normalize to spaces.
+        assert_eq!(site_name(Some("index.md"), None, "my-site"), "my site");
+    }
+
+    #[test]
+    fn test_site_name_readme_home_uses_folder() {
+        assert_eq!(
+            site_name(Some("README.md"), Some("README"), "Docs"),
+            "Docs"
         );
     }
 }

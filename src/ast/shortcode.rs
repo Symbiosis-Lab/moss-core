@@ -256,6 +256,36 @@ pub enum ShortcodeKind {
     Recent,
 }
 
+impl ShortcodeKind {
+    /// Root `moss-*` class this shortcode emits — bridge between the
+    /// parser's authorable set and the COMPONENTS contract.
+    pub fn root_class(self) -> &'static str {
+        match self {
+            ShortcodeKind::Hero => "moss-hero",
+            ShortcodeKind::Grid => "moss-grid",
+            ShortcodeKind::Gallery => "moss-gallery",
+            ShortcodeKind::Buttons => "moss-buttons",
+            ShortcodeKind::Subscribe => "moss-subscribe",
+            ShortcodeKind::Recent => "moss-recent",
+        }
+    }
+
+    /// All authorable shortcode variants, in a stable order.
+    ///
+    /// Used for enforcement and round-trip tests in `components_test.rs`.
+    pub fn all() -> impl Iterator<Item = ShortcodeKind> {
+        [
+            ShortcodeKind::Subscribe,
+            ShortcodeKind::Buttons,
+            ShortcodeKind::Gallery,
+            ShortcodeKind::Hero,
+            ShortcodeKind::Grid,
+            ShortcodeKind::Recent,
+        ]
+        .into_iter()
+    }
+}
+
 impl Shortcode {
     /// Return the [`ShortcodeKind`] of this shortcode.
     pub fn kind(&self) -> ShortcodeKind {

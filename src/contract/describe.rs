@@ -7,10 +7,11 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+use crate::ast::shortcode::ShortcodeKind;
 use crate::contract::components::{COMPONENTS, Status};
 use crate::contract::tokens::Tokens;
 
-pub const DESCRIBE_SCHEMA_VERSION: u32 = 1;
+pub const DESCRIBE_SCHEMA_VERSION: u32 = 2;
 pub const MOSS_HTML_VERSION: u32 = 1;
 
 #[derive(Serialize)]
@@ -43,6 +44,11 @@ pub struct ComponentJson {
     pub status: &'static str,
     pub since: &'static str,
     pub description: &'static str,
+    /// True iff this class is the root class of an authorable shortcode
+    /// (i.e. it appears in `ShortcodeKind::all().map(|k| k.root_class())`).
+    /// Agents can use this flag to distinguish the 6 author-facing shortcodes
+    /// from the broader theme vocabulary.
+    pub authorable: bool,
 }
 
 #[derive(Serialize)]
@@ -70,6 +76,9 @@ impl<'a> DescribePayload<'a> {
             tokens_map.insert(&group.name, entries);
         }
 
+        let authorable: std::collections::HashSet<&'static str> =
+            ShortcodeKind::all().map(|k| k.root_class()).collect();
+
         let components: Vec<ComponentJson> = COMPONENTS
             .iter()
             .map(|c| ComponentJson {
@@ -95,6 +104,7 @@ impl<'a> DescribePayload<'a> {
                 },
                 since: c.since,
                 description: c.description,
+                authorable: authorable.contains(c.class),
             })
             .collect();
 
