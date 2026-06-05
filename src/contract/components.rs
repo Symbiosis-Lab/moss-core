@@ -377,6 +377,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Tertiary subtitle line showing `N articles` for a folder card. Renders only on non-date listings when the folder card has no `description` to display.",
     },
     ComponentEntry {
+        class: "moss-embed-more",
+        kind: "instance",
+        parent: "moss-cards-container",
+        data_attrs: &[],
+        example_html: r#"<p class="moss-embed-more"><a href="/news/">More →</a></p>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "Trailing \"More →\" link on a truncated children listing (emitted when `children_limit` caps the embed); links to the folder's full index. Rendered as a sibling immediately after `.moss-cards-container`, so it sits outside the listing's flex `gap` and binds to the list via its own `margin-top` (see docs/architecture/ui-design/spacing.md).",
+    },
+    ComponentEntry {
         class: "moss-card-grid",
         kind: "instance",
         parent: "moss-cards-grid",
