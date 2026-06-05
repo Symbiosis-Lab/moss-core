@@ -220,7 +220,18 @@ pub fn classify_reference(
             r.candidates = candidates;
             r
         }
-        AssetResolution::NotFound => ResolvedReference::not_found(),
+        AssetResolution::NotFound => {
+            if matches!(ext_kind, ExtKind::Other) {
+                // An unresolved reference with no known file extension is a note
+                // link (classify-only here; link resolution/emission is sub-project #4).
+                let mut r = ResolvedReference::not_found();
+                r.kind = ReferenceKind::Link { anchor };
+                r
+            } else {
+                // A known-extension asset that didn't resolve is a broken embed.
+                ResolvedReference::not_found()
+            }
+        }
     }
 }
 
@@ -343,6 +354,28 @@ mod tests {
         let f = FakeFolderIndex::new(); // empty: not a dir, no indexes
         let u = FakeUrlIndex::new();
         let r = classify_reference("/ghost/", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::NotFound);
+    }
+
+    #[test]
+    fn bare_note_name_is_link() {
+        let a = FakeAssetIndex::new(&[]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("some-note", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Link { anchor: None });
+        assert!(r.target_path.is_none());
+        r.debug_check_invariant();
+    }
+
+    #[test]
+    fn missing_known_ext_asset_is_not_found() {
+        // A known image extension that doesn't resolve stays NotFound (it is a
+        // broken asset embed, not a note link).
+        let a = FakeAssetIndex::new(&[]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("missing.png", "page.md", &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::NotFound);
     }
 }
