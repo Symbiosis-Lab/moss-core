@@ -374,9 +374,20 @@ fn render_block<H: RenderHooks + ?Sized>(
             out.push_str(&escape_attr(&class_value));
             out.push('"');
             if let Some(w) = width {
-                out.push_str(r#" data-width=""#);
-                out.push_str(&escape_attr(w));
-                out.push('"');
+                if w.ends_with('%') {
+                    // Content-relative percent → inline style on the figure.
+                    // The figure has never carried `style=` (img_style lives on
+                    // the inner <img>), so there is no collision; the centering
+                    // CSS keys off the same shape.
+                    out.push_str(r#" style="width:"#);
+                    out.push_str(&escape_attr(w));
+                    out.push('"');
+                } else {
+                    // Named token → data-width contract (unchanged).
+                    out.push_str(r#" data-width=""#);
+                    out.push_str(&escape_attr(w));
+                    out.push('"');
+                }
             }
             push_source_line_attr(out, meta.source_line);
             out.push('>');
@@ -1019,6 +1030,59 @@ mod tests {
             img_style: None,
         }]);
         assert!(!html.contains("<figcaption"), "got: {html}");
+    }
+
+    // Editor Image UX (2026-06-04): a `%`-suffixed Figure width renders as
+    // an inline style="width:NN%"; a named token stays data-width=.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn figure_percent_width_emits_inline_style() {
+        let html = render(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::resolved("pic.jpg", UrlKind::Asset),
+                alt: "alt".into(),
+                title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
+            },
+            caption: None,
+            width: Some("55%".to_string()),
+            align: None,
+            class_names: vec![],
+            img_style: None,
+        }]);
+        assert!(
+            html.contains(r#"<figure class="moss-image" style="width:55%""#),
+            "got: {html}"
+        );
+        assert!(
+            !html.contains("data-width="),
+            "percent must not emit data-width: {html}"
+        );
+    }
+
+    #[test]
+    fn figure_named_width_still_emits_data_width() {
+        let html = render(vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::resolved("pic.jpg", UrlKind::Asset),
+                alt: "alt".into(),
+                title: None,
+                is_wikilink: false,
+                wikilink_pothole: None,
+            },
+            caption: None,
+            width: Some("wide".to_string()),
+            align: None,
+            class_names: vec![],
+            img_style: None,
+        }]);
+        assert!(html.contains(r#"data-width="wide""#), "got: {html}");
+        assert!(
+            !html.contains("style=\"width"),
+            "named token must not emit style: {html}"
+        );
     }
 
     #[test]
