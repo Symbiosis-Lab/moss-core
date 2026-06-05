@@ -17,7 +17,7 @@ pub enum LinkClass {
     Anchor,
 }
 
-pub fn classify_link(target: &str, from_source: &str, index: &impl UrlIndex) -> LinkClass {
+pub fn classify_link(target: &str, from_source: &str, index: &dyn UrlIndex) -> LinkClass {
     // 1. Author-facing short-circuits.
     if target.starts_with("http://") || target.starts_with("https://")
         || target.starts_with("//") || target.starts_with("mailto:")
