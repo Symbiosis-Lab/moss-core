@@ -131,7 +131,55 @@ pub fn classify_reference(
     use crate::resolve::asset_class::{resolve_asset_ref, AssetResolution};
     use crate::resolve::ext_kind::{reference_kind_for_ext, ExtKind};
 
-    // (Folder arm is inserted here in Task 7, before the file arm.)
+    // Folder arm: trailing slash, or the target resolves to a directory.
+    let looks_like_folder = path_no_anchor.ends_with('/');
+    let folder_rel: Option<String> = if let Some(abs) = path_no_anchor.strip_prefix('/') {
+        Some(abs.trim_end_matches('/').to_string())
+    } else if looks_like_folder {
+        // source-relative lexical join against from_source's directory
+        let from_dir = crate::resolve::parent_dir(from_source);
+        let mut parts: Vec<&str> = if from_dir.is_empty() {
+            vec![]
+        } else {
+            from_dir.split('/').collect()
+        };
+        for seg in path_no_anchor.trim_end_matches('/').split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                s => parts.push(s),
+            }
+        }
+        Some(parts.join("/"))
+    } else {
+        None
+    };
+    if let Some(folder_rel) = folder_rel {
+        if ctx.folders.dir_has_markdown_index(&folder_rel) {
+            let mut r = ResolvedReference::not_found();
+            r.kind = ReferenceKind::FolderListing;
+            r.target_path = Some(folder_rel);
+            r.size = size;
+            r.debug_check_invariant();
+            return r;
+        }
+        if ctx.folders.dir_has_static_index(&folder_rel).is_some() {
+            let mut r = ResolvedReference::not_found();
+            r.kind = ReferenceKind::FolderIndexIframe;
+            r.target_path = Some(folder_rel);
+            r.size = size;
+            r.debug_check_invariant();
+            return r;
+        }
+        // A trailing-slash (or leading-slash) target that doesn't resolve to a
+        // folder with an index is NotFound — it must NOT fall through to the
+        // file arm (a folder path is never a file asset).
+        if looks_like_folder || path_no_anchor.starts_with('/') {
+            return ResolvedReference::not_found();
+        }
+    }
 
     // File arm.
     let ext = path_no_anchor.rsplit('.').next().unwrap_or("").to_lowercase();
@@ -242,5 +290,39 @@ mod tests {
         let r = classify_reference("logo.png", "page.md", &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::Ambiguous);
         assert_eq!(r.candidates.len(), 2);
+    }
+
+    #[test]
+    fn folder_with_static_index_is_iframe() {
+        let a = FakeAssetIndex::new(&[]);
+        let mut f = FakeFolderIndex::new();
+        f.dirs.insert("Resources/app".into());
+        f.static_index.insert("Resources/app".into(), "index.html".into());
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("/Resources/app/", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::FolderIndexIframe);
+        assert_eq!(r.target_path.as_deref(), Some("Resources/app"));
+        r.debug_check_invariant();
+    }
+
+    #[test]
+    fn folder_with_markdown_index_is_listing() {
+        let a = FakeAssetIndex::new(&[]);
+        let mut f = FakeFolderIndex::new();
+        f.dirs.insert("news".into());
+        f.md_index.insert("news".into());
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("/news/", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::FolderListing);
+        r.debug_check_invariant();
+    }
+
+    #[test]
+    fn trailing_slash_unresolved_folder_is_not_found() {
+        let a = FakeAssetIndex::new(&[]);
+        let f = FakeFolderIndex::new(); // empty: not a dir, no indexes
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("/ghost/", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::NotFound);
     }
 }
