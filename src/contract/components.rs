@@ -949,7 +949,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
 </section>"#,
-        example_markdown: "",
+        example_markdown: ":::hero {image=cover.jpg}\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Hero banner section at the top of a page (cover image + title). v1 adds `data-width` for author-controlled sizing.",
@@ -987,7 +987,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "![alt](image.jpg)",
         status: Status::Confirmed,
         since: "0",
-        description: "Wrapper around an inline `<img>` for sizing and figure semantics. `data-width` carries a named width token (body|wide|page|screen); a content-relative width is instead emitted as inline `style=\"width:NN%\"` (set by the editor drag-resize). Images narrower than the content column center horizontally.",
+        description: "Wrapper around an inline `<img>` for sizing and figure semantics. `data-width` carries a named width token (body|wide|page|screen); a content-relative width is instead emitted as inline `style=\"width:NN%\"` (set by the editor drag-resize), which also forces the inner image to fill that percent box. Images narrower than the content column center horizontally.",
     },
     ComponentEntry {
         class: "moss-align-left",
@@ -1051,7 +1051,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<div class="moss-grid" data-width="wide">
   <div class="moss-grid-card">...</div>
 </div>"#,
-        example_markdown: "",
+        example_markdown: ":::grid {cols=2}\nLeft cell\n+++\nRight cell\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Generic grid container (used by profiles, link previews, etc.). Modifier classes: `profiles`, `featured`, `no-cards`. v1 adds `data-width` (P9).",
@@ -1075,17 +1075,6 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Card instance inside `.moss-grid`. Today emits sibling classes `link-card` / `friend-card` / `no-cards`; v1 collapses to `data-kind`.",
     },
     ComponentEntry {
-        class: "moss-gridxyz",
-        kind: "container",
-        parent: "",
-        data_attrs: &[],
-        example_html: r#"<div class="moss-gridxyz">...</div>"#,
-        example_markdown: "",
-        status: Status::Emerging,
-        since: "0",
-        description: "Experimental free-form grid variant. Subject to renaming.",
-    },
-    ComponentEntry {
         class: "moss-gallery",
         kind: "container",
         parent: "",
@@ -1100,7 +1089,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<div class="moss-gallery" data-width="page">
   <figure class="moss-gallery-item">...</figure>
 </div>"#,
-        example_markdown: "",
+        example_markdown: ":::gallery\nphoto.jpg\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Image gallery container. v1 adds `data-width` (P9).",
@@ -1131,7 +1120,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<div class="moss-buttons" data-style="inverted">
   <a class="moss-btn" href="...">Click</a>
 </div>"#,
-        example_markdown: "",
+        example_markdown: ":::buttons\n[Get started](https://example.com)\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Container for a row of `.moss-btn` buttons. v1: the inverted variant is on `data-style=\"inverted\"`.",
@@ -1203,7 +1192,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<div class="moss-subscribe">
   <form class="moss-subscribe-form">...</form>
 </div>"#,
-        example_markdown: "",
+        example_markdown: ":::subscribe\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Newsletter subscribe block (auto-injected into footer when email channel configured).",
@@ -1865,7 +1854,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<ul class="moss-recent">
   <li><a href="/posts/spring-notes/">Spring notes</a><div class="moss-recent__date">2026-04-12</div><div class="moss-recent__desc">A walk through the garden.</div></li>
 </ul>"#,
-        example_markdown: ":::recent count=5 since=2026-01-01\n",
+        example_markdown: ":::recent {count=5 since=\"2026-01-01\"}\n:::\n",
         status: Status::Emerging,
         since: "0",
         description: "Auto-generated list of recent posts emitted by the `:::recent` shortcode. Sorted newest-first; date and description slots are filled per child. No default CSS in the bundled theme — theme authors style it freely.",
@@ -1893,6 +1882,18 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Per-entry description slot inside `.moss-recent` (BEM child). Sourced from frontmatter `description`; empty when unset.",
     },
 ];
+
+impl ComponentEntry {
+    /// True for entries that belong in the public, agent/theme-facing surface.
+    /// v1 rule: simply "not retired" — keeps the full theme vocabulary
+    /// (moss-card, moss-cards, breadcrumbs, etc.) while dropping retired noise.
+    /// (A finer internal-subclass split is deliberately NOT attempted here —
+    /// it risks hiding theme-targetable classes. Agents get the precise
+    /// shortcode set via the `authorable` flag instead.)
+    pub fn is_public(&self) -> bool {
+        self.status != Status::Retired
+    }
+}
 
 /// Iterator over class names with `Status::Retired`. Used by the build
 /// pipeline's theme lint to warn users about pre-v1 vocabulary.

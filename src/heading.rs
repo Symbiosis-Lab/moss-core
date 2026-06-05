@@ -89,16 +89,40 @@ pub struct HeadingInputs<'a> {
 
 /// Compute just the visible heading text for a file path. Used by callers
 /// that need the text before the full state.
+///
+/// Not root-aware: a root-level index-stem (`index.md` with no path parent)
+/// resolves to the stem itself ("index"). Use [`filename_text_with_root`]
+/// when the project's root folder name is available so the site root's home
+/// page reads the folder name instead. See #775.
 pub fn filename_text(file_path: &str) -> String {
+    filename_text_with_root(file_path, None)
+}
+
+/// Like [`filename_text`], but root-aware: for an index-stem / self-named
+/// folder note at the project root (where `Path::parent()` has no
+/// `file_name`), the resolved text is `root_folder_name` rather than the bare
+/// stem. This is the fix for #775 — a root `index.md` home page must read the
+/// folder name in `<title>`/chrome, not "index".
+///
+/// Mirrors the parent-name resolution in [`compute`] (`heading.rs` root
+/// fallback) so the text answer and the visibility answer agree at the root.
+/// No title-casing: hyphens/underscores become spaces, everything else is
+/// verbatim (same rule as the nested case).
+pub fn filename_text_with_root(file_path: &str, root_folder_name: Option<&str>) -> String {
     let path = std::path::Path::new(file_path);
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled");
+    // Parent folder name from the path, falling back to the project root
+    // folder name for root-level files (whose `Path::parent()` yields the
+    // empty path with no `file_name`). This is what lets a root `index.md`
+    // or self-named `<root>/<root>.md` resolve to the folder name.
     let parent_name = path
         .parent()
         .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str());
+        .and_then(|s| s.to_str())
+        .or(root_folder_name);
     let is_folder_note = home::is_index_stem(stem)
         || parent_name.is_some_and(|p| p.eq_ignore_ascii_case(stem));
     let source_name = if is_folder_note {
@@ -131,9 +155,14 @@ pub fn compute(input: HeadingInputs<'_>) -> HeadingState {
 
     // Resolve text + source from frontmatter.title before all other rules.
     // Some(_) → Title source (empty allowed); None → Filename source.
+    // Filename mode is root-aware: a root index-stem / self-named home
+    // resolves to the project's folder name, not the bare "index" stem (#775).
     let (text, source) = match input.frontmatter_title {
         Some(t) => (t.trim().to_string(), HeadingSource::Title),
-        None => (filename_text(input.file_path), HeadingSource::Filename),
+        None => (
+            filename_text_with_root(input.file_path, input.root_folder_name),
+            HeadingSource::Filename,
+        ),
     };
 
     let is_markdown = matches!(
@@ -228,6 +257,72 @@ mod tests {
     #[test]
     fn text_cjk_index_uses_parent() {
         assert_eq!(filename_text("文字/index.md"), "文字");
+    }
+
+    // ── filename_text_with_root: root-aware home title (#775) ─────────
+
+    #[test]
+    fn text_root_index_uses_root_folder_name() {
+        // Bug #775: a root `index.md` has no path parent, so the bare
+        // `filename_text` resolves it to the stem "index". With the root
+        // folder name threaded in, the resolved text must be the folder
+        // name (no title-casing — matches filename_text's hyphen/underscore
+        // → space rule and otherwise-verbatim behavior).
+        assert_eq!(
+            filename_text_with_root("index.md", Some("My Site")),
+            "My Site"
+        );
+    }
+
+    #[test]
+    fn text_root_index_no_root_name_falls_back_to_stem() {
+        // Without a root folder name, behavior is unchanged: the stem.
+        assert_eq!(filename_text_with_root("index.md", None), "index");
+    }
+
+    #[test]
+    fn text_root_self_named_uses_root_folder_name() {
+        // `刘果.md` at the root of a vault named `刘果`.
+        assert_eq!(
+            filename_text_with_root("刘果.md", Some("刘果")),
+            "刘果"
+        );
+    }
+
+    #[test]
+    fn text_with_root_nested_index_unaffected_by_root_name() {
+        // A nested index still resolves to its path parent, ignoring the
+        // root folder name entirely.
+        assert_eq!(
+            filename_text_with_root("site/index.md", Some("My Site")),
+            "site"
+        );
+    }
+
+    #[test]
+    fn text_with_root_article_unaffected() {
+        // A root-level article is not a home file — stem wins regardless of
+        // the root folder name.
+        assert_eq!(
+            filename_text_with_root("about.md", Some("My Site")),
+            "about"
+        );
+    }
+
+    #[test]
+    fn compute_root_index_text_is_root_folder_name() {
+        // The full state path: a root `index.md` with a known root folder
+        // name resolves its chrome text to the folder name, NOT "index".
+        let s = compute(HeadingInputs {
+            file_path: "index.md",
+            frontmatter_title: None,
+            body_markdown: "",
+            root_folder_name: Some("My Site"),
+            is_translation_home: false,
+            slot_only: false,
+        });
+        assert!(!s.visible, "root index still suppresses the auto H1");
+        assert_eq!(s.text, "My Site");
     }
 
     // ── compute: visibility + filename mode ──────────────────────────

@@ -75,6 +75,23 @@ pub trait UrlIndex {
     fn resolve_reference_to_url(&self, reference: &str, from_source: &str) -> Option<String>;
 }
 
+/// Cross-module test fake for `UrlIndex` that returns the empty/negative result for every method.
+/// Module-level so `reference.rs` tests can import it.
+#[cfg(test)]
+pub(crate) struct FakeUrlIndex;
+
+#[cfg(test)]
+impl FakeUrlIndex {
+    pub fn new() -> Self { FakeUrlIndex }
+}
+
+#[cfg(test)]
+impl UrlIndex for FakeUrlIndex {
+    fn lookup_exact(&self, _url_path: &str) -> bool { false }
+    fn lookup_normalized(&self, _url_path: &str) -> Option<String> { None }
+    fn resolve_reference_to_url(&self, _reference: &str, _from_source: &str) -> Option<String> { None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +100,7 @@ mod tests {
     fn linkclass_constructs() {
         assert_eq!(LinkClass::Broken, LinkClass::Broken);
     }
+
 
     // A tiny in-memory UrlIndex fixture:
     struct FakeIndex {

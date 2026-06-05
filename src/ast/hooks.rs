@@ -182,7 +182,13 @@ pub trait RenderHooks {
                 // the production HTML (form action URL, language defaults,
                 // status spans). Description prose moved out of the
                 // shortcode under the unified grammar.
+                //
+                // The outer `moss-subscribe` wrapper is emitted here so
+                // the COMPONENTS contract round-trip test (and
+                // ShortcodeKind::root_class()) can assert the root class
+                // without depending on the full pipeline.
                 let placeholder = args.placeholder.as_deref().unwrap_or("you@example.com");
+                out.push_str(r#"<div class="moss-subscribe">"#);
                 out.push_str(r#"<div class="moss-subscribe-form">"#);
                 out.push_str(r#"<input type="email" placeholder=""#);
                 out.push_str(&escape_attr(placeholder));
@@ -190,6 +196,7 @@ pub trait RenderHooks {
                 out.push_str("<button>");
                 out.push_str(&escape_text(args.button.as_deref().unwrap_or("Subscribe")));
                 out.push_str("</button>");
+                out.push_str("</div>");
                 out.push_str("</div>");
             }
             Shortcode::Gallery(args) => {
