@@ -740,6 +740,8 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
             // Named tokens are already absent from `alt` (WidthToken arm in
             // parse_pothole_params clears them); only the percent case falls
             // through as `Alias` and still needs extracting.
+            // Sync: the with-graph twin lives in resolve/wikilink_dispatch.rs
+            // (image branch, ~line 565) — both split width via media::split_alt_width.
             if let Some(pothole) = wikilink_pothole {
                 let (remaining, w) = crate::media::split_alt_width(pothole);
                 if w.is_some() {
@@ -2956,5 +2958,49 @@ mod tests {
     fn line_lookup_empty_source() {
         let lookup = LineLookup::build("", 0);
         assert_eq!(lookup.line_at(0), 1, "empty source still has line 1");
+    }
+
+    // -----------------------------------------------------------------
+    // Wikilink percent-width — no-ContentGraph path
+    //
+    // `try_promote_to_figure` recovers a content-relative percent (`|55%`)
+    // from `wikilink_pothole` so the no-graph parse path (fragment/test
+    // render) carries width in `Block::Figure.width`, not as a spurious
+    // caption. These are regression guards for the no-graph fix.
+    //
+    // Sync: the with-graph twin lives in
+    // resolve/wikilink_dispatch.rs (image branch, `split_alt_width` call)
+    // — both split width via `media::split_alt_width`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn wikilink_image_percent_no_graph_promotes_with_width() {
+        // ![[pic.jpg|55%]] must carry |55% into Figure.width, not leak it
+        // into the caption (regression guard for the no-graph fix).
+        let block = first_block("![[pic.jpg|55%]]\n");
+        match block {
+            Block::Figure { width, caption, .. } => {
+                assert_eq!(width.as_deref(), Some("55%"));
+                assert!(caption.is_none(), "percent must not become a caption");
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wikilink_image_percent_with_caption_no_graph() {
+        // ![[pic.jpg|My cap|55%]] — width Some("55%"), caption "My cap".
+        let block = first_block("![[pic.jpg|My cap|55%]]\n");
+        match block {
+            Block::Figure { width, caption, .. } => {
+                assert_eq!(width.as_deref(), Some("55%"));
+                let cap = caption.as_ref().expect("caption must be present");
+                assert!(
+                    matches!(cap.as_slice(), [Inline::Text(t)] if t == "My cap"),
+                    "caption should be the non-width segment, got {cap:?}"
+                );
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
     }
 }

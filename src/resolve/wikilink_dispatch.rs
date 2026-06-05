@@ -569,6 +569,8 @@ fn dispatch_embed_form(
                 // caption is the remaining (width-stripped) alias. Recovered here
                 // (not in `parse_pothole_params`) so the shared pothole classifier
                 // stays width-vocabulary-agnostic.
+                // Sync: the no-graph twin lives in ast/parser.rs::try_promote_to_figure
+                // (wikilink_pothole arm) — both split width via media::split_alt_width.
                 let (alias_no_width, pct_width): (Option<String>, Option<String>) =
                     match parsed.alias {
                         Some(a) => {
