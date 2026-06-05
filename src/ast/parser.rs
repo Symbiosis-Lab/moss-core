@@ -708,22 +708,51 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
     //
     // Standard-markdown images carry no structured pothole — a `|55%`/`|wide`
     // width rides in the raw alt text. Split it out so the figure carries the
-    // width and the caption is the remaining alt. (Wikilink images are handled
-    // in wikilink_dispatch; their alt arrives already classified, so their
-    // alt is left untouched here.)
+    // width and the caption is the remaining alt.
+    //
+    // Wikilink images carry the raw pothole in `wikilink_pothole`; named width
+    // tokens are already classified by `parse_pothole_params` (WidthToken arm),
+    // but a content-relative percent (`55%`) is classified as `Alias` and
+    // lands in `alt` (or is stripped from alt by our parser-level Alias fix).
+    // Recover the percent from `wikilink_pothole` directly so the figure
+    // carries the width on both the with-graph path (wikilink_dispatch) and
+    // the no-graph path (fragment/test render with no ContentGraph).
     let mut figure_width: Option<String> = None;
     let mut rewritten_alt: Option<String> = None;
-    if let Some(Inline::Image {
-        alt,
-        is_wikilink: false,
-        ..
-    }) = inlines.iter().find(|i| matches!(i, Inline::Image { .. }))
-    {
-        let (rest_alt, w) = crate::media::split_alt_width(alt);
-        if w.is_some() {
-            figure_width = w;
-            rewritten_alt = Some(rest_alt);
+    match inlines.iter().find(|i| matches!(i, Inline::Image { .. })) {
+        Some(Inline::Image {
+            alt,
+            is_wikilink: false,
+            ..
+        }) => {
+            let (rest_alt, w) = crate::media::split_alt_width(alt);
+            if w.is_some() {
+                figure_width = w;
+                rewritten_alt = Some(rest_alt);
+            }
         }
+        Some(Inline::Image {
+            is_wikilink: true,
+            wikilink_pothole,
+            ..
+        }) => {
+            // Recover a content-relative percent from the raw pothole.
+            // Named tokens are already absent from `alt` (WidthToken arm in
+            // parse_pothole_params clears them); only the percent case falls
+            // through as `Alias` and still needs extracting.
+            if let Some(pothole) = wikilink_pothole {
+                let (remaining, w) = crate::media::split_alt_width(pothole);
+                if w.is_some() {
+                    figure_width = w;
+                    // The remaining pothole (caption after stripping the %) is
+                    // the intended caption; propagate it as the rewritten alt if
+                    // the current alt is empty (percent-only pothole) or already
+                    // stripped to the same value.
+                    rewritten_alt = Some(remaining);
+                }
+            }
+        }
+        _ => {}
     }
 
     // The figure's caption text is the effective alt (width-stripped if a
@@ -943,7 +972,21 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                                 alt = rest_alias;
                             }
                             PotholeContent::Alias(text) => {
-                                alt = text;
+                                // `parse_pothole_params` classifies a content-relative
+                                // percent (e.g. `55%`) as `Alias` because it is not a
+                                // named width token. Intercept it here: a bare percent
+                                // is NOT a caption — strip it from the alt so it does
+                                // not leak to `<figcaption>`. The actual width is
+                                // recovered from `wikilink_pothole` by
+                                // `dispatch_wikilink_embeds` (with-graph path) or
+                                // directly from `split_alt_width` in the parser's
+                                // `try_promote_to_figure` (no-graph path via `alt`).
+                                //
+                                // `split_alt_width` returns the remaining caption and
+                                // the width token. If the whole alias was a width
+                                // (nothing remaining), clear alt.
+                                let (remaining, _w) = crate::media::split_alt_width(&text);
+                                alt = remaining;
                             }
                         }
                     }
