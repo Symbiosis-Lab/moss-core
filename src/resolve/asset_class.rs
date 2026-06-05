@@ -43,7 +43,7 @@ fn has_separator(t: &str) -> bool {
     t.contains('/')
 }
 
-pub fn resolve_asset_ref(target: &str, from_source: &str, index: &impl AssetIndex) -> AssetResolution {
+pub fn resolve_asset_ref(target: &str, from_source: &str, index: &dyn AssetIndex) -> AssetResolution {
     let from_dir = parent_dir(from_source);
 
     // Step 1: `/`-absolute → root.
@@ -108,7 +108,7 @@ pub fn resolve_asset_ref(target: &str, from_source: &str, index: &impl AssetInde
 }
 
 /// Exact hit → Resolved(provenance); case-only hit → Resolved(CaseMismatch, canonical); else None.
-fn finish_opt(cand: &str, prov: AssetProvenance, index: &impl AssetIndex) -> Option<AssetResolution> {
+fn finish_opt(cand: &str, prov: AssetProvenance, index: &dyn AssetIndex) -> Option<AssetResolution> {
     if index.contains(cand) {
         return Some(AssetResolution::Resolved { root_rel: cand.to_string(), provenance: prov });
     }
@@ -117,7 +117,7 @@ fn finish_opt(cand: &str, prov: AssetProvenance, index: &impl AssetIndex) -> Opt
     }
     None
 }
-fn finish(cand: String, prov: AssetProvenance, index: &impl AssetIndex) -> AssetResolution {
+fn finish(cand: String, prov: AssetProvenance, index: &dyn AssetIndex) -> AssetResolution {
     finish_opt(&cand, prov, index).unwrap_or(AssetResolution::NotFound)
 }
 

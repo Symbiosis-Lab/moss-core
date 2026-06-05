@@ -117,9 +117,57 @@ pub fn classify_reference(
         return r;
     }
 
-    // Remaining arms (folder, file, link) are added in Tasks 6–8.
-    let _ = (from_source, ctx);
-    ResolvedReference::not_found()
+    // Split off |pothole, then #anchor.
+    let (path_part, pothole) = match inner.split_once('|') {
+        Some((p, rest)) => (p.trim(), Some(rest)),
+        None => (inner, None),
+    };
+    let (path_no_anchor, anchor) = match path_part.split_once('#') {
+        Some((p, a)) => (p.trim(), Some(a.to_string())),
+        None => (path_part, None),
+    };
+    let size = pothole.and_then(crate::resolve::embed_renderer::Sizing::parse);
+
+    use crate::resolve::asset_class::{resolve_asset_ref, AssetResolution};
+    use crate::resolve::ext_kind::{reference_kind_for_ext, ExtKind};
+
+    // (Folder arm is inserted here in Task 7, before the file arm.)
+
+    // File arm.
+    let ext = path_no_anchor.rsplit('.').next().unwrap_or("").to_lowercase();
+    let ext_kind = reference_kind_for_ext(&ext);
+    match resolve_asset_ref(path_no_anchor, from_source, ctx.assets) {
+        AssetResolution::Resolved { root_rel, provenance } => {
+            let kind = match ext_kind {
+                ExtKind::Image => ReferenceKind::Image,
+                ExtKind::Iframe => ReferenceKind::Iframe,
+                ExtKind::Pdf => ReferenceKind::Pdf,
+                ExtKind::Video => ReferenceKind::Video,
+                ExtKind::Audio => ReferenceKind::Audio,
+                ExtKind::Model => ReferenceKind::Model,
+                ExtKind::Transclusion => ReferenceKind::Transclusion,
+                ExtKind::Notebook => ReferenceKind::Notebook,
+                ExtKind::Table => ReferenceKind::Table,
+                // A resolved file with an UNKNOWN extension is a Link target (no embed path).
+                ExtKind::Other => ReferenceKind::Link { anchor: anchor.clone() },
+            };
+            let is_link = matches!(kind, ReferenceKind::Link { .. });
+            let mut r = ResolvedReference::not_found();
+            r.kind = kind;
+            r.target_path = if is_link { None } else { Some(root_rel) };
+            r.size = size;
+            r.provenance = Some(provenance);
+            r.debug_check_invariant();
+            r
+        }
+        AssetResolution::Ambiguous { candidates, .. } => {
+            let mut r = ResolvedReference::not_found();
+            r.kind = ReferenceKind::Ambiguous;
+            r.candidates = candidates;
+            r
+        }
+        AssetResolution::NotFound => ResolvedReference::not_found(),
+    }
 }
 
 #[cfg(test)]
@@ -127,7 +175,7 @@ mod tests {
     use super::*;
 
     use crate::resolve::asset_class::FakeAssetIndex;
-    use crate::resolve::folder_class::{FakeFolderIndex, FolderIndex};
+    use crate::resolve::folder_class::FakeFolderIndex;
     use crate::resolve::link_class::FakeUrlIndex;
 
     fn ctx<'a>(
@@ -163,5 +211,36 @@ mod tests {
         assert_eq!(r.kind, ReferenceKind::NotFound);
         assert!(r.target_path.is_none());
         r.debug_check_invariant();
+    }
+
+    #[test]
+    fn image_file_resolves_to_image_kind() {
+        let a = FakeAssetIndex::new(&["assets/photo.png"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("photo.png", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Image);
+        assert_eq!(r.target_path.as_deref(), Some("assets/photo.png"));
+        r.debug_check_invariant();
+    }
+
+    #[test]
+    fn html_file_resolves_to_iframe_with_size() {
+        let a = FakeAssetIndex::new(&["widgets/app.html"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("widgets/app.html|800x600", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Iframe);
+        assert!(matches!(r.size, Some(crate::resolve::embed_renderer::Sizing::Box(_, _))));
+    }
+
+    #[test]
+    fn ambiguous_file_match_sets_candidates() {
+        let a = FakeAssetIndex::new(&["a/logo.png", "b/logo.png"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("logo.png", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Ambiguous);
+        assert_eq!(r.candidates.len(), 2);
     }
 }
