@@ -938,7 +938,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
 </section>"#,
-        example_markdown: "",
+        example_markdown: ":::hero {image=cover.jpg}\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Hero banner section at the top of a page (cover image + title). v1 adds `data-width` for author-controlled sizing.",
@@ -1051,7 +1051,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<div class="moss-grid" data-width="wide">
   <div class="moss-grid-card">...</div>
 </div>"#,
-        example_markdown: "",
+        example_markdown: ":::grid {cols=2}\nLeft cell\n+++\nRight cell\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Generic grid container (used by profiles, link previews, etc.). Modifier classes: `profiles`, `featured`, `no-cards`. v1 adds `data-width` (P9).",
@@ -1089,7 +1089,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<div class="moss-gallery" data-width="page">
   <figure class="moss-gallery-item">...</figure>
 </div>"#,
-        example_markdown: "",
+        example_markdown: ":::gallery\nphoto.jpg\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Image gallery container. v1 adds `data-width` (P9).",
@@ -1120,7 +1120,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<div class="moss-buttons" data-style="inverted">
   <a class="moss-btn" href="...">Click</a>
 </div>"#,
-        example_markdown: "",
+        example_markdown: ":::buttons\n[Get started](https://example.com)\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Container for a row of `.moss-btn` buttons. v1: the inverted variant is on `data-style=\"inverted\"`.",
@@ -1192,7 +1192,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<div class="moss-subscribe">
   <form class="moss-subscribe-form">...</form>
 </div>"#,
-        example_markdown: "",
+        example_markdown: ":::subscribe\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Newsletter subscribe block (auto-injected into footer when email channel configured).",
@@ -1854,7 +1854,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_html: r#"<ul class="moss-recent">
   <li><a href="/posts/spring-notes/">Spring notes</a><div class="moss-recent__date">2026-04-12</div><div class="moss-recent__desc">A walk through the garden.</div></li>
 </ul>"#,
-        example_markdown: ":::recent count=5 since=2026-01-01\n",
+        example_markdown: ":::recent {count=5 since=\"2026-01-01\"}\n:::\n",
         status: Status::Emerging,
         since: "0",
         description: "Auto-generated list of recent posts emitted by the `:::recent` shortcode. Sorted newest-first; date and description slots are filled per child. No default CSS in the bundled theme — theme authors style it freely.",

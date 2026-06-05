@@ -47,3 +47,51 @@ fn moss_cards_entry_has_expected_shape() {
     assert_eq!(cards.kind, "container");
     assert!(cards.data_attrs.iter().any(|a| a.name == "data-layout"));
 }
+
+#[test]
+fn every_authorable_shortcode_has_nonempty_example_markdown() {
+    use moss_core::ast::shortcode::ShortcodeKind;
+    for kind in ShortcodeKind::all() {
+        let cls = kind.root_class();
+        let e = COMPONENTS
+            .iter()
+            .find(|e| e.class == cls)
+            .unwrap_or_else(|| panic!("authorable class {cls} missing from COMPONENTS"));
+        assert!(
+            !e.example_markdown.is_empty(),
+            "authorable shortcode {cls} needs example_markdown"
+        );
+    }
+}
+
+#[test]
+fn authorable_example_markdown_renders_its_class() {
+    use moss_core::ast::{parse, render_document, DefaultHooks, ResolvedUrl, Url, UrlKind};
+    use moss_core::ast::shortcode::ShortcodeKind;
+    use moss_core::ast::visit_urls_mut;
+    for kind in ShortcodeKind::all() {
+        let cls = kind.root_class();
+        let md = COMPONENTS
+            .iter()
+            .find(|e| e.class == cls)
+            .unwrap()
+            .example_markdown;
+        let mut doc = parse(md);
+        // Resolve all Unresolved URLs to a trivial external href so
+        // shortcodes that contain links or images (buttons, gallery) do not
+        // hit the debug_assert for Unresolved URLs in DefaultHooks.
+        visit_urls_mut(&mut doc, |url| {
+            if matches!(url, Url::Unresolved(_)) {
+                *url = Url::Resolved(ResolvedUrl {
+                    href: "https://example.com/placeholder".to_string(),
+                    kind: UrlKind::External,
+                });
+            }
+        });
+        let html = render_document(&doc, &DefaultHooks::new());
+        assert!(
+            html.contains(cls),
+            "rendering {cls} example_markdown must emit class {cls}; got:\n{html}"
+        );
+    }
+}
