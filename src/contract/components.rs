@@ -1075,17 +1075,6 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Card instance inside `.moss-grid`. Today emits sibling classes `link-card` / `friend-card` / `no-cards`; v1 collapses to `data-kind`.",
     },
     ComponentEntry {
-        class: "moss-gridxyz",
-        kind: "container",
-        parent: "",
-        data_attrs: &[],
-        example_html: r#"<div class="moss-gridxyz">...</div>"#,
-        example_markdown: "",
-        status: Status::Emerging,
-        since: "0",
-        description: "Experimental free-form grid variant. Subject to renaming.",
-    },
-    ComponentEntry {
         class: "moss-gallery",
         kind: "container",
         parent: "",
