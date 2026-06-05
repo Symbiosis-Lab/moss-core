@@ -902,18 +902,19 @@ enum SynthKind {
 /// which keeps its inline-markdown round-trip — and for deferred kinds
 /// (`md`/`ipynb`/`csv`/`tsv`) which still need src-tauri post-passes.
 ///
-/// Extension tables MUST stay in sync with the corresponding `EmbedRenderer`
-/// `extensions()` slices in `embed_renderer.rs`. A future refactor that
-/// surfaces the kind on the renderer trait could remove this duplication.
+/// The extension table now lives in `ext_kind::reference_kind_for_ext` (the
+/// single source of truth). The `EmbedRenderer::extensions()` slices in
+/// `embed_renderer.rs` still exist and are still used by the renderer
+/// registry — do NOT delete them.
 fn synth_kind_for_ext(ext: &str) -> Option<SynthKind> {
-    let lower = ext.to_ascii_lowercase();
-    match lower.as_str() {
-        "mp4" | "webm" | "mov" | "m4v" => Some(SynthKind::Video),
-        "pdf" => Some(SynthKind::Pdf),
-        "mp3" | "wav" | "ogg" | "flac" | "m4a" | "opus" => Some(SynthKind::Audio),
-        "html" | "htm" => Some(SynthKind::Iframe),
-        "glb" | "gltf" => Some(SynthKind::Model),
-        _ => None,
+    use crate::resolve::ext_kind::{reference_kind_for_ext, ExtKind};
+    match reference_kind_for_ext(ext) {
+        ExtKind::Video => Some(SynthKind::Video),
+        ExtKind::Pdf => Some(SynthKind::Pdf),
+        ExtKind::Audio => Some(SynthKind::Audio),
+        ExtKind::Iframe => Some(SynthKind::Iframe),
+        ExtKind::Model => Some(SynthKind::Model),
+        ExtKind::Image | ExtKind::Transclusion | ExtKind::Notebook | ExtKind::Table | ExtKind::Other => None,
     }
 }
 
