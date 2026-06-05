@@ -410,6 +410,28 @@ pub fn parse_image_width(seg: &str) -> Option<String> {
     None
 }
 
+/// Split pipe-delimited alt/alias text into `(remaining, width)`.
+///
+/// Pulls out the FIRST segment that `parse_image_width` recognizes; all
+/// other segments are rejoined with `|` in order. If no segment is a
+/// width, returns the input unchanged with `None`. Mirrors the segment
+/// model of [`extract_width_from_alias`] but for the image width vocabulary
+/// (named + percent).
+pub fn split_alt_width(text: &str) -> (String, Option<String>) {
+    let mut width: Option<String> = None;
+    let mut remaining: Vec<&str> = Vec::new();
+    for seg in text.split('|') {
+        if width.is_none() {
+            if let Some(w) = parse_image_width(seg) {
+                width = Some(w);
+                continue;
+            }
+        }
+        remaining.push(seg);
+    }
+    (remaining.join("|"), width)
+}
+
 /// Parse a wikilink alias for an embedded width token plus the remaining
 /// alias content.
 ///
@@ -1497,5 +1519,39 @@ mod tests {
         assert_eq!(parse_image_width("200x150"), None); // box sizing not a figure width
         assert_eq!(parse_image_width("hello"), None);
         assert_eq!(parse_image_width(""), None);
+    }
+
+    // -- split_alt_width ---------------------------------------------------
+
+    #[test]
+    fn split_alt_width_extracts_and_preserves() {
+        // (remaining_alt, width)
+        assert_eq!(
+            split_alt_width("My caption|55%"),
+            ("My caption".to_string(), Some("55%".to_string()))
+        );
+        assert_eq!(
+            split_alt_width("55%"),
+            (String::new(), Some("55%".to_string()))
+        );
+        assert_eq!(
+            split_alt_width("wide"),
+            (String::new(), Some("wide".to_string()))
+        );
+        // No width → alt unchanged, no pipe collapse
+        assert_eq!(
+            split_alt_width("just a caption"),
+            ("just a caption".to_string(), None)
+        );
+        // Width is any one segment; other segments preserved joined by '|'
+        assert_eq!(
+            split_alt_width("cap|55%|extra"),
+            ("cap|extra".to_string(), Some("55%".to_string()))
+        );
+        // Only the FIRST width-looking segment is consumed
+        assert_eq!(
+            split_alt_width("40%|60%"),
+            ("60%".to_string(), Some("40%".to_string()))
+        );
     }
 }
