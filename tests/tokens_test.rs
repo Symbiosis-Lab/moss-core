@@ -90,7 +90,7 @@ fn format_root_block_produces_expected_shape() {
 
     // Tokens are present
     assert!(css.contains("--moss-color-accent: #2d5a2d;"));
-    assert!(css.contains("--moss-content-width: 67ch;"));
+    assert!(css.contains("--moss-content-width: calc(42 * var(--moss-reading-size));"));
     assert!(css.contains("--moss-space-xs: 0.5rem;"));
 
     // Two-space indent
