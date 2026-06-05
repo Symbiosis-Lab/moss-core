@@ -75,21 +75,34 @@ pub trait UrlIndex {
     fn resolve_reference_to_url(&self, reference: &str, from_source: &str) -> Option<String>;
 }
 
-/// Cross-module test fake for `UrlIndex` that returns the empty/negative result for every method.
-/// Module-level so `reference.rs` tests can import it.
+/// Cross-module test fake for `UrlIndex`. `new()` returns the empty/negative
+/// result for every method; `resolving(&[..])` makes `resolve_reference_to_url`
+/// return mapped URLs for the listed references (the other methods stay
+/// negative). Module-level so `reference.rs` tests can import it.
 #[cfg(test)]
-pub(crate) struct FakeUrlIndex;
+pub(crate) struct FakeUrlIndex {
+    refs: std::collections::HashMap<String, String>,
+}
 
 #[cfg(test)]
 impl FakeUrlIndex {
-    pub fn new() -> Self { FakeUrlIndex }
+    pub fn new() -> Self { FakeUrlIndex { refs: std::collections::HashMap::new() } }
+    /// Map `reference → url` so `classify_link` returns `Resolved { url }` for
+    /// each listed reference. `lookup_exact`/`lookup_normalized` stay negative.
+    pub fn resolving(pairs: &[(&str, &str)]) -> Self {
+        FakeUrlIndex {
+            refs: pairs.iter().map(|(r, u)| (r.to_string(), u.to_string())).collect(),
+        }
+    }
 }
 
 #[cfg(test)]
 impl UrlIndex for FakeUrlIndex {
     fn lookup_exact(&self, _url_path: &str) -> bool { false }
     fn lookup_normalized(&self, _url_path: &str) -> Option<String> { None }
-    fn resolve_reference_to_url(&self, _reference: &str, _from_source: &str) -> Option<String> { None }
+    fn resolve_reference_to_url(&self, reference: &str, _from_source: &str) -> Option<String> {
+        self.refs.get(reference).cloned()
+    }
 }
 
 #[cfg(test)]

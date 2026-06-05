@@ -54,6 +54,9 @@ pub struct ResolvedReference {
     pub message: Option<String>,
     /// Populated for Ambiguous (all candidate paths).
     pub candidates: Vec<String>,
+    /// Resolved page/asset URL for a non-embed Link (None for embeds — the
+    /// build emits embed URLs itself; editor embeds use `target_path`).
+    pub url: Option<String>,
 }
 
 impl ResolvedReference {
@@ -65,6 +68,7 @@ impl ResolvedReference {
             provenance: None,
             message: None,
             candidates: Vec::new(),
+            url: None,
         }
     }
     /// Invariant: target_path is Some iff kind is a file/folder kind.
@@ -97,6 +101,7 @@ impl ResolvedReference {
 pub fn classify_reference(
     inner: &str,
     from_source: &str,
+    is_embed: bool,
     ctx: &ReferenceContext,
 ) -> ResolvedReference {
     let inner = inner.trim();
@@ -127,6 +132,54 @@ pub fn classify_reference(
         None => (path_part, None),
     };
     let size = pothole.and_then(crate::resolve::embed_renderer::Sizing::parse);
+
+    // Non-embed mode: a `[[note]]` / `[](path)` reference is a Link resolved
+    // against the deployed URL space (`ctx.urls`), NOT an embed kind. This runs
+    // BEFORE the folder/file arms so it cannot mis-route a non-embed reference
+    // to Transclusion/Image/Folder. The BUILD always passes `is_embed=true`
+    // (folder markers), so this branch is dead for the build — the folder arm
+    // below short-circuits there.
+    if !is_embed {
+        use crate::resolve::link_class::{classify_link, LinkClass};
+        return match classify_link(path_no_anchor, from_source, ctx.urls) {
+            LinkClass::Resolved { url } => {
+                let full = match &anchor {
+                    Some(a) => format!("{}#{}", url, a),
+                    None => url,
+                };
+                let mut r = ResolvedReference::not_found();
+                r.kind = ReferenceKind::Link { anchor: anchor.clone() };
+                r.url = Some(full);
+                r
+            }
+            LinkClass::Mismatch { canonical } => {
+                // A page exists but the link won't hit its canonical URL
+                // (case/slug). Surface it as a Link pointing at the canonical
+                // URL, with a note explaining the redirect.
+                let full = match &anchor {
+                    Some(a) => format!("{}#{}", canonical, a),
+                    None => canonical.clone(),
+                };
+                let mut r = ResolvedReference::not_found();
+                r.kind = ReferenceKind::Link { anchor: anchor.clone() };
+                r.url = Some(full);
+                r.message = Some(format!("resolves to canonical URL {}", canonical));
+                r
+            }
+            LinkClass::External => {
+                let mut r = ResolvedReference::not_found();
+                r.kind = ReferenceKind::External { url: path_no_anchor.to_string() };
+                r
+            }
+            LinkClass::Anchor => {
+                let mut r = ResolvedReference::not_found();
+                r.kind = ReferenceKind::Anchor;
+                r
+            }
+            // Broken: no deployed page for this internal reference.
+            LinkClass::Broken => ResolvedReference::not_found(),
+        };
+    }
 
     use crate::resolve::asset_class::{resolve_asset_ref, AssetResolution};
     use crate::resolve::ext_kind::{reference_kind_for_ext, ExtKind};
@@ -256,7 +309,7 @@ mod tests {
         let a = FakeAssetIndex::new(&[]);
         let f = FakeFolderIndex::new();
         let u = FakeUrlIndex::new();
-        let r = classify_reference("https://example.com/x", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("https://example.com/x", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::External { url: "https://example.com/x".into() });
         assert!(r.target_path.is_none());
     }
@@ -266,7 +319,7 @@ mod tests {
         let a = FakeAssetIndex::new(&[]);
         let f = FakeFolderIndex::new();
         let u = FakeUrlIndex::new();
-        let r = classify_reference("#section", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("#section", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::Anchor);
     }
 
@@ -283,7 +336,7 @@ mod tests {
         let a = FakeAssetIndex::new(&["assets/photo.png"]);
         let f = FakeFolderIndex::new();
         let u = FakeUrlIndex::new();
-        let r = classify_reference("photo.png", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("photo.png", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::Image);
         assert_eq!(r.target_path.as_deref(), Some("assets/photo.png"));
         r.debug_check_invariant();
@@ -294,7 +347,7 @@ mod tests {
         let a = FakeAssetIndex::new(&["widgets/app.html"]);
         let f = FakeFolderIndex::new();
         let u = FakeUrlIndex::new();
-        let r = classify_reference("widgets/app.html|800x600", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("widgets/app.html|800x600", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::Iframe);
         assert!(matches!(r.size, Some(crate::resolve::embed_renderer::Sizing::Box(_, _))));
     }
@@ -304,7 +357,7 @@ mod tests {
         let a = FakeAssetIndex::new(&["a/logo.png", "b/logo.png"]);
         let f = FakeFolderIndex::new();
         let u = FakeUrlIndex::new();
-        let r = classify_reference("logo.png", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("logo.png", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::Ambiguous);
         assert_eq!(r.candidates.len(), 2);
     }
@@ -316,7 +369,7 @@ mod tests {
         f.dirs.insert("Resources/app".into());
         f.static_index.insert("Resources/app".into(), "index.html".into());
         let u = FakeUrlIndex::new();
-        let r = classify_reference("/Resources/app/", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("/Resources/app/", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::FolderIndexIframe);
         assert_eq!(r.target_path.as_deref(), Some("Resources/app"));
         r.debug_check_invariant();
@@ -329,7 +382,7 @@ mod tests {
         f.dirs.insert("news".into());
         f.md_index.insert("news".into());
         let u = FakeUrlIndex::new();
-        let r = classify_reference("/news/", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("/news/", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::FolderListing);
         r.debug_check_invariant();
     }
@@ -342,7 +395,7 @@ mod tests {
         let a = FakeAssetIndex::new(&["assets/photo.png"]);
         let f = FakeFolderIndex::new(); // NOT a dir, no indexes
         let u = FakeUrlIndex::new();
-        let r = classify_reference("/assets/photo.png", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("/assets/photo.png", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::Image);
         assert_eq!(r.target_path.as_deref(), Some("assets/photo.png"));
         r.debug_check_invariant();
@@ -353,7 +406,7 @@ mod tests {
         let a = FakeAssetIndex::new(&[]);
         let f = FakeFolderIndex::new(); // empty: not a dir, no indexes
         let u = FakeUrlIndex::new();
-        let r = classify_reference("/ghost/", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("/ghost/", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::NotFound);
     }
 
@@ -362,7 +415,7 @@ mod tests {
         let a = FakeAssetIndex::new(&[]);
         let f = FakeFolderIndex::new();
         let u = FakeUrlIndex::new();
-        let r = classify_reference("some-note", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("some-note", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::Link { anchor: None });
         assert!(r.target_path.is_none());
         r.debug_check_invariant();
@@ -375,7 +428,47 @@ mod tests {
         let a = FakeAssetIndex::new(&[]);
         let f = FakeFolderIndex::new();
         let u = FakeUrlIndex::new();
-        let r = classify_reference("missing.png", "page.md", &ctx(&a, &f, &u));
+        let r = classify_reference("missing.png", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::NotFound);
+    }
+
+    #[test]
+    fn non_embed_md_note_resolves_as_link_not_transclusion() {
+        let a = FakeAssetIndex::new(&["note.md"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::resolving(&[("note.md", "/note/")]);
+        let r = classify_reference("note.md", "page.md", false, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Link { anchor: None });
+        assert_eq!(r.url.as_deref(), Some("/note/"));
+    }
+
+    #[test]
+    fn embed_md_is_still_transclusion() {
+        let a = FakeAssetIndex::new(&["note.md"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("note.md", "page.md", true, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Transclusion);
+    }
+
+    #[test]
+    fn non_embed_link_carries_anchor() {
+        let a = FakeAssetIndex::new(&[]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::resolving(&[("note", "/note/")]);
+        let r = classify_reference("note#heading", "page.md", false, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Link { anchor: Some("heading".into()) });
+        assert_eq!(r.url.as_deref(), Some("/note/#heading"));
+    }
+
+    #[test]
+    fn build_safety_folder_marker_ignores_urls() {
+        let a = FakeAssetIndex::new(&[]);
+        let mut f = FakeFolderIndex::new();
+        f.dirs.insert("app".into());
+        f.static_index.insert("app".into(), "index.html".into());
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("/app/", "page.md", true, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::FolderIndexIframe);
     }
 }
