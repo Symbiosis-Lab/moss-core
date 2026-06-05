@@ -20,6 +20,7 @@ pub mod folder_class;
 pub mod reference;
 pub mod fuzzy_path;
 pub mod link_class;
+pub mod output_url;
 pub mod registry;
 pub mod title_params;
 pub mod wikilink_dispatch;
