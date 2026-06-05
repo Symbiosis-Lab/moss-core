@@ -157,26 +157,32 @@ pub fn classify_reference(
         None
     };
     if let Some(folder_rel) = folder_rel {
-        if ctx.folders.dir_has_markdown_index(&folder_rel) {
-            let mut r = ResolvedReference::not_found();
-            r.kind = ReferenceKind::FolderListing;
-            r.target_path = Some(folder_rel);
-            r.size = size;
-            r.debug_check_invariant();
-            return r;
-        }
-        if ctx.folders.dir_has_static_index(&folder_rel).is_some() {
-            let mut r = ResolvedReference::not_found();
-            r.kind = ReferenceKind::FolderIndexIframe;
-            r.target_path = Some(folder_rel);
-            r.size = size;
-            r.debug_check_invariant();
-            return r;
-        }
-        // A trailing-slash (or leading-slash) target that doesn't resolve to a
-        // folder with an index is NotFound — it must NOT fall through to the
-        // file arm (a folder path is never a file asset).
-        if looks_like_folder || path_no_anchor.starts_with('/') {
+        // Only treat this as a folder reference when it is one: an explicit
+        // trailing slash, or a path that the folder index resolves to a real
+        // directory. A leading-slash path WITHOUT a trailing slash (e.g. an
+        // absolute file embed `/assets/photo.png`) is NOT a folder — it must
+        // fall through to the file arm and resolve as the asset it names.
+        let is_folder = looks_like_folder || ctx.folders.is_dir(&folder_rel);
+        if is_folder {
+            if ctx.folders.dir_has_markdown_index(&folder_rel) {
+                let mut r = ResolvedReference::not_found();
+                r.kind = ReferenceKind::FolderListing;
+                r.target_path = Some(folder_rel);
+                r.size = size;
+                r.debug_check_invariant();
+                return r;
+            }
+            if ctx.folders.dir_has_static_index(&folder_rel).is_some() {
+                let mut r = ResolvedReference::not_found();
+                r.kind = ReferenceKind::FolderIndexIframe;
+                r.target_path = Some(folder_rel);
+                r.size = size;
+                r.debug_check_invariant();
+                return r;
+            }
+            // A confirmed folder (explicit trailing slash, or a real directory)
+            // without an index is NotFound — it must NOT fall through to the
+            // file arm (a folder path is never a file asset).
             return ResolvedReference::not_found();
         }
     }
@@ -314,6 +320,20 @@ mod tests {
         let u = FakeUrlIndex::new();
         let r = classify_reference("/news/", "page.md", &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::FolderListing);
+        r.debug_check_invariant();
+    }
+
+    #[test]
+    fn absolute_file_embed_resolves_to_image() {
+        // A leading-slash path with NO trailing slash, naming a real asset, is a
+        // file embed — not a folder. The folder arm must let it fall through to
+        // the file arm so `![[/assets/photo.png]]` resolves as an Image.
+        let a = FakeAssetIndex::new(&["assets/photo.png"]);
+        let f = FakeFolderIndex::new(); // NOT a dir, no indexes
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("/assets/photo.png", "page.md", &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Image);
+        assert_eq!(r.target_path.as_deref(), Some("assets/photo.png"));
         r.debug_check_invariant();
     }
 
