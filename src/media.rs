@@ -384,6 +384,12 @@ pub fn match_width_token(s: &str) -> Option<&'static str> {
 /// Returns `None` for anything else (captions, `200x150` box sizing, px).
 /// Box/px are intentionally rejected: image figures only support
 /// content-relative widths in v1 (see design §"Out of scope").
+///
+/// MIRROR: the editor's read-side `parseImageWidth` in
+/// `frontend/app/editor/cm-image-extract.ts` must agree byte-for-byte with
+/// this (named canonicalization, clamp, formatting) — keep the two in sync.
+/// `f64` (not `f32`) is used so fractional percents format identically to the
+/// JS side, preserving the editor↔build string-equality the design relies on.
 pub fn parse_image_width(seg: &str) -> Option<String> {
     let s = seg.trim();
     if s.is_empty() {
@@ -394,7 +400,7 @@ pub fn parse_image_width(seg: &str) -> Option<String> {
     }
     // Percent only — reject px / vh / box by requiring a '%' suffix here.
     if let Some(rest) = s.strip_suffix('%') {
-        let v: f32 = rest.trim().parse().ok()?;
+        let v: f64 = rest.trim().parse().ok()?;
         if v <= 0.0 {
             return None;
         }
