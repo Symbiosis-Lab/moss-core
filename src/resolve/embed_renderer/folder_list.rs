@@ -20,9 +20,13 @@ pub struct FolderEmbedParams {
     /// (the card-grid listing branch ignores it). Stored raw so the
     /// pothole→marker→render round-trip stays a plain string.
     pub size: Option<String>,
-    /// Internal: restrict children to this language-tree prefix (url_path prefix).
-    /// Set by synthesize_children_marker for homepage default-mode; not user-facing.
-    pub lang_tree: Option<String>,
+    /// Internal: this is the root homepage's own depth=all self-listing, so scope it
+    /// to the default language tree — on a multilingual site (gated at render time by
+    /// `ProjectStructure.has_language_trees`) drop docs under a language-prefix folder
+    /// (`en/`, …), leaving only the default tree. Set by `synthesize_children_marker`
+    /// for homepage default-mode; not user-facing. Co-set with `exclude_nav` (same
+    /// condition) but kept separate as a distinct concern.
+    pub scope_default_tree: bool,
     /// Internal: exclude folder pages that act as top-level nav items.
     /// Set by synthesize_children_marker for homepage default-mode; not user-facing.
     pub exclude_nav: bool,
@@ -109,8 +113,8 @@ pub fn emit_marker(path: &str, from: &str, params: &FolderEmbedParams) -> String
     if let Some(n) = params.limit {
         parts.push(format!("limit={}", n));
     }
-    if let Some(ref lt) = params.lang_tree {
-        parts.push(format!("lang_tree={}", lt));
+    if params.scope_default_tree {
+        parts.push("scope_default_tree".to_string());
     }
     if params.exclude_nav {
         parts.push("exclude_nav".to_string());
