@@ -183,6 +183,9 @@ pub struct FrontMatter {
     pub cover_type: Option<String>,
     /// Whether to show in navigation
     pub nav: Option<bool>,
+    /// Explicit folder-home marker: this file is its folder's home page,
+    /// regardless of filename. Written by moss on homes it creates; survives rename.
+    pub home: Option<bool>,
     /// Whether this is a draft (don't generate page)
     pub draft: Option<bool>,
     /// Whether page is unlisted (generated but hidden from lists)
@@ -1015,6 +1018,12 @@ mod tests {
         // Regression: single-char `"` or `'` must not panic at [1..0]
         assert_eq!(frontmatter_ref_to_stem("\""), "\"");
         assert_eq!(frontmatter_ref_to_stem("'"), "'");
+    }
+
+    #[test]
+    fn parses_home_marker() {
+        let fm: FrontMatter = serde_yaml::from_str("home: true\n").expect("parse");
+        assert_eq!(fm.home, Some(true));
     }
 
     #[test]

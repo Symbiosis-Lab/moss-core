@@ -297,6 +297,14 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
+        name: "home",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        description: "Mark this file as its folder's home page (survives folder rename)",
+        skip_schema: true, // moss-managed; not a routine per-page chip
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "sort",
         // Polymorphic value (axis string OR list of stems). For v1 the schema
         // describes the string form for the form widget; the list form is
