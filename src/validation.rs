@@ -144,16 +144,21 @@ pub fn validate_frontmatter(
     }
 
     // Check for unknown fields (not in schema) — report as Hint.
+    // Skip keys that are internal (skip_schema) fields — they are managed by the
+    // build pipeline and must not be flagged as unknown to the user.
     for key in fm.keys() {
-        if !schema.frontmatter.fields.contains_key(key) {
-            diags.push(Diagnostic {
-                severity: Severity::Hint,
-                message: format!("unknown field '{}' is not defined in the schema", key),
-                path: Some(key.clone()),
-                line: None,
-                column: None,
-            });
+        if schema.frontmatter.fields.contains_key(key)
+            || schema.frontmatter.internal_fields.contains(key)
+        {
+            continue;
         }
+        diags.push(Diagnostic {
+            severity: Severity::Hint,
+            message: format!("unknown field '{}' is not defined in the schema", key),
+            path: Some(key.clone()),
+            line: None,
+            column: None,
+        });
     }
 
     diags
@@ -573,6 +578,27 @@ mod tests {
     }
 
     // --- Date validation unit tests ---
+
+    #[test]
+    fn skip_schema_fields_are_not_flagged_unknown() {
+        let schema = builtin_schema();
+        // `home` is a skip_schema field — it lives in internal_fields, not fields.
+        // `bogus` is genuinely unknown.
+        let fm = make_fm(&[
+            ("title", str_val("Test")),
+            ("home", bool_val(true)),
+            ("bogus", int_val(1)),
+        ]);
+        let diags = validate_frontmatter(&fm, &schema);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("'home'")),
+            "skip_schema field 'home' must not produce an unknown-field hint"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("'bogus'")),
+            "genuinely unknown field 'bogus' must still produce an unknown-field hint"
+        );
+    }
 
     #[test]
     fn test_is_valid_date() {
