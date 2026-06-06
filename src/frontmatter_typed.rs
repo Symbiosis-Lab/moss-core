@@ -717,6 +717,7 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                 }
                 // Handle boolean with explicit value
                 "nav" => frontmatter.nav = Some(value == "true" || value.is_empty()),
+                "home" => frontmatter.home = Some(value == "true" || value.is_empty()),
                 "draft" => frontmatter.draft = Some(value == "true" || value.is_empty()),
                 "unlisted" => frontmatter.unlisted = Some(value == "true" || value.is_empty()),
                 "breadcrumb" => frontmatter.breadcrumb = Some(value == "true" || value.is_empty()),
@@ -739,6 +740,7 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
             // Boolean flag (just the word)
             match trimmed {
                 "nav" => frontmatter.nav = Some(true),
+                "home" => frontmatter.home = Some(true),
                 "draft" => frontmatter.draft = Some(true),
                 "unlisted" => frontmatter.unlisted = Some(true),
                 "breadcrumb" => frontmatter.breadcrumb = Some(true),
@@ -1024,6 +1026,18 @@ mod tests {
     fn parses_home_marker() {
         let fm: FrontMatter = serde_yaml::from_str("home: true\n").expect("parse");
         assert_eq!(fm.home, Some(true));
+    }
+
+    #[test]
+    fn parses_home_marker_simplified() {
+        // Simplified frontmatter (no leading `---`, terminated by a `---` line).
+        // Both the `home: true` key:value form and the bare `home` flag set it.
+        let (fm_kv, _) = parse_simplified_frontmatter("home: true\n---\nbody\n");
+        assert_eq!(fm_kv.home, Some(true));
+        let (fm_flag, _) = parse_simplified_frontmatter("home\n---\nbody\n");
+        assert_eq!(fm_flag.home, Some(true));
+        let (fm_none, _) = parse_simplified_frontmatter("nav\n---\nbody\n");
+        assert_eq!(fm_none.home, None);
     }
 
     #[test]

@@ -73,10 +73,10 @@ pub struct HeadingInputs<'a> {
     /// detection still catches index.md / README.md / language-suffixed
     /// indexes).
     pub root_folder_name: Option<&'a str>,
-    /// `true` iff the file is promoted to its folder's home via
-    /// `translationKey: home` (issue #587). Pipeline-only input; editor
-    /// passes `false`.
-    pub is_translation_home: bool,
+    /// `true` iff the file is promoted to its folder's home via the
+    /// `home: true` frontmatter marker (issue #587). Pipeline-only input;
+    /// editor passes `false`.
+    pub is_home_override: bool,
     /// `true` iff the file is a layout-slot source (e.g. root `footer.md`)
     /// rather than an article. Slot files are embedded as fragments into a
     /// surrounding layout; the auto-injected `<h1 class="moss-article-title">`
@@ -191,7 +191,7 @@ pub fn compute(input: HeadingInputs<'_>) -> HeadingState {
     };
     let filename_lower = stem.to_lowercase();
     let is_index_file =
-        home::is_home_file(&filename_lower, parent_name) || input.is_translation_home;
+        home::is_home_file(&filename_lower, parent_name) || input.is_home_override;
 
     let empty_title = source == HeadingSource::Title && text.is_empty();
     let hero_at_top = body_starts_with_hero(input.body_markdown);
@@ -212,7 +212,7 @@ mod tests {
             frontmatter_title,
             body_markdown: "",
             root_folder_name: None,
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: false,
         }
     }
@@ -318,7 +318,7 @@ mod tests {
             frontmatter_title: None,
             body_markdown: "",
             root_folder_name: Some("My Site"),
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: false,
         });
         assert!(!s.visible, "root index still suppresses the auto H1");
@@ -367,7 +367,7 @@ mod tests {
             frontmatter_title: None,
             body_markdown: "",
             root_folder_name: Some("刘果"),
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: false,
         });
         assert!(!s.visible, "root-level self-named home file must hide H1");
@@ -383,7 +383,7 @@ mod tests {
             frontmatter_title: None,
             body_markdown: "",
             root_folder_name: None,
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: false,
         });
         assert!(!s.visible);
@@ -481,7 +481,7 @@ mod tests {
             frontmatter_title: None,
             body_markdown: ":::hero\nimage: x.jpg\n:::\n\nBody.",
             root_folder_name: None,
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: false,
         });
         assert!(!s.visible);
@@ -495,7 +495,7 @@ mod tests {
             frontmatter_title: Some("Custom"),
             body_markdown: ":::hero\n:::\n\nBody.",
             root_folder_name: None,
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: false,
         });
         assert!(!s.visible, "hero ownership trumps title presence");
@@ -509,7 +509,7 @@ mod tests {
             frontmatter_title: None,
             body_markdown: "Some intro paragraph.\n\n:::hero\n:::",
             root_folder_name: None,
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: false,
         });
         assert!(s.visible, "hero anywhere but at top does not own heading");
@@ -522,7 +522,7 @@ mod tests {
             frontmatter_title: None,
             body_markdown: "\n\n\n:::hero\n:::",
             root_folder_name: None,
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: false,
         });
         assert!(!s.visible, "leading blanks before :::hero still count as 'at top'");
@@ -537,7 +537,7 @@ mod tests {
             frontmatter_title: None,
             body_markdown: "",
             root_folder_name: None,
-            is_translation_home: true,
+            is_home_override: true,
             slot_only: false,
         });
         assert!(!s.visible);
@@ -557,7 +557,7 @@ mod tests {
             frontmatter_title: Some("Custom"),
             body_markdown: "[link](https://example.com)",
             root_folder_name: None,
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: true,
         });
         assert!(
@@ -575,7 +575,7 @@ mod tests {
             frontmatter_title: None,
             body_markdown: "Studio · 2026",
             root_folder_name: None,
-            is_translation_home: false,
+            is_home_override: false,
             slot_only: true,
         });
         assert!(!s.visible);
