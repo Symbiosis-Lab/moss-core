@@ -44,14 +44,28 @@ pub fn generate_slug(text: &str) -> String {
     if result.is_empty() { "untitled".to_string() } else { result }
 }
 
-/// Apply slug rules to every `/`-separated segment of a path.
+/// Normalize path separators to `/`.
 ///
-/// `News/Sub Section` → `news/sub-section`. Empty segments are skipped.
+/// moss treats `\` as a path separator everywhere so content paths behave
+/// identically regardless of the authoring OS. Windows `strip_prefix` yields
+/// backslash-separated relative paths; left un-normalized they collapse nested
+/// page/asset URLs (every segment after the first is lost) and defeat the file
+/// watcher's `/.moss/` gate (causing a runaway rebuild loop). Literal backslashes
+/// in content filenames are therefore not supported — they are read as separators.
+pub fn normalize_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
+/// Apply slug rules to every separator-delimited segment of a path.
+///
+/// `News/Sub Section` → `news/sub-section`. Backslash separators are normalized
+/// first (`News\Sub Section` → the same result). Empty segments are skipped.
 pub fn slugify_path_segments(path: &str) -> String {
     if path.is_empty() {
         return String::new();
     }
-    path.split('/')
+    normalize_separators(path)
+        .split('/')
         .filter(|s| !s.is_empty())
         .map(generate_slug)
         .collect::<Vec<_>>()
@@ -87,5 +101,27 @@ mod tests {
     fn path_segments_slugified() {
         assert_eq!(slugify_path_segments("News/Sub Section"), "news/sub-section");
         assert_eq!(slugify_path_segments(""), "");
+    }
+
+    #[test]
+    fn normalize_separators_converts_backslashes() {
+        // moss treats `\` as a path separator everywhere (Windows-authored
+        // content paths arrive backslash-separated). Forward slashes pass through.
+        assert_eq!(normalize_separators("News\\2025"), "News/2025");
+        assert_eq!(normalize_separators("a/b/c"), "a/b/c");
+        assert_eq!(normalize_separators("Sub Dir\\Winter-Song.mov"), "Sub Dir/Winter-Song.mov");
+        assert_eq!(normalize_separators(""), "");
+    }
+
+    #[test]
+    fn path_segments_handle_backslash_separators() {
+        // The Windows bug: a backslash-separated path must slug into the SAME
+        // nested `/`-form as the slash version, not collapse into one segment.
+        assert_eq!(slugify_path_segments("News\\Sub Section"), "news/sub-section");
+        assert_eq!(
+            slugify_path_segments("News\\Sub Section"),
+            slugify_path_segments("News/Sub Section"),
+        );
+        assert!(!slugify_path_segments("A\\B\\C").contains('\\'));
     }
 }

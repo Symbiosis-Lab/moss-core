@@ -11,11 +11,14 @@
 //! slugifies intermediate *directory* segments, never the leaf filename.
 
 use crate::resolve::fuzzy_path::relative_asset_path;
-use crate::slug::generate_slug;
+use crate::slug::{generate_slug, normalize_separators};
 use std::collections::HashMap;
 
 pub fn resolve_path_with_overrides(path: &str, overrides: &HashMap<String, String>) -> String {
-    let segments: Vec<&str> = path.split('/').collect();
+    // Normalize `\`→`/` so a Windows-authored source path slugs into the same
+    // nested output as its `/`-form (otherwise the whole path is one leaf segment).
+    let normalized = normalize_separators(path);
+    let segments: Vec<&str> = normalized.split('/').collect();
     let last_idx = segments.len().saturating_sub(1);
     let mut resolved: Vec<String> = Vec::new();
     let mut cumulative = String::new();
@@ -65,6 +68,23 @@ mod tests {
             "resources/cities-heat-map-app/index.html"
         );
         assert_eq!(resolve_path_with_overrides("My App/index.html", &o), "my-app/index.html");
+    }
+
+    #[test]
+    fn resolve_path_handles_backslash_separators() {
+        let o = HashMap::new();
+        // A backslash-separated source (Windows) must resolve to the same `/`-form
+        // output — intermediate dir slugged, leaf case preserved — not collapse
+        // into one segment (the asset-URL 404 bug).
+        assert_eq!(
+            resolve_path_with_overrides("Sub Dir\\Winter-Song.mov", &o),
+            "sub-dir/Winter-Song.mov"
+        );
+        assert_eq!(
+            resolve_path_with_overrides("Sub Dir\\Winter-Song.mov", &o),
+            resolve_path_with_overrides("Sub Dir/Winter-Song.mov", &o),
+        );
+        assert!(!resolve_path_with_overrides("A\\B\\index.html", &o).contains('\\'));
     }
 
     #[test]
