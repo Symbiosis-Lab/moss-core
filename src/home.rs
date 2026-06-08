@@ -192,6 +192,42 @@ pub fn detect_home_file_in_folder<'a>(
     doc_files.first().map(|f| **f)
 }
 
+/// Marker-aware variant of [`detect_home_file_in_folder`].
+///
+/// A file whose frontmatter carries the `home: true` marker wins over every
+/// filename-based rule, mirroring the renderer's *marker-based* election order
+/// (marker › index › self-named › fallback). This keeps plugin-facing
+/// detection in agreement with the built site even across folder renames: a
+/// marked file stays the home when its name no longer matches the folder.
+///
+/// Note: this does NOT replicate the renderer's translation-inheritance
+/// promotion (a marker-less translation of a marked home inheriting home-ness);
+/// only explicit `home: true` markers are honored here.
+///
+/// `marked` holds the basenames (matched case-insensitively) in this folder
+/// whose frontmatter set `home: true`. When several are marked the
+/// alphabetically-first wins (deterministic; the build separately warns on
+/// multi-home collisions). With no marked files this is identical to
+/// [`detect_home_file_in_folder`].
+pub fn detect_home_file_in_folder_marked<'a>(
+    filenames: &[&'a str],
+    folder_name: &str,
+    marked: &[&str],
+) -> Option<&'a str> {
+    if !marked.is_empty() {
+        let mut hits: Vec<&'a str> = filenames
+            .iter()
+            .copied()
+            .filter(|f| marked.iter().any(|m| m.eq_ignore_ascii_case(f)))
+            .collect();
+        hits.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        if let Some(&f) = hits.first() {
+            return Some(f);
+        }
+    }
+    detect_home_file_in_folder(filenames, folder_name)
+}
+
 /// Resolve the site name from the home page, structurally.
 ///
 /// This is the single decision that both the static `<title>` path and the
@@ -401,6 +437,50 @@ mod tests {
         assert_eq!(
             detect_home_file_in_folder(&files, "recipes"),
             Some("recipes.md")
+        );
+    }
+
+    // --- detect_home_file_in_folder_marked (home: true marker) ---
+
+    #[test]
+    fn test_marker_beats_index() {
+        // marker › index › self-named: a `home: true` file wins over index.md.
+        assert_eq!(
+            detect_home_file_in_folder_marked(
+                &["index.md", "home.md", "a.md"],
+                "anyfolder",
+                &["home.md"],
+            ),
+            Some("home.md")
+        );
+    }
+
+    #[test]
+    fn test_marker_survives_folder_rename() {
+        // Folder renamed to "newname": "oldname.md" is no longer self-named, but
+        // its `home: true` marker keeps it the home (the rename robustness case).
+        assert_eq!(
+            detect_home_file_in_folder_marked(&["oldname.md", "b.md"], "newname", &["oldname.md"]),
+            Some("oldname.md")
+        );
+    }
+
+    #[test]
+    fn test_no_marker_matches_filename_detection() {
+        // Empty marker set → identical to the filename-only detector.
+        let files = ["index.md", "z.md"];
+        assert_eq!(
+            detect_home_file_in_folder_marked(&files, "f", &[]),
+            detect_home_file_in_folder(&files, "f"),
+        );
+    }
+
+    #[test]
+    fn test_multiple_markers_pick_alphabetically_first() {
+        // Deterministic when several files are marked (build warns separately).
+        assert_eq!(
+            detect_home_file_in_folder_marked(&["b.md", "a.md"], "f", &["b.md", "a.md"]),
+            Some("a.md")
         );
     }
 
