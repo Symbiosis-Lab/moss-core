@@ -73,7 +73,17 @@ pub fn resolve_folder_sort<D: SortableDoc>(
 
     let (axis, explicit_order) = match folder.declared_sort() {
         Some(SortField::Axis(a)) => (*a, None),
-        Some(SortField::List(items)) => (infer_axis(&article_children), Some(items.clone())),
+        Some(SortField::List(items)) => {
+            // Entries may be written as Obsidian `[[Wikilinks]]`, quoted refs, or
+            // paths (`travel/foo.md`). Normalize each to the bare filename stem so
+            // it matches `clean_stem()` at sort time — otherwise the explicit
+            // order is silently ignored and children fall back to the axis sort.
+            let stems = items
+                .iter()
+                .map(|s| crate::frontmatter_typed::frontmatter_ref_to_stem(s))
+                .collect();
+            (infer_axis(&article_children), Some(stems))
+        }
         None => (infer_axis(&article_children), None),
     };
 
@@ -174,6 +184,30 @@ mod inference_tests {
         assert!(r.series_default, "explicit list-form sort implies series chrome on");
         assert_eq!(r.explicit_order.as_ref().unwrap().len(), 2);
         assert_eq!(r.axis, SortAxis::Title, "tail axis inferred from undated children");
+    }
+
+    #[test]
+    fn explicit_list_refs_normalized_to_stems() {
+        // Entries written as `[[Wikilinks]]`, quoted paths, or bare names must
+        // all collapse to the filename stem in `explicit_order`, so they match
+        // `clean_stem()` when `sort_by_resolved` partitions listed children.
+        let f = folder(
+            "blog/index.html",
+            Some(SortField::List(vec![
+                "[[gamma]]".into(),
+                "posts/alpha.md".into(),
+                "beta".into(),
+            ])),
+        );
+        let a = art("alpha", None, None);
+        let b = art("beta", None, None);
+        let g = art("gamma", None, None);
+        let r = resolve_folder_sort(&f, &[&a, &b, &g]);
+        assert_eq!(
+            r.explicit_order.as_deref(),
+            Some(["gamma".to_string(), "alpha".to_string(), "beta".to_string()].as_slice()),
+            "wikilink/path/bare refs must all normalize to bare stems"
+        );
     }
 
     #[test]
@@ -366,6 +400,39 @@ mod sort_dispatch_tests {
         let sorted = sort_by_resolved(&[&a, &b, &c], &r);
         assert_eq!(sorted[0].clean_stem(), "apple");
         assert_eq!(sorted[2].clean_stem(), "zebra");
+    }
+
+    #[test]
+    fn explicit_wikilink_order_normalized_and_beats_date_axis() {
+        // Folder declares an explicit order using `[[Wikilinks]]`; every child is
+        // dated, so the axis infers Date. The bracketed refs must normalize to
+        // stems, match the children, and the explicit order must win over
+        // date-descending. Regression guard for the two-part collection-order fix.
+        let f = TestDocWithLabel {
+            base: folder(
+                "blog/index.html",
+                Some(SortField::List(vec![
+                    "[[gamma]]".into(),
+                    "[[alpha]]".into(),
+                    "[[beta]]".into(),
+                ])),
+            ),
+            label_v: "Blog".into(),
+        };
+        let alpha = doc_with_label("alpha", Some("2025-01-01"), None, "Alpha");
+        let beta = doc_with_label("beta", Some("2025-03-01"), None, "Beta");
+        let gamma = doc_with_label("gamma", Some("2025-02-01"), None, "Gamma");
+
+        let r = resolve_folder_sort(&f, &[&alpha, &beta, &gamma]);
+        assert_eq!(r.axis, SortAxis::Date, "all children dated => Date axis inferred");
+
+        let sorted = sort_by_resolved(&[&alpha, &beta, &gamma], &r);
+        let order: Vec<&str> = sorted.iter().map(|d| d.clean_stem()).collect();
+        assert_eq!(
+            order,
+            vec!["gamma", "alpha", "beta"],
+            "explicit [[wikilink]] order must beat date-desc (beta, gamma, alpha) after stem normalization"
+        );
     }
 
     #[test]
