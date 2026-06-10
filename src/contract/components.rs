@@ -1201,7 +1201,32 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         class: "moss-subscribe-form",
         kind: "instance",
         parent: "moss-subscribe",
-        data_attrs: &[],
+        data_attrs: &[
+            DataAttr {
+                name: "data-position",
+                values: &["footer", "inline"],
+                default: "footer",
+                description: "Placement variant. `footer` for the auto-injected footer form, `inline` for the `:::subscribe` shortcode. Drives the CSS layout in email.css.",
+            },
+            DataAttr {
+                name: "data-moss-hosted",
+                values: &["true"],
+                default: "true",
+                description: "Marks moss-hosted (seta) forms hydrated by subscribe.ts. Absent on 3rd-party provider forms.",
+            },
+            DataAttr {
+                name: "data-state",
+                values: &["idle", "loading", "success", "error"],
+                default: "idle",
+                description: "Runtime submit state machine, driven by subscribe.ts. Emitted as `idle`; theme authors target `.moss-subscribe-form[data-state=...]`.",
+            },
+            DataAttr {
+                name: "data-moss-pending-site",
+                values: &["true"],
+                default: "true",
+                description: "Pre-first-publish pending wiring (`action=\"#\"`, no site_id yet). Hidden on published pages (body without `data-moss-preview`) via the email.css defense rule; detected by deploy's email wiring guard.",
+            },
+        ],
         example_html: r#"<form class="moss-subscribe-form">...</form>"#,
         example_markdown: "",
         status: Status::Emerging,
