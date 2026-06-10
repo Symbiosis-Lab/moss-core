@@ -274,16 +274,6 @@ pub struct FrontMatter {
     /// time in the build pipeline, so authors get a deferred warning rather
     /// than a hard parse error.
     pub slot: Option<String>,
-    /// Override for the email subject. When None, send uses title.
-    /// When the modal's edit equals title, this field is cleared (writer
-    /// can revert to "no override" by typing the title back in).
-    #[serde(default)]
-    pub email_subject: Option<String>,
-    /// Override for the email preheader (the inbox-preview text).
-    /// When None, send uses description. When the modal's edit equals
-    /// description, this field is cleared.
-    #[serde(default)]
-    pub email_preview: Option<String>,
 }
 
 impl FrontMatter {
@@ -732,8 +722,6 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                         frontmatter.slot = Some(value.to_string());
                     }
                 }
-                "email_subject" => frontmatter.email_subject = Some(value.to_string()),
-                "email_preview" => frontmatter.email_preview = Some(value.to_string()),
                 _ => {} // Unknown key, ignore
             }
         } else {

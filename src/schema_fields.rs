@@ -568,30 +568,6 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
 
-    // --- Email ---
-    BuiltinField {
-        name: "email_subject",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 95,
-        description: "Override for the email subject line. When absent, the send modal uses the page title. Cleared automatically when the modal's edit reverts to the title.",
-        label: Some("Email Subject"),
-        label_key: "chip.email_subject.label",
-        group: "Email",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "email_preview",
-        field_type: FieldType::String,
-        widget: Widget::TextArea,
-        priority: 95,
-        description: "Override for the email inbox preview (preheader). When absent, the send modal uses the page description. Cleared automatically when the modal's edit reverts to the description.",
-        label: Some("Email Preview"),
-        label_key: "chip.email_preview.label",
-        group: "Email",
-        ..FIELD_DEFAULTS
-    },
-
     // --- Skip schema (internal / site-level) ---
     BuiltinField {
         name: "analytics",
