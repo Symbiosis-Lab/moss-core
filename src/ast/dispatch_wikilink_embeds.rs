@@ -583,4 +583,87 @@ mod tests {
             "dispatch should descend into Hero overlay and remove the wikilink image"
         );
     }
+
+    // --- parse → dispatch composition (video sizing truth table) ---------
+    //
+    // Each stage was unit-tested in isolation while the COMPOSITION broke:
+    // the parser promoted `![[clip.mov|77%]]` to Block::Figure (width
+    // bypasses the empty-alt guard) and this visitor only dispatches
+    // Paragraph-shaped embeds, so the video synthesizer never ran. These
+    // tests pin the full parse→dispatch pipe for every video sizing shape.
+
+    fn parse_and_dispatch(md: &str, files: &[&str]) -> Vec<Block> {
+        let mut doc = crate::ast::parse(md);
+        let mut b = crate::content_graph::ContentGraphBuilder::new();
+        for p in files {
+            let slug = std::path::Path::new(p)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(p);
+            b.add_file(p, slug);
+        }
+        let graph = b.build();
+        let snap = empty_snapshot();
+        let reg = empty_registry();
+        let _ = dispatch_wikilink_embeds(&mut doc, &snap, &graph, &reg, "post.md");
+        doc.blocks
+    }
+
+    /// Extract the raw HTML of the single Block::Other the dispatcher
+    /// emitted, panicking with the actual shape otherwise.
+    fn dispatched_html(blocks: &[Block]) -> &str {
+        match blocks {
+            [Block::Other(html)] => html,
+            other => panic!("expected one dispatched Block::Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn video_plain_dispatches_to_video_synth() {
+        let blocks = parse_and_dispatch("![[clip.mov]]\n", &["clip.mov"]);
+        let html = dispatched_html(&blocks);
+        assert!(html.contains("<video"), "got: {html}");
+        assert!(html.contains("clip.mp4"), "mov→mp4 swap missing: {html}");
+    }
+
+    #[test]
+    fn video_percent_keeps_video_and_width() {
+        let blocks = parse_and_dispatch("![[clip.mov|77%]]\n", &["clip.mov"]);
+        let html = dispatched_html(&blocks);
+        assert!(html.contains("<video"), "got: {html}");
+        assert!(
+            html.contains(r#"width="77%""#),
+            "percent width dropped: {html}"
+        );
+        assert!(
+            !html.contains("<img"),
+            "video must not render as <img>: {html}"
+        );
+    }
+
+    #[test]
+    fn video_box_sizing_keeps_video_and_dims() {
+        let blocks = parse_and_dispatch("![[clip.mov|640x360]]\n", &["clip.mov"]);
+        let html = dispatched_html(&blocks);
+        assert!(html.contains("<video"), "got: {html}");
+        assert!(html.contains(r#"width="640px""#), "got: {html}");
+        assert!(html.contains(r#"height="360px""#), "got: {html}");
+        assert!(
+            !html.contains("figcaption"),
+            "sizing alias must not become a caption: {html}"
+        );
+    }
+
+    #[test]
+    fn image_percent_still_promotes_to_figure() {
+        // Images keep the parse-time Figure promotion (dispatch skips the
+        // already-promoted block; resolve_urls owns its src downstream).
+        let blocks = parse_and_dispatch("![[pic.jpg|55%]]\n", &["pic.jpg"]);
+        match &blocks[..] {
+            [Block::Figure { width, .. }] => {
+                assert_eq!(width.as_deref(), Some("55%"));
+            }
+            other => panic!("expected Figure for image percent, got {other:?}"),
+        }
+    }
 }

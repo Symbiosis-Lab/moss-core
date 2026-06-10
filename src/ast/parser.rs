@@ -702,6 +702,36 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
         return Err(inlines);
     }
 
+    // Non-image wikilink embeds never promote. pulldown-cmark parses every
+    // `![[…]]` as an Image event, but Figure is an image concept: a video /
+    // pdf / audio wikilink promoted here bypasses `dispatch_wikilink_embeds`
+    // (which only dispatches Paragraph-shaped lone embeds), so its typed
+    // synthesizer never runs and the page ships `<figure><img src="clip.mov">`
+    // — a broken image. The gate keys off the same classifier the dispatcher
+    // uses (`resolve::ext_kind`), so parse-time promotion and dispatch-time
+    // synthesis cannot disagree about who owns the block. Extension-less
+    // wikilinks (`![[draft|55%]]`) also stay Paragraph: only the with-graph
+    // dispatcher can resolve their kind, and committing them to an image
+    // Figure here would be a guess.
+    if let Some(Inline::Image {
+        src,
+        is_wikilink: true,
+        ..
+    }) = inlines.iter().find(|i| matches!(i, Inline::Image { .. }))
+    {
+        let dest = match src {
+            Url::Unresolved(s) => s.as_str(),
+            Url::Resolved(r) => r.href.as_str(),
+        };
+        let ext = crate::path_ext::path_extension_lower(dest);
+        if !matches!(
+            crate::resolve::ext_kind::reference_kind_for_ext(&ext),
+            crate::resolve::ext_kind::ExtKind::Image
+        ) {
+            return Err(inlines);
+        }
+    }
+
     // Probe the width + remaining alt on a BORROW first, so the empty-alt
     // guard can still return `Err(inlines)` with the original whitespace /
     // line-break siblings intact (production `<p><img>…</p>` parity).
@@ -3002,5 +3032,80 @@ mod tests {
             }
             other => panic!("expected Figure, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Non-image wikilink embeds must NOT promote to Figure
+    //
+    // Figure is an image concept. pulldown-cmark parses every `![[…]]`
+    // as an Image event, so without a kind gate a video pothole
+    // (`![[clip.mov|77%]]`) was hijacked into Block::Figure — and
+    // `dispatch_wikilink_embeds` only dispatches Paragraph-shaped lone
+    // embeds, so the video synthesizer never ran: the page shipped
+    // `<figure><img src="clip.mov">` (broken image). The gate keys off
+    // the same classifier the dispatcher uses (`resolve::ext_kind`), so
+    // parse-time promotion and dispatch-time synthesis can never
+    // disagree about who owns the block.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn wikilink_video_percent_stays_paragraph() {
+        let block = first_block("![[clip.mov|77%]]\n");
+        match block {
+            Block::Paragraph(inlines) => assert!(
+                matches!(
+                    inlines.as_slice(),
+                    [Inline::Image {
+                        is_wikilink: true,
+                        ..
+                    }]
+                ),
+                "paragraph must hold the lone wikilink image, got {inlines:?}"
+            ),
+            other => panic!("video embed must stay Paragraph for dispatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wikilink_video_box_sizing_stays_paragraph() {
+        // `|640x360` is the documented video sizing alias — it must reach
+        // the dispatcher, not become a figcaption.
+        let block = first_block("![[clip.mov|640x360]]\n");
+        assert!(
+            matches!(block, Block::Paragraph(_)),
+            "expected Paragraph, got {block:?}"
+        );
+    }
+
+    #[test]
+    fn wikilink_pdf_alias_stays_paragraph() {
+        let block = first_block("![[report.pdf|80%]]\n");
+        assert!(
+            matches!(block, Block::Paragraph(_)),
+            "expected Paragraph, got {block:?}"
+        );
+    }
+
+    #[test]
+    fn wikilink_extensionless_stays_paragraph() {
+        // `![[draft|55%]]` carries no extension intent — only the
+        // with-graph dispatcher can resolve its kind, so the parser must
+        // not commit it to an image Figure.
+        let block = first_block("![[draft|55%]]\n");
+        assert!(
+            matches!(block, Block::Paragraph(_)),
+            "expected Paragraph, got {block:?}"
+        );
+    }
+
+    #[test]
+    fn wikilink_uppercase_image_ext_still_promotes() {
+        // Extension matching is case-insensitive (vault files like
+        // `photo.JPG` are common iPhone/camera exports).
+        let block = first_block("![[photo.JPG|55%]]\n");
+        assert!(
+            matches!(block, Block::Figure { .. }),
+            "expected Figure, got {block:?}"
+        );
     }
 }
