@@ -170,6 +170,8 @@ impl AlignSide {
 /// passthrough fields flow through to the emitted HTML unmodified (classes
 /// joined as a space-separated list, extras as additional attributes in
 /// deterministic alphabetical order).
+/// `color` is also moss-vocabulary — parsed into [`MediaAttrs::color`] for
+/// the build's cover-color ladder, never emitted as class or inline style.
 ///
 /// See `docs/architecture/unified-image-emission.md` Decision #10.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -298,10 +300,14 @@ pub fn split_pipe(raw: &str) -> (&str, &str) {
     raw.split_once('|').unwrap_or((raw, ""))
 }
 
-/// Parse space-separated display-attribute keywords from the portion after `|`.
+/// Parse space-separated display-attribute keywords (and `key=value` pairs)
+/// from the portion after `|`.
 ///
-/// Recognized keywords map to [`Fit`] and [`Position`] variants.
-/// Unknown tokens are silently ignored (callers may add diagnostic reporting).
+/// Recognized keywords map to [`Fit`], [`Position`], and [`AlignSide`]
+/// variants. Recognized `key=value` pairs: `color=<css-color>` (stored in
+/// [`MediaAttrs::color`]; consumed by the build's cover-color ladder).
+/// Empty-value tokens (`color=`) are silently ignored. Unknown tokens are
+/// silently ignored (callers may add diagnostic reporting).
 ///
 /// Two-word position keywords like `"top left"` are handled: if a bare
 /// directional keyword (`top`, `bottom`) is followed by another (`left`,
@@ -1771,5 +1777,12 @@ mod tests {
         let attrs = parse_media_attrs("color=black");
         assert_eq!(attrs.to_inline_style(), None);
         assert_eq!(attrs.class_attr(), None);
+    }
+
+    #[test]
+    fn repeated_color_attr_last_wins() {
+        // Consistent with fit/position: later tokens overwrite earlier ones.
+        let attrs = parse_media_attrs("color=red color=blue");
+        assert_eq!(attrs.color.as_deref(), Some("blue"));
     }
 }
