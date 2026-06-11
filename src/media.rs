@@ -177,6 +177,13 @@ pub struct MediaAttrs {
     pub fit: Option<Fit>,
     pub position: Option<Position>,
     pub align: Option<AlignSide>,
+    /// Cover band color override from a `color=<css-color>` pipe attr
+    /// (`cover: page.html|color=black`). Consumed by the build's
+    /// cover-color ladder (`resolve_card_color`); never emitted as inline
+    /// style or class. The value must be space-free — pipe attrs are
+    /// whitespace-tokenized — so `#0a0a0a`, `black`, and `rgb(10,10,10)`
+    /// work; `rgb(10, 10, 10)` does not.
+    pub color: Option<String>,
     /// Author-provided class names that aren't in moss's recognized
     /// vocabulary (`.align-left` / `.alignleft` get folded into `align`
     /// upstream; everything else lands here). Joined with spaces by
@@ -195,6 +202,7 @@ impl MediaAttrs {
         self.fit.is_none()
             && self.position.is_none()
             && self.align.is_none()
+            && self.color.is_none()
             && self.class_names.is_empty()
             && self.extra_attrs.is_empty()
     }
@@ -302,6 +310,7 @@ pub fn parse_media_attrs(raw: &str) -> MediaAttrs {
     let mut fit: Option<Fit> = None;
     let mut position: Option<Position> = None;
     let mut align: Option<AlignSide> = None;
+    let mut color: Option<String> = None;
 
     let tokens: Vec<&str> = raw.split_whitespace().collect();
     let mut i = 0;
@@ -340,6 +349,15 @@ pub fn parse_media_attrs(raw: &str) -> MediaAttrs {
             continue;
         }
 
+        // key=value: cover color override.
+        if let Some(value) = token.strip_prefix("color=") {
+            if !value.is_empty() {
+                color = Some(value.to_string());
+            }
+            i += 1;
+            continue;
+        }
+
         // Unknown token — skip.
         i += 1;
     }
@@ -348,6 +366,7 @@ pub fn parse_media_attrs(raw: &str) -> MediaAttrs {
         fit,
         position,
         align,
+        color,
         ..Default::default()
     }
 }
@@ -909,6 +928,7 @@ mod tests {
             fit: None,
             position: None,
             align: None,
+            color: None,
             class_names: Vec::new(),
             extra_attrs: BTreeMap::new(),
         };
@@ -918,6 +938,7 @@ mod tests {
             fit: Some(Fit::Cover),
             position: None,
             align: None,
+            color: None,
             class_names: Vec::new(),
             extra_attrs: BTreeMap::new(),
         };
@@ -927,6 +948,7 @@ mod tests {
             fit: None,
             position: Some(Position::Center),
             align: None,
+            color: None,
             class_names: Vec::new(),
             extra_attrs: BTreeMap::new(),
         };
@@ -939,6 +961,7 @@ mod tests {
             fit: None,
             position: None,
             align: None,
+            color: None,
             class_names: Vec::new(),
             extra_attrs: BTreeMap::new(),
         };
@@ -951,6 +974,7 @@ mod tests {
             fit: Some(Fit::Contain),
             position: None,
             align: None,
+            color: None,
             class_names: Vec::new(),
             extra_attrs: BTreeMap::new(),
         };
@@ -963,6 +987,7 @@ mod tests {
             fit: None,
             position: Some(Position::Left),
             align: None,
+            color: None,
             class_names: Vec::new(),
             extra_attrs: BTreeMap::new(),
         };
@@ -978,6 +1003,7 @@ mod tests {
             fit: Some(Fit::Cover),
             position: Some(Position::TopLeft),
             align: None,
+            color: None,
             class_names: Vec::new(),
             extra_attrs: BTreeMap::new(),
         };
@@ -1451,6 +1477,7 @@ mod tests {
             fit: None,
             position: None,
             align: None,
+            color: None,
             class_names: vec!["theme-rounded".to_string(), "shadow-lg".to_string()],
             extra_attrs: BTreeMap::new(),
         };
@@ -1470,6 +1497,7 @@ mod tests {
             fit: None,
             position: None,
             align: Some(AlignSide::Left),
+            color: None,
             class_names: vec!["theme-rounded".to_string()],
             extra_attrs: BTreeMap::new(),
         };
@@ -1490,6 +1518,7 @@ mod tests {
             fit: None,
             position: None,
             align: None,
+            color: None,
             class_names: vec![],
             extra_attrs: extras,
         };
@@ -1703,5 +1732,44 @@ mod tests {
     fn set_image_width_passthrough_non_image() {
         // Not an image syntax → returned unchanged (defensive).
         assert_eq!(set_image_width("plain text", Some("55%")), "plain text");
+    }
+
+    // -- color= pipe attr ---------------------------------------------------
+
+    #[test]
+    fn parse_color_attr() {
+        let attrs = parse_media_attrs("color=black");
+        assert_eq!(attrs.color.as_deref(), Some("black"));
+
+        let attrs = parse_media_attrs("color=#0a0a0a");
+        assert_eq!(attrs.color.as_deref(), Some("#0a0a0a"));
+    }
+
+    #[test]
+    fn parse_color_attr_alongside_keywords() {
+        let attrs = parse_media_attrs("contain color=rgb(10,10,10) top left");
+        assert_eq!(attrs.color.as_deref(), Some("rgb(10,10,10)"));
+        assert!(attrs.fit.is_some(), "fit keyword must still parse");
+        assert!(attrs.position.is_some(), "position keywords must still parse");
+    }
+
+    #[test]
+    fn parse_empty_color_attr_is_none() {
+        let attrs = parse_media_attrs("color=");
+        assert_eq!(attrs.color, None);
+        assert!(attrs.is_empty());
+    }
+
+    #[test]
+    fn color_attr_alone_is_not_empty() {
+        let attrs = parse_media_attrs("color=black");
+        assert!(!attrs.is_empty());
+    }
+
+    #[test]
+    fn color_attr_does_not_leak_into_style_or_class() {
+        let attrs = parse_media_attrs("color=black");
+        assert_eq!(attrs.to_inline_style(), None);
+        assert_eq!(attrs.class_attr(), None);
     }
 }
