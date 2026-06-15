@@ -598,7 +598,7 @@ fn pdf_extra_params(embed: &ParsedEmbed<'_>, params: &mut TitleParams) {
 // AudioRenderer
 // ---------------------------------------------------------------------------
 
-const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "opus"];
+const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "opus", "aac"];
 
 /// Renderer for audio embeds: `![[song.mp3]]` → `<audio controls>`.
 ///
@@ -1610,5 +1610,11 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn avif_in_figure_images_and_aac_in_audio() {
+        assert!(IMAGE_EXTENSIONS.contains(&"avif"));
+        assert!(AUDIO_EXTENSIONS.contains(&"aac"));
     }
 }
