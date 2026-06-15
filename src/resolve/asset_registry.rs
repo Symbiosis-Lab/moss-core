@@ -107,6 +107,15 @@ mod tests {
     }
 
     #[test]
+    fn extensions_are_unique() {
+        let exts: Vec<&str> = ASSET_REGISTRY.iter().map(|a| a.ext).collect();
+        let mut sorted = exts.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), exts.len(), "duplicate ext in ASSET_REGISTRY");
+    }
+
+    #[test]
     fn bmp_ico_tiff_are_viewer_only_images() {
         // These were in the old IMAGE_EXTS set (→ 'image' category) but are NOT browser-embeddable.
         // They must be in the registry as Image kind so detectFileCategory still returns 'image',

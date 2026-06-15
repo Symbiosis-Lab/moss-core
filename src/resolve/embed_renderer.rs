@@ -1269,7 +1269,7 @@ mod tests {
     fn test_audio_renderer_extensions() {
         let r = AudioRenderer;
         let exts: Vec<&&str> = r.extensions().iter().collect();
-        for e in &["mp3", "wav", "ogg", "flac", "m4a", "opus"] {
+        for e in &["mp3", "wav", "ogg", "flac", "m4a", "opus", "aac"] {
             assert!(exts.iter().any(|&&x| x == *e), "missing: {}", e);
         }
     }
@@ -1293,7 +1293,7 @@ mod tests {
         // Phase 3 PR4: the `ext=` param is dropped at the markdown
         // boundary. Per-extension MIME routing now happens inside the
         // Stage 2 synthesizer via the wikilink dispatcher's typed path.
-        for ext in ["mp3", "wav", "ogg", "flac", "m4a", "opus"] {
+        for ext in ["mp3", "wav", "ogg", "flac", "m4a", "opus", "aac"] {
             let path = format!("a.{}", ext);
             let out = audio_md(&ParsedEmbed {
                 resolved_path: &path,
