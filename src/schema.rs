@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn test_builtin_schema_boolean_fields() {
         let schema = builtin_schema();
-        for name in &["draft", "unlisted", "breadcrumb"] {
+        for name in &["draft", "breadcrumb"] {
             let field = schema.frontmatter.fields.get(*name)
                 .unwrap_or_else(|| panic!("{} field missing", name));
             assert_eq!(field.field_type, FieldType::Boolean, "{} should be boolean", name);

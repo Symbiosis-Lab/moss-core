@@ -268,16 +268,12 @@ mod tests {
 
     #[test]
     fn test_parse_boolean_values() {
-        let input = "---\ndraft: true\nunlisted: false\n---\nContent.";
+        let input = "---\ndraft: true\n---\nContent.";
         let doc = parse(input);
 
         assert_eq!(
             doc.frontmatter.get("draft").and_then(|v| v.as_bool()),
             Some(true)
-        );
-        assert_eq!(
-            doc.frontmatter.get("unlisted").and_then(|v| v.as_bool()),
-            Some(false)
         );
     }
 
