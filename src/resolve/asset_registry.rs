@@ -31,6 +31,10 @@ pub const ASSET_REGISTRY: &[AssetInfo] = &[
     AssetInfo { ext:"svg",  kind:ExtKind::Image, mime:"image/svg+xml", can_embed:true, accept_on_drop:true, embed_template:EMBED, label:"Image", icon_key:"image" },
     AssetInfo { ext:"webp", kind:ExtKind::Image, mime:"image/webp",    can_embed:true, accept_on_drop:true, embed_template:EMBED, label:"Image", icon_key:"image" },
     AssetInfo { ext:"avif", kind:ExtKind::Image, mime:"image/avif",    can_embed:true, accept_on_drop:true, embed_template:EMBED, label:"Image", icon_key:"image" },
+    // Image — viewer-only (NOT browser-embeddable; can_embed:false so no <img>/<picture> is emitted)
+    AssetInfo { ext:"bmp",  kind:ExtKind::Image, mime:"image/bmp",     can_embed:false, accept_on_drop:false, embed_template:EMBED, label:"Image (not web-embeddable)", icon_key:"image" },
+    AssetInfo { ext:"ico",  kind:ExtKind::Image, mime:"image/x-icon",  can_embed:false, accept_on_drop:false, embed_template:EMBED, label:"Image (not web-embeddable)", icon_key:"image" },
+    AssetInfo { ext:"tiff", kind:ExtKind::Image, mime:"image/tiff",    can_embed:false, accept_on_drop:false, embed_template:EMBED, label:"Image (not web-embeddable)", icon_key:"image" },
     // Video — web-playable embed
     AssetInfo { ext:"mp4",  kind:ExtKind::Video, mime:"video/mp4",  can_embed:true,  accept_on_drop:true,  embed_template:EMBED, label:"Video", icon_key:"video" },
     AssetInfo { ext:"webm", kind:ExtKind::Video, mime:"video/webm", can_embed:true,  accept_on_drop:true,  embed_template:EMBED, label:"Video", icon_key:"video" },
@@ -99,6 +103,19 @@ mod tests {
                     "mp4","webm","mov","m4v","mp3","wav","ogg","flac","m4a","opus","aac",
                     "ipynb","html","htm","pdf","glb","gltf","csv","tsv","md","markdown"] {
             assert!(asset_info(ext).is_some(), "{ext} missing from registry");
+        }
+    }
+
+    #[test]
+    fn bmp_ico_tiff_are_viewer_only_images() {
+        // These were in the old IMAGE_EXTS set (→ 'image' category) but are NOT browser-embeddable.
+        // They must be in the registry as Image kind so detectFileCategory still returns 'image',
+        // but with can_embed:false + accept_on_drop:false so no <img>/<picture> is emitted in build.
+        for ext in ["bmp", "ico", "tiff"] {
+            let a = asset_info(ext).unwrap_or_else(|| panic!("{ext} missing from registry"));
+            assert_eq!(a.kind, ExtKind::Image, "{ext} should be Image kind");
+            assert!(!a.can_embed, "{ext} is not browser-embeddable");
+            assert!(!a.accept_on_drop, "{ext} should not be inserted as embed on drop");
         }
     }
 }
