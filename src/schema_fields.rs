@@ -453,16 +453,6 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "unlisted",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
-        priority: 80,
-        description: "Exclude from listings but still accessible",
-        label_key: "chip.unlisted.label",
-        group: "Navigation & Visibility",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
         name: "comments",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,

@@ -313,11 +313,12 @@ mod tests {
     #[test]
     fn test_builtin_schema_field_count() {
         let schema = builtin_schema();
-        // 35 non-skip fields: 32 prior baseline + `author`, `publisher`,
+        // 34 non-skip fields: 32 prior baseline + `author`, `publisher`,
         // `external_url` (added by moss-import / linkblog work, 2026-05).
         // (`email_subject`/`email_preview` were removed with the send-modal
         // redesign — the composer's editable fields superseded them.)
-        assert_eq!(schema.frontmatter.fields.len(), 35);
+        // (`unlisted` removed 2026-06 — redundant with `draft`.)
+        assert_eq!(schema.frontmatter.fields.len(), 34);
     }
 
     #[test]

@@ -188,8 +188,6 @@ pub struct FrontMatter {
     pub home: Option<bool>,
     /// Whether this is a draft (don't generate page)
     pub draft: Option<bool>,
-    /// Whether page is unlisted (generated but hidden from lists)
-    pub unlisted: Option<bool>,
     /// Page description for SEO and list previews
     pub description: Option<String>,
     /// Content tags for organization
@@ -709,7 +707,6 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                 "nav" => frontmatter.nav = Some(value == "true" || value.is_empty()),
                 "home" => frontmatter.home = Some(value == "true" || value.is_empty()),
                 "draft" => frontmatter.draft = Some(value == "true" || value.is_empty()),
-                "unlisted" => frontmatter.unlisted = Some(value == "true" || value.is_empty()),
                 "breadcrumb" => frontmatter.breadcrumb = Some(value == "true" || value.is_empty()),
                 "footer" => frontmatter.footer = Some(value == "true" || value.is_empty()),
                 "comments" => frontmatter.comments = Some(value == "true" || value.is_empty()),
@@ -730,7 +727,6 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                 "nav" => frontmatter.nav = Some(true),
                 "home" => frontmatter.home = Some(true),
                 "draft" => frontmatter.draft = Some(true),
-                "unlisted" => frontmatter.unlisted = Some(true),
                 "breadcrumb" => frontmatter.breadcrumb = Some(true),
                 "footer" => frontmatter.footer = Some(true),
                 "comments" => frontmatter.comments = Some(true),
