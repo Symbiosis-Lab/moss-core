@@ -1610,6 +1610,18 @@ mod tests {
                 );
             }
         }
+        // Reverse: every registry Video ext with can_embed:true must be in VIDEO_EXTENSIONS,
+        // so ![[clip.mp4]] routes to VideoRenderer (wikilink_dispatch.rs). Guards against
+        // registry additions that silently promise an embeddable video the renderer doesn't list.
+        for a in all_assets() {
+            if a.kind == ExtKind::Video && a.can_embed {
+                assert!(
+                    VIDEO_EXTENSIONS.contains(&a.ext),
+                    "registry video ext {} (can_embed) missing from VIDEO_EXTENSIONS",
+                    a.ext
+                );
+            }
+        }
     }
 
     #[test]
