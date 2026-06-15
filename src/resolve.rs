@@ -12,6 +12,7 @@ use crate::asset_snapshot::AssetSnapshot;
 use crate::content_graph::ContentGraph;
 
 pub mod asset_class;
+pub mod asset_registry;
 pub mod block_refs;
 pub mod embed_renderer;
 pub mod embeds;
