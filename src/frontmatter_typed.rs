@@ -186,7 +186,8 @@ pub struct FrontMatter {
     /// Explicit folder-home marker: this file is its folder's home page,
     /// regardless of filename. Written by moss on homes it creates; survives rename.
     pub home: Option<bool>,
-    /// Whether this is a draft (don't generate page)
+    /// Draft: rendered and published at its direct URL, but hidden from all
+    /// listings, feeds, sitemap, and navigation (and marked `noindex`).
     pub draft: Option<bool>,
     /// Page description for SEO and list previews
     pub description: Option<String>,

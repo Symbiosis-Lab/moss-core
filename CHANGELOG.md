@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Pending publish — cumulative since `0.1.0` (last released on main)._
 - Parse `color=` pipe attribute into `MediaAttrs` for cover-color override (repeated `color=` is last-wins).
+- **BREAKING:** Removed the `unlisted` frontmatter field. Use `draft` instead — a draft page now renders and is published at its direct URL but is hidden from all listings, feeds, sitemap, and navigation, and is marked `noindex`.
 - Plus the [0.1.1] changes below (`home` marker, unified `classify_reference`, reference resolution moved into moss-core).
 
 ## [0.1.1] - 2026-06-11
