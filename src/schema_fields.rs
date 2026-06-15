@@ -191,7 +191,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
         priority: 60,
-        description: "Mark as draft (excluded from build)",
+        description: "Hidden from all listings, feeds, and navigation — still published at its direct URL",
         label_key: "chip.draft.label",
         group: "Common",
         ..FIELD_DEFAULTS
