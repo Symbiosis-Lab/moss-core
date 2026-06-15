@@ -311,7 +311,7 @@ use super::fuzzy_path::relative_asset_path;
 use super::title_params::TitleParams;
 
 /// Image file extensions recognized by `ImageRenderer`.
-pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
+pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp", "avif"];
 
 /// Map an `AlignSide` to its canonical title-param keyword (`"left"` or
 /// `"right"`). Stage 2 reverses this via `AlignSide::from_keyword`-style
@@ -1588,7 +1588,8 @@ mod tests {
 
     #[test]
     fn renderer_and_figure_extensions_are_in_registry() {
-        use crate::resolve::asset_registry::asset_info; // same crate (moss-core) — NOT moss_core::
+        use crate::resolve::asset_registry::{asset_info, all_assets};
+        use crate::resolve::ext_kind::ExtKind;
         for r in registry() {
             for ext in r.extensions() {
                 assert!(asset_info(ext).is_some(), "renderer ext {ext} not in registry");
@@ -1596,6 +1597,18 @@ mod tests {
         }
         for ext in IMAGE_EXTENSIONS { // the figure-arm image list at embed_renderer.rs:314
             assert!(asset_info(ext).is_some(), "figure image ext {ext} not in registry");
+        }
+        // Reverse: every registry Image ext with can_embed:true must be in IMAGE_EXTENSIONS,
+        // so ![[photo.avif]] routes to Block::Figure (wikilink_dispatch.rs). Guards against
+        // registry additions that silently skip the figure arm.
+        for a in all_assets() {
+            if a.kind == ExtKind::Image && a.can_embed {
+                assert!(
+                    IMAGE_EXTENSIONS.contains(&a.ext),
+                    "registry image ext {} with can_embed:true is missing from IMAGE_EXTENSIONS",
+                    a.ext
+                );
+            }
         }
     }
 }
