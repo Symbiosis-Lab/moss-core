@@ -18,19 +18,11 @@ pub enum ExtKind {
 }
 
 /// Classify a lowercase extension (no leading dot). Unknown → `Other`.
+/// Derives from the asset registry SSOT so ext_kind and the registry never drift.
 pub fn reference_kind_for_ext(ext: &str) -> ExtKind {
-    match ext {
-        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" => ExtKind::Image,
-        "html" | "htm" => ExtKind::Iframe,
-        "pdf" => ExtKind::Pdf,
-        "mp4" | "webm" | "mov" | "m4v" => ExtKind::Video,
-        "mp3" | "wav" | "ogg" | "flac" | "m4a" | "opus" => ExtKind::Audio,
-        "glb" | "gltf" => ExtKind::Model,
-        "md" | "markdown" => ExtKind::Transclusion,
-        "ipynb" => ExtKind::Notebook,
-        "csv" | "tsv" => ExtKind::Table,
-        _ => ExtKind::Other,
-    }
+    crate::resolve::asset_registry::asset_info(ext)
+        .map(|a| a.kind)
+        .unwrap_or(ExtKind::Other)
 }
 
 #[cfg(test)]
@@ -49,5 +41,14 @@ mod tests {
         assert_eq!(reference_kind_for_ext("ipynb"), ExtKind::Notebook);
         assert_eq!(reference_kind_for_ext("csv"), ExtKind::Table);
         assert_eq!(reference_kind_for_ext("xyz"), ExtKind::Other);
+    }
+
+    #[test]
+    fn kind_matches_registry_for_all_known_exts() {
+        use crate::resolve::asset_registry::all_assets;
+        for a in all_assets() {
+            assert_eq!(reference_kind_for_ext(a.ext), a.kind, "kind mismatch for {}", a.ext);
+        }
+        assert_eq!(reference_kind_for_ext("avif"), ExtKind::Image); // was Other before
     }
 }

@@ -1585,4 +1585,17 @@ mod tests {
         let out = mv_md(&embed_with_width("model.glb", "page"));
         assert_eq!(out, "[model](model.glb)");
     }
+
+    #[test]
+    fn renderer_and_figure_extensions_are_in_registry() {
+        use crate::resolve::asset_registry::asset_info; // same crate (moss-core) — NOT moss_core::
+        for r in registry() {
+            for ext in r.extensions() {
+                assert!(asset_info(ext).is_some(), "renderer ext {ext} not in registry");
+            }
+        }
+        for ext in IMAGE_EXTENSIONS { // the figure-arm image list at embed_renderer.rs:314
+            assert!(asset_info(ext).is_some(), "figure image ext {ext} not in registry");
+        }
+    }
 }
