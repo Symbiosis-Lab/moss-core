@@ -25,18 +25,32 @@
 /// their behavior from this constant.
 pub const INDEX_STEMS: &[&str] = &["index", "readme", "_index", "main"];
 
-/// Known language suffixes for home file detection.
+/// Known language codes — the SINGLE list governing every "is this a language?"
+/// decision in moss: which top-level folder is a language tree
+/// ([`lang_tree_prefix`], used by the build's `has_language_trees` AND the email
+/// audience picker), which filename suffix is a language suffix
+/// ([`strip_lang_suffix`]), and which folder/file is a home page.
 ///
-/// This is a hardcoded list used only in moss-core (which has no access to
-/// the i18n module). It covers the languages moss supports plus common extras.
+/// This is moss's file-system-driven judge of a site's languages: a top-level
+/// folder named one of these codes IS that language. Extend this list (and only
+/// this list) to recognize a new language tree — there is no second allowlist.
 ///
-/// Bare `"zh"` is accepted as shorthand for Simplified Chinese (`zh-hans`);
-/// the normalization from `zh` → `zh-hans` happens in the i18n layer
-/// (`Language::from_code`), not here. This list only governs which suffixes
-/// are recognized as language suffixes at all.
+/// This is a hardcoded list used only in moss-core (which has no access to the
+/// i18n module). Bare `"zh"` is accepted as shorthand for Simplified Chinese
+/// (`zh-hans`); the normalization from `zh` → `zh-hans` happens in the i18n
+/// layer (`Language::from_code`), not here. This list only governs which codes
+/// are recognized as languages at all.
 const KNOWN_LANG_SUFFIXES: &[&str] = &[
-    "en", "zh", "zh-hans", "zh-hant", "zh-cn", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "ru",
-    "ar",
+    // ISO-639-1 two-letter codes (most common languages)
+    "en", "zh", "ja", "ko", "de", "fr", "es", "it", "pt", "ru", "ar", "hi", "tr", "pl", "nl", "sv",
+    "da", "fi", "no", "cs", "hu", "ro", "el", "vi", "th", "id", "he", "uk", "bg", "hr", "sr", "sk",
+    "sl", "et", "lv", "lt",
+    // Less common but real-use language codes (Welsh, Maori, Tibetan, Scots
+    // Gaelic, Basque, Catalan, Galician, Swahili) — keeps the long-tail
+    // surprise rate low without expanding to all of ISO-639.
+    "cy", "mi", "bo", "gd", "eu", "ca", "gl", "sw",
+    // Region/script-tagged variants seen in practice.
+    "zh-hans", "zh-hant", "zh-cn", "zh-tw", "pt-br", "en-us", "en-gb",
 ];
 
 /// If `path` is rooted under a known language-tree directory (e.g.
