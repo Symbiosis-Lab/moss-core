@@ -1,6 +1,21 @@
 //! Single source of truth for all file types that moss can handle during drag, paste,
 //! scan, and embed. Every consumer (ext_kind, embed_renderer, TS-generated registry)
 //! derives from this table — no parallel lists.
+//!
+//! **Consumers of this SSOT:**
+//! - `crates/moss-core/src/resolve/ext_kind.rs` — `reference_kind_for_ext()` derives
+//!   the `ExtKind` for any extension by looking up this table.
+//! - `crates/moss-core/src/resolve/embed_renderer.rs` — the renderer subset test asserts
+//!   that every extension the renderer handles is present here.
+//! - `frontend/app/editor/asset-registry.generated.ts` — generated TypeScript const
+//!   consumed synchronously during drag-and-drop in the editor (cannot IPC round-trip).
+//! - `docs/reference/supported-assets.md` — generated user-facing reference table.
+//!
+//! **To add or change a file type:**
+//! 1. Edit `ASSET_REGISTRY` in this file.
+//! 2. Run `pnpm run gen:assets` from the repo root to regenerate both
+//!    `asset-registry.generated.ts` and `docs/reference/supported-assets.md`.
+//! 3. Commit all three files together (`asset_registry.rs` + the two generated outputs).
 
 use crate::resolve::ext_kind::ExtKind;
 
