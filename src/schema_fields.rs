@@ -196,6 +196,17 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         group: "Common",
         ..FIELD_DEFAULTS
     },
+    BuiltinField {
+        name: "listed",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        priority: 62,
+        default_json: Some("false"),
+        description: "When off, hidden from listings, feeds, and sitemap — but still indexed and reachable at its URL",
+        label_key: "chip.listed.label",
+        group: "Common",
+        ..FIELD_DEFAULTS
+    },
 
     // --- Occasional ---
     BuiltinField {

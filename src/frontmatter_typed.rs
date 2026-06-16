@@ -189,6 +189,14 @@ pub struct FrontMatter {
     /// Draft: rendered and published at its direct URL, but hidden from all
     /// listings, feeds, sitemap, and navigation (and marked `noindex`).
     pub draft: Option<bool>,
+    /// Listed: when `false`, the page is hidden from moss's auto-generated
+    /// surfaces (home feed, recent, folder embeds, RSS, llms.txt, sitemap, and
+    /// auto sidebar listings) but remains indexable, share-cardable, and
+    /// reachable at its direct URL. Absent ⇒ listed. Orthogonal to `draft`:
+    /// `draft` adds `noindex` and drops the share card; `listed: false` does
+    /// neither. Nav bar / footer link placement (explicit `nav:` / `footer:`)
+    /// are independent of this flag.
+    pub listed: Option<bool>,
     /// Page description for SEO and list previews
     pub description: Option<String>,
     /// Content tags for organization
@@ -708,6 +716,7 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                 "nav" => frontmatter.nav = Some(value == "true" || value.is_empty()),
                 "home" => frontmatter.home = Some(value == "true" || value.is_empty()),
                 "draft" => frontmatter.draft = Some(value == "true" || value.is_empty()),
+                "listed" => frontmatter.listed = Some(value == "true" || value.is_empty()),
                 "breadcrumb" => frontmatter.breadcrumb = Some(value == "true" || value.is_empty()),
                 "footer" => frontmatter.footer = Some(value == "true" || value.is_empty()),
                 "comments" => frontmatter.comments = Some(value == "true" || value.is_empty()),
@@ -728,6 +737,7 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                 "nav" => frontmatter.nav = Some(true),
                 "home" => frontmatter.home = Some(true),
                 "draft" => frontmatter.draft = Some(true),
+                "listed" => frontmatter.listed = Some(true),
                 "breadcrumb" => frontmatter.breadcrumb = Some(true),
                 "footer" => frontmatter.footer = Some(true),
                 "comments" => frontmatter.comments = Some(true),
@@ -1037,6 +1047,28 @@ mod tests {
     fn series_field_ordered_roundtrips() {
         let v: SeriesField = serde_yaml::from_str(r#"["[[Ch 1]]", "[[Ch 2]]"]"#).unwrap();
         assert!(matches!(v, SeriesField::Ordered(ref items) if items.len() == 2));
+    }
+
+    #[test]
+    fn parses_listed_field_typed() {
+        let off: FrontMatter = serde_yaml::from_str("listed: false\n").expect("parse");
+        assert_eq!(off.listed, Some(false));
+        let on: FrontMatter = serde_yaml::from_str("listed: true\n").expect("parse");
+        assert_eq!(on.listed, Some(true));
+        let absent: FrontMatter = serde_yaml::from_str("title: X\n").expect("parse");
+        assert_eq!(absent.listed, None);
+    }
+
+    #[test]
+    fn parses_listed_field_simplified() {
+        let (off, _) = parse_simplified_frontmatter("listed: false\n---\nbody\n");
+        assert_eq!(off.listed, Some(false));
+        let (on, _) = parse_simplified_frontmatter("listed: true\n---\nbody\n");
+        assert_eq!(on.listed, Some(true));
+        let (flag, _) = parse_simplified_frontmatter("listed\n---\nbody\n");
+        assert_eq!(flag.listed, Some(true));
+        let (none, _) = parse_simplified_frontmatter("nav\n---\nbody\n");
+        assert_eq!(none.listed, None);
     }
 }
 

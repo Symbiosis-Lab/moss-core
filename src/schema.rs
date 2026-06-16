@@ -318,7 +318,8 @@ mod tests {
         // (`email_subject`/`email_preview` were removed with the send-modal
         // redesign — the composer's editable fields superseded them.)
         // (`unlisted` removed 2026-06 — redundant with `draft`.)
-        assert_eq!(schema.frontmatter.fields.len(), 34);
+        // (`listed` added 2026-06 — off-feed-but-indexable axis, orthogonal to `draft`.)
+        assert_eq!(schema.frontmatter.fields.len(), 35);
     }
 
     #[test]
@@ -426,7 +427,7 @@ mod tests {
     #[test]
     fn test_builtin_schema_boolean_fields() {
         let schema = builtin_schema();
-        for name in &["draft", "breadcrumb"] {
+        for name in &["draft", "breadcrumb", "listed"] {
             let field = schema.frontmatter.fields.get(*name)
                 .unwrap_or_else(|| panic!("{} field missing", name));
             assert_eq!(field.field_type, FieldType::Boolean, "{} should be boolean", name);
