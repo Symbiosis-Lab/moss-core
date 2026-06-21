@@ -543,6 +543,20 @@ pub trait RenderHooks {
         }
     }
 
+    /// The localized `aria-label` for the per-heading permalink anchor
+    /// (`<a class="moss-heading-anchor" aria-label="…">`).
+    ///
+    /// moss-core is pure Rust with no i18n table (no `i18n::Language`),
+    /// so the LOCALIZED string is resolved by the src-tauri caller
+    /// (`crate::i18n::strings::t(site_lang, "permalink_section")`) and
+    /// threaded in via the hooks impl — `render_heading` just emits
+    /// whatever this returns. The trait default keeps the historical
+    /// English string so moss-core's own test/fragment-render paths
+    /// stay byte-identical without a language in scope.
+    fn permalink_section_label(&self) -> &str {
+        "Permalink to this section"
+    }
+
     /// Emit `<h1>...</h1>` (or h2/h3/...) for a heading.
     ///
     /// `id` is the heading anchor id (slug). When `Some`, the rendered
@@ -590,7 +604,9 @@ pub trait RenderHooks {
         if let Some(id) = id {
             out.push_str(r##"<a class="moss-heading-anchor" href="#"##);
             out.push_str(&escape_attr(id));
-            out.push_str(r##"" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a>"##);
+            out.push_str(r##"" aria-label=""##);
+            out.push_str(&escape_attr(self.permalink_section_label()));
+            out.push_str(r##""><span aria-hidden="true">#</span></a>"##);
         }
         out.push_str("</h");
         out.push((b'0' + level) as char);
