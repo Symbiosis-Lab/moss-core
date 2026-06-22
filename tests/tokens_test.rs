@@ -156,6 +156,7 @@ fn format_root_block_normalizes_3digit_hex_to_6digit() {
             entries: vec![TokenEntry {
                 name: "test-color".to_string(),
                 value: "#FFF".to_string(),
+                dark_value: None,
                 type_hint: Some("color".to_string()),
                 description: None,
             }],

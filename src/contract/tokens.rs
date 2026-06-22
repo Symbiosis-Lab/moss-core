@@ -18,7 +18,11 @@ pub struct TokenEntry {
     /// CSS variable name without leading `--` (e.g. `moss-color-accent`).
     pub name: String,
     /// CSS value as a string (e.g. `#2d5a2d`, `1.125rem`, `var(--moss-content-width)`).
+    /// When `$value` is an object with `"light"` and `"dark"` keys, this holds the light value.
     pub value: String,
+    /// Dark-mode CSS value. `None` when `$value` is a plain string (light-only token).
+    /// `Some(...)` when `$value` is `{ "light": "...", "dark": "..." }`.
+    pub dark_value: Option<String>,
     /// Optional W3C `$type` hint (color, dimension, fontFamily, number).
     pub type_hint: Option<String>,
     /// Optional human-readable description.
@@ -95,16 +99,31 @@ pub fn parse_tokens(input: &str) -> Result<Tokens, String> {
                 .ok_or_else(|| format!("entry '{}/{}' must be an object", group_name, entry_key))?;
 
             let type_hint = entry_obj.get("$type").and_then(|v| v.as_str()).map(String::from);
-            let entry_value_str = entry_obj
+            let raw_value = entry_obj
                 .get("$value")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| format!("entry '{}/{}' missing $value", group_name, entry_key))?
-                .to_string();
+                .ok_or_else(|| format!("entry '{}/{}' missing $value", group_name, entry_key))?;
+            let (entry_value_str, entry_dark_value) = match raw_value {
+                serde_json::Value::String(s) => (s.clone(), None),
+                serde_json::Value::Object(obj) => {
+                    let light = obj
+                        .get("light")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| format!("entry '{}/{}' $value object missing \"light\" key", group_name, entry_key))?
+                        .to_string();
+                    let dark = obj.get("dark").and_then(|v| v.as_str()).map(String::from);
+                    (light, dark)
+                }
+                _ => return Err(format!(
+                    "entry '{}/{}' $value must be a string or {{\"light\",\"dark\"}} object",
+                    group_name, entry_key
+                )),
+            };
             let entry_description = entry_obj.get("$description").and_then(|v| v.as_str()).map(String::from);
 
             entries.push(TokenEntry {
                 name: entry_key.clone(),
                 value: entry_value_str,
+                dark_value: entry_dark_value,
                 type_hint,
                 description: entry_description,
             });
@@ -190,4 +209,32 @@ fn normalize_hex_color(value: &str) -> String {
         }
     }
     value.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tokens_accepts_object_value_with_dark() {
+        let json = r##"{ "$order": ["color"], "color": { "moss-color-bg": {
+            "$type": "color",
+            "$value": { "light": "#faf8f5", "dark": "#1c1914" },
+            "$description": "Page background" } } }"##;
+        let tokens = parse_tokens(json).expect("parses");
+        let bg = tokens.groups.iter().flat_map(|g| &g.entries)
+            .find(|t| t.name == "moss-color-bg").expect("bg token");
+        assert_eq!(bg.value, "#faf8f5");
+        assert_eq!(bg.dark_value.as_deref(), Some("#1c1914"));
+    }
+
+    #[test]
+    fn parse_tokens_string_value_has_no_dark() {
+        let json = r##"{ "$order": ["color"], "color": { "moss-color-accent": {
+            "$type": "color", "$value": "#2d5a2d", "$description": "Accent" } } }"##;
+        let t = parse_tokens(json).unwrap();
+        let a = t.groups.iter().flat_map(|g| &g.entries).find(|t| t.name == "moss-color-accent").unwrap();
+        assert_eq!(a.value, "#2d5a2d");
+        assert_eq!(a.dark_value, None);
+    }
 }
