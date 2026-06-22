@@ -8,7 +8,7 @@ fn load_tokens_parses_w3c_format() {
 
     // Top-level groups are present in source order (from $order field)
     let group_names: Vec<&str> = tokens.groups.iter().map(|g| g.name.as_str()).collect();
-    assert_eq!(group_names, vec!["typography", "color", "layout", "spacing"]);
+    assert_eq!(group_names, vec!["typography", "color", "code", "syntax", "layout", "spacing"]);
 }
 
 #[test]

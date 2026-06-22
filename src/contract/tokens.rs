@@ -306,4 +306,47 @@ mod tests {
         assert_eq!(a.value, "#2d5a2d");
         assert_eq!(a.dark_value, None);
     }
+
+    #[test]
+    fn tokens_json_includes_internal_tokens() {
+        let t = load_tokens().unwrap();
+        let names: Vec<_> = t.groups.iter().flat_map(|g| &g.entries).map(|t| t.name.as_str()).collect();
+        for n in [
+            "moss-text-secondary",
+            "moss-border-light",
+            "moss-border-medium",
+            "moss-accent-hover",
+            "moss-code-background",
+            "moss-code-border",
+            "moss-code-accent-primary",
+            "moss-code-accent-secondary",
+            "moss-code-accent-tertiary",
+            "moss-code-accent-quaternary",
+            "moss-hl-keyword",
+            "moss-hl-string",
+            "moss-hl-comment",
+            "moss-hl-number",
+            "moss-hl-function",
+            "moss-hl-type",
+            "moss-hl-tag",
+            "moss-hl-attr",
+            "moss-hl-operator",
+            "moss-hl-builtin",
+            "moss-hl-meta",
+            "moss-hl-deletion",
+            "moss-hl-addition-bg",
+            "moss-hl-deletion-bg",
+            "moss-font-2xs",
+            "moss-font-xs",
+            "moss-font-sm",
+            "moss-font-lg",
+            "moss-font-xl",
+            "moss-font-2xl",
+            "moss-font-3xl",
+            "moss-font-heading-weight",
+        ] {
+            assert!(names.contains(&n), "missing token: {n}");
+        }
+        assert!(names.len() >= 45, "expected >=45 tokens, got {}", names.len());
+    }
 }
