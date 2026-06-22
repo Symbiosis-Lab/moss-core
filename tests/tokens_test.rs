@@ -75,6 +75,18 @@ fn parse_tokens_errors_when_entry_missing_value() {
     assert!(err.contains("$value"), "error should mention missing $value: {}", err);
 }
 
+/// Task 3.1: bg_colors() must return the light and dark --moss-color-bg values
+/// that are emitted into `<meta name="theme-color">` at build time.
+/// Dark must be #1c1914 (NOT the old wrong literal #1a1816).
+#[test]
+fn bg_colors_returns_token_light_and_dark() {
+    use moss_core::contract::tokens::bg_colors;
+    let tokens = load_tokens().expect("tokens.json must parse");
+    let (light, dark) = bg_colors(&tokens);
+    assert_eq!(light, "#faf8f5", "light --moss-color-bg must be #faf8f5");
+    assert_eq!(dark,  "#1c1914", "dark --moss-color-bg must be #1c1914 (not the old #1a1816)");
+}
+
 use moss_core::contract::tokens::format_root_block;
 
 #[test]

@@ -324,6 +324,33 @@ pub fn format_deprecated_aliases_block() -> String {
     out
 }
 
+/// Look up the light value (and optionally the dark value) of a named token.
+///
+/// Returns `(light_value, dark_value)`. `dark_value` is `None` for single-value
+/// tokens. Returns `None` from the outer `Option` when the token name is not found.
+///
+/// Used at emit time to derive `<meta name="theme-color">` values from tokens.json
+/// rather than hardcoding hex literals that can drift from the CSS.
+pub fn find_token<'a>(tokens: &'a Tokens, name: &str) -> Option<(&'a str, Option<&'a str>)> {
+    tokens
+        .groups
+        .iter()
+        .flat_map(|g| &g.entries)
+        .find(|e| e.name == name)
+        .map(|e| (e.value.as_str(), e.dark_value.as_deref()))
+}
+
+/// Convenience: return the `--moss-color-bg` light and dark CSS values baked
+/// into the embedded tokens.json, falling back to hardcoded defaults if the
+/// token is absent (should never happen in production).
+pub fn bg_colors(tokens: &Tokens) -> (&str, &str) {
+    match find_token(tokens, "moss-color-bg") {
+        Some((light, Some(dark))) => (light, dark),
+        Some((light, None)) => (light, "#1c1914"),
+        None => ("#faf8f5", "#1c1914"),
+    }
+}
+
 /// Title-case the group name. "typography" → "Typography", "color" → "Color".
 fn title_case(s: &str) -> String {
     let mut chars = s.chars();
