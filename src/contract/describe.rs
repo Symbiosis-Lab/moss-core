@@ -9,9 +9,10 @@ use std::collections::BTreeMap;
 
 use crate::ast::shortcode::ShortcodeKind;
 use crate::contract::components::{COMPONENTS, Status};
+use crate::contract::frontmatter::{FrontmatterFieldJson, frontmatter_fields};
 use crate::contract::tokens::Tokens;
 
-pub const DESCRIBE_SCHEMA_VERSION: u32 = 3;
+pub const DESCRIBE_SCHEMA_VERSION: u32 = 4;
 pub const MOSS_HTML_VERSION: u32 = 1;
 
 #[derive(Serialize)]
@@ -21,6 +22,7 @@ pub struct DescribePayload<'a> {
     pub moss_binary_version: &'static str,
     pub tokens: BTreeMap<&'a str, Vec<TokenJson<'a>>>,
     pub components: Vec<ComponentJson>,
+    pub frontmatter: Vec<FrontmatterFieldJson>,
 }
 
 #[derive(Serialize)]
@@ -117,6 +119,7 @@ impl<'a> DescribePayload<'a> {
             moss_binary_version: env!("CARGO_PKG_VERSION"),
             tokens: tokens_map,
             components,
+            frontmatter: frontmatter_fields(),
         }
     }
 }

@@ -10,3 +10,4 @@
 pub mod tokens;
 pub mod components;
 pub mod describe;
+pub mod frontmatter;
