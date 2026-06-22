@@ -270,9 +270,18 @@ mod tests {
           "moss-color-accent": {"$type":"color","$value":"#2d5a2d"} } }"##;
         let t = parse_tokens(json).unwrap();
         let dark = format_dark_root_block(&t);
-        assert!(dark.contains("[data-theme=\"dark\"]"));
+        assert!(dark.contains(":root[data-theme=\"dark\"]"));
         assert!(dark.contains("--moss-color-bg: #1c1914"));
         assert!(!dark.contains("--moss-color-accent")); // no dark value → not emitted
+    }
+
+    #[test]
+    fn format_dark_root_block_returns_empty_when_no_dark_values() {
+        let json = r##"{ "$order": ["color"], "color": {
+          "moss-color-accent": {"$type":"color","$value":"#2d5a2d"},
+          "moss-color-bg": {"$type":"color","$value":"#faf8f5"} } }"##;
+        let t = parse_tokens(json).unwrap();
+        assert_eq!(format_dark_root_block(&t), "");
     }
 
     #[test]
