@@ -366,7 +366,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "children_style",
         field_type: FieldType::String,
         widget: Widget::Select,
-        enum_values: Some(&["list", "summary", "grid"]),
+        enum_values: Some(&["list", "summary", "grid", "minimal"]),
         default_json: Some("\"list\""),
         priority: 100,
         description: "How child pages are rendered",
