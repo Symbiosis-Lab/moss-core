@@ -282,6 +282,43 @@ pub fn format_dark_media_block(tokens: &Tokens) -> String {
     out
 }
 
+/// Emit deprecated-alias `:root` block.
+///
+/// Maps every v1.2 token name to its v1.3 renamed replacement so that
+/// author `.moss/theme/style.css` files that reference old names keep
+/// working for one release. Each alias is documented with a `/* deprecated */`
+/// comment. Remove this block after the next breaking-contract release.
+pub fn format_deprecated_aliases_block() -> String {
+    // (old-name, new-name) pairs — one alias per renamed token.
+    let aliases: &[(&str, &str)] = &[
+        // Font-size scale: --moss-font-* → --moss-size-*
+        ("--moss-font-2xs",     "var(--moss-size-2xs)"),
+        ("--moss-font-xs",      "var(--moss-size-xs)"),
+        ("--moss-font-sm",      "var(--moss-size-sm)"),
+        ("--moss-font-lg",      "var(--moss-size-lg)"),
+        ("--moss-font-xl",      "var(--moss-size-xl)"),
+        ("--moss-font-2xl",     "var(--moss-size-2xl)"),
+        ("--moss-font-3xl",     "var(--moss-size-3xl)"),
+        // Font weight: --moss-font-weight → --moss-font-weight-body
+        ("--moss-font-weight",  "var(--moss-font-weight-body)"),
+        // Accent hover: --moss-accent-hover → --moss-color-accent-hover
+        ("--moss-accent-hover", "var(--moss-color-accent-hover)"),
+        // Text secondary: --moss-text-secondary → --moss-color-text-secondary (distinct role, renamed not consolidated)
+        ("--moss-text-secondary", "var(--moss-color-text-secondary)"),
+    ];
+
+    let mut out = String::new();
+    out.push_str("/* Deprecated token aliases — v1.2 names forwarded to v1.3 renames.\n");
+    out.push_str("   Author .moss/theme/style.css files referencing these names continue to\n");
+    out.push_str("   resolve correctly for one release. Remove after next contract bump. */\n");
+    out.push_str(":root {\n");
+    for (old, new) in aliases {
+        out.push_str(&format!("  {}: {}; /* deprecated: use {} */\n", old, new, new.trim_start_matches("var(").trim_end_matches(')')));
+    }
+    out.push_str("}\n");
+    out
+}
+
 /// Title-case the group name. "typography" → "Typography", "color" → "Color".
 fn title_case(s: &str) -> String {
     let mut chars = s.chars();
@@ -373,11 +410,13 @@ mod tests {
     fn tokens_json_includes_internal_tokens() {
         let t = load_tokens().unwrap();
         let names: Vec<_> = t.groups.iter().flat_map(|g| &g.entries).map(|t| t.name.as_str()).collect();
+        // Task 1.3: renamed tokens — assert NEW names present, old names absent.
         for n in [
-            "moss-text-secondary",
+            // color tokens (renamed)
+            "moss-color-text-secondary",   // was moss-text-secondary
+            "moss-color-accent-hover",     // was moss-accent-hover
             "moss-border-light",
             "moss-border-medium",
-            "moss-accent-hover",
             "moss-code-background",
             "moss-code-border",
             "moss-code-accent-primary",
@@ -398,6 +437,25 @@ mod tests {
             "moss-hl-deletion",
             "moss-hl-addition-bg",
             "moss-hl-deletion-bg",
+            // font size scale (renamed)
+            "moss-size-2xs",  // was moss-font-2xs
+            "moss-size-xs",   // was moss-font-xs
+            "moss-size-sm",   // was moss-font-sm
+            "moss-size-md",   // new: equals --moss-reading-size-base
+            "moss-size-lg",   // was moss-font-lg
+            "moss-size-xl",   // was moss-font-xl
+            "moss-size-2xl",  // was moss-font-2xl
+            "moss-size-3xl",  // was moss-font-3xl
+            // font weight (renamed)
+            "moss-font-weight-body",  // was moss-font-weight
+            "moss-font-heading-weight",
+        ] {
+            assert!(names.contains(&n), "missing token: {n}");
+        }
+        // assert OLD names are gone
+        for old in [
+            "moss-text-secondary",
+            "moss-accent-hover",
             "moss-font-2xs",
             "moss-font-xs",
             "moss-font-sm",
@@ -405,11 +463,11 @@ mod tests {
             "moss-font-xl",
             "moss-font-2xl",
             "moss-font-3xl",
-            "moss-font-heading-weight",
+            "moss-font-weight",
         ] {
-            assert!(names.contains(&n), "missing token: {n}");
+            assert!(!names.contains(&old), "old token still present: {old}");
         }
-        assert!(names.len() >= 45, "expected >=45 tokens, got {}", names.len());
+        assert!(names.len() >= 46, "expected >=46 tokens (added moss-size-md), got {}", names.len());
     }
 
     #[test]
@@ -433,7 +491,8 @@ mod tests {
         assert_eq!(format_dark_media_block(&t), "");
     }
 
-    /// Task 1.2: assert moss-accent-hover is derived via color-mix in both modes.
+    /// Task 1.2/1.3: assert moss-color-accent-hover (renamed from moss-accent-hover) is
+    /// derived via color-mix in both modes.
     #[test]
     fn accent_hover_is_derived_from_accent_via_color_mix() {
         let t = load_tokens().unwrap();
@@ -441,18 +500,18 @@ mod tests {
             .groups
             .iter()
             .flat_map(|g| &g.entries)
-            .find(|e| e.name == "moss-accent-hover")
-            .expect("moss-accent-hover token must exist");
+            .find(|e| e.name == "moss-color-accent-hover")
+            .expect("moss-color-accent-hover token must exist (renamed from moss-accent-hover in 1.3)");
 
         // Light value must use color-mix (derives from --moss-color-accent).
         assert!(
             entry.value.contains("color-mix"),
-            "moss-accent-hover light value must contain 'color-mix', got: {:?}",
+            "moss-color-accent-hover light value must contain 'color-mix', got: {:?}",
             entry.value
         );
         assert!(
             entry.value.contains("var(--moss-color-accent)"),
-            "moss-accent-hover light value must reference var(--moss-color-accent), got: {:?}",
+            "moss-color-accent-hover light value must reference var(--moss-color-accent), got: {:?}",
             entry.value
         );
 
@@ -460,15 +519,15 @@ mod tests {
         let dark = entry
             .dark_value
             .as_deref()
-            .expect("moss-accent-hover must have a dark value");
+            .expect("moss-color-accent-hover must have a dark value");
         assert!(
             dark.contains("color-mix"),
-            "moss-accent-hover dark value must contain 'color-mix', got: {:?}",
+            "moss-color-accent-hover dark value must contain 'color-mix', got: {:?}",
             dark
         );
         assert!(
             dark.contains("var(--moss-color-accent)"),
-            "moss-accent-hover dark value must reference var(--moss-color-accent), got: {:?}",
+            "moss-color-accent-hover dark value must reference var(--moss-color-accent), got: {:?}",
             dark
         );
     }
