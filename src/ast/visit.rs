@@ -149,6 +149,7 @@ where
             }
         }
         Shortcode::Recent(_) => {} // No URLs.
+        Shortcode::Apply(_) => {}  // No URLs.
     }
 }
 

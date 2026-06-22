@@ -127,7 +127,7 @@ fn find_first_image_in_inlines(inlines: &[Inline]) -> Option<&Inline> {
 
 fn find_first_image_in_shortcode(sc: &Shortcode) -> Option<&Inline> {
     match sc {
-        Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) => None,
+        Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) | Shortcode::Apply(_) => None,
         Shortcode::Gallery(args) => {
             // Gallery items carry image refs but not as Inline::Image —
             // they're typed as GalleryItem { src, alt, attrs }. The

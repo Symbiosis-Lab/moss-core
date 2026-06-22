@@ -22,8 +22,8 @@ use super::attrs::gather_multi_line_attrs;
 use super::cells::split_cells;
 use super::node::Block;
 use super::shortcode::{
-    ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
-    RecentShortcode, Shortcode, SubscribeShortcode,
+    ApplyShortcode, ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode,
+    HeroShortcode, RecentShortcode, Shortcode, SubscribeShortcode,
 };
 use super::url::Url;
 
@@ -61,7 +61,7 @@ pub struct ExtractionResult {
 /// Names recognized by the typed AST. Other names fall through to the
 /// unknown-name renderer (`<div class="moss-unknown-shortcode" data-name="…">`)
 /// with a build warning.
-const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero", "grid", "recent"];
+const TYPED_KNOWN: &[&str] = &["subscribe", "buttons", "gallery", "hero", "grid", "recent", "apply"];
 
 fn is_typed_known(name: &str) -> bool {
     TYPED_KNOWN.contains(&name)
@@ -114,6 +114,7 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> (Option<Shortcod
             (Some(Shortcode::Grid(sc)), warns)
         }
         "recent" => (Some(Shortcode::Recent(parse_recent_args(args, body))), vec![]),
+        "apply" => (Some(Shortcode::Apply(parse_apply_args(args))), vec![]),
         _ => (None, vec![]),
     }
 }
@@ -972,6 +973,30 @@ fn parse_subscribe_args(args: &str) -> SubscribeShortcode {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     SubscribeShortcode {
+        placeholder,
+        button,
+    }
+}
+
+/// Parse `:::apply {placeholder="..." button="..."}` into a typed struct.
+///
+/// Reads `placeholder` and `button` from the attribute block; ignores
+/// classes/id (the renderer uses fixed `moss-apply` chrome). Body must be
+/// empty under the unified grammar. Mirrors `parse_subscribe_args`.
+pub fn parse_apply_args(args: &str) -> ApplyShortcode {
+    let parsed = match super::attrs::parse_attrs(args) {
+        Ok(b) => b,
+        Err(_) => return ApplyShortcode::default(),
+    };
+    let placeholder = parsed
+        .get("placeholder")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let button = parsed
+        .get("button")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    ApplyShortcode {
         placeholder,
         button,
     }
@@ -2964,6 +2989,44 @@ mod tests {
         match sc.expect("expected Some(Shortcode)") {
             Shortcode::Recent(args) => assert_eq!(args.fallback_markdown, "hello world"),
             other => panic!("expected Recent, got {other:?}"),
+        }
+    }
+
+    // ---- Apply ----
+
+    #[test]
+    fn parses_apply_directive() {
+        use super::super::shortcode::ShortcodeKind;
+        use super::super::visit::has_shortcode_recursive;
+        let doc = crate::ast::parse(":::apply\n:::\n");
+        assert!(
+            has_shortcode_recursive(&doc, ShortcodeKind::Apply),
+            "expected an Apply shortcode"
+        );
+    }
+
+    #[test]
+    fn apply_parse_bare_has_none_overrides() {
+        let (sc, warns) = parse_shortcode_block("apply", "", "");
+        assert!(warns.is_empty());
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Apply(args) => {
+                assert!(args.placeholder.is_none());
+                assert!(args.button.is_none());
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_parse_with_overrides() {
+        let (sc, _) = parse_shortcode_block("apply", r#"{placeholder="email" button="申请"}"#, "");
+        match sc.expect("expected Some(Shortcode)") {
+            Shortcode::Apply(args) => {
+                assert_eq!(args.placeholder.as_deref(), Some("email"));
+                assert_eq!(args.button.as_deref(), Some("申请"));
+            }
+            other => panic!("expected Apply, got {other:?}"),
         }
     }
 

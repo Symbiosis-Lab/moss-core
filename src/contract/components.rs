@@ -1281,6 +1281,90 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Standalone subscribe landing page surface (larger variant).",
     },
     // -------------------------------------------------------------------
+    // Apply form (membership / contributor application).
+    // -------------------------------------------------------------------
+    ComponentEntry {
+        class: "moss-apply",
+        kind: "standalone",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-apply" data-state="idle">
+  <form class="moss-subscribe-form moss-apply-form">...</form>
+</div>"#,
+        example_markdown: ":::apply\n:::\n",
+        status: Status::Emerging,
+        since: "0",
+        description: "Apply / membership-request form block (:::apply shortcode).",
+    },
+    ComponentEntry {
+        class: "moss-apply-form",
+        kind: "instance",
+        parent: "moss-apply",
+        data_attrs: &[
+            DataAttr {
+                name: "data-position",
+                values: &["apply"],
+                default: "apply",
+                description: "Position variant; always `apply` for this form. Drives CSS layout in email.css.",
+            },
+            DataAttr {
+                name: "data-revert",
+                values: &["false"],
+                default: "false",
+                description: "When `false`, success is terminal (no auto-revert). subscribe.ts reads this.",
+            },
+        ],
+        example_html: r#"<form class="moss-subscribe-form moss-apply-form" data-position="apply" data-revert="false">...</form>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Form element inside `.moss-apply`. Also carries `.moss-subscribe-form` so subscribe.ts hydrates it.",
+    },
+    ComponentEntry {
+        class: "moss-apply-matters",
+        kind: "instance",
+        parent: "moss-apply",
+        data_attrs: &[],
+        example_html: r#"<input type="text" name="matters" class="moss-input moss-apply-matters">"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Matters username input inside `.moss-apply-form`.",
+    },
+    ComponentEntry {
+        class: "moss-apply-details",
+        kind: "instance",
+        parent: "moss-apply",
+        data_attrs: &[],
+        example_html: r#"<details class="moss-apply-details"><summary>...</summary>...</details>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "`<details>` disclosure element for the optional publish-URL field inside `.moss-apply-form`.",
+    },
+    ComponentEntry {
+        class: "moss-apply-hp",
+        kind: "instance",
+        parent: "moss-apply",
+        data_attrs: &[],
+        example_html: r#"<input type="text" name="website" class="moss-apply-hp" tabindex="-1" aria-hidden="true">"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Honeypot field (off-screen) inside `.moss-apply-form`. Bots fill it; humans don't.",
+    },
+    ComponentEntry {
+        class: "moss-apply-status",
+        kind: "instance",
+        parent: "moss-apply",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-subscribe-status moss-apply-status" aria-live="polite">...</div>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Status region inside `.moss-apply-form` (also carries `.moss-subscribe-status`).",
+    },
+    // -------------------------------------------------------------------
     // Series navigation (prev/next + collection links).
     // -------------------------------------------------------------------
     ComponentEntry {
