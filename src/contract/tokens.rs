@@ -172,7 +172,12 @@ pub fn format_root_block(tokens: &Tokens) -> String {
     out
 }
 
-/// Format the tokens whose `dark_value` is set as a CSS `:root[data-theme="dark"]` block.
+/// Format the tokens whose `dark_value` is set as a CSS `[data-theme="dark"]` block.
+///
+/// The `:root` prefix is intentionally omitted: layer order (tokens layer < themes
+/// layer) guarantees the tokens block loses to any author override in the themes layer,
+/// regardless of selector specificity. Keeping `:root` here would give the block a
+/// spurious specificity bump that conflicts with the layer contract.
 ///
 /// Mirrors `format_root_block`'s style (group comments, 2-space indent, trailing
 /// semicolons). Returns an empty `String` if no token has a dark value.
@@ -187,7 +192,7 @@ pub fn format_dark_root_block(tokens: &Tokens) -> String {
     }
 
     let mut out = String::new();
-    out.push_str(":root[data-theme=\"dark\"] {\n");
+    out.push_str("[data-theme=\"dark\"] {\n");
 
     let mut first_group = true;
     for group in &tokens.groups {
@@ -369,7 +374,9 @@ mod tests {
           "moss-color-accent": {"$type":"color","$value":"#2d5a2d"} } }"##;
         let t = parse_tokens(json).unwrap();
         let dark = format_dark_root_block(&t);
-        assert!(dark.contains(":root[data-theme=\"dark\"]"));
+        // Task 2.4: vestigial :root prefix dropped — layer order carries the win.
+        assert!(dark.contains("[data-theme=\"dark\"]"), "must use [data-theme=\"dark\"] selector (no :root prefix)");
+        assert!(!dark.contains(":root[data-theme=\"dark\"]"), "must NOT use :root prefix (vestigial specificity hack removed)");
         assert!(dark.contains("--moss-color-bg: #1c1914"));
         assert!(!dark.contains("--moss-color-accent")); // no dark value → not emitted
     }
