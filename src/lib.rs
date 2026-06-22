@@ -1,15 +1,63 @@
-//! moss-core: Pure Rust content processing.
+//! **moss-core is the pure-Rust content engine behind [moss](https://mosspub.com),**
+//! a desktop publishing app. It owns every transformation that turns a folder of
+//! markdown into a website: parsing, wikilink resolution, HTML rendering,
+//! frontmatter typing, and schema validation.
 //!
-//! Zero I/O, zero async. Takes strings in, returns strings out.
-//! All filesystem access happens in the Tauri layer.
+//! Everything is **data in, data out** — strings and structs in; parsed ASTs,
+//! diagnostics, and rendered HTML out. **Zero I/O, zero async, no global state.**
+//! The filesystem, the network, and the async runtime all live one layer up, in
+//! moss's host; this crate never touches them. That makes it deterministic,
+//! trivially unit-testable, and embeddable in any Rust program — not just moss.
 //!
-//! **Panic-free contract:** Every public function in moss-core is invoked from
-//! Tauri command handlers in the host process. The host is configured with
-//! `panic = "abort"` for release builds, so any panic on user input crashes
-//! the whole desktop app (see fix in `date.rs` for the editor-mount panic on
-//! Chinese filenames). Treat moss-core as panic-free on user input: never
-//! `unwrap`/`expect` a value derived from arbitrary user data, and never use
-//! byte-indexed `&str` slicing without a `char_boundary` guarantee.
+//! # How it's laid out
+//!
+//! The modules cluster into four areas, plus the contract surface:
+//!
+//! - **Parse & render** — [`ast`] turns markdown into a typed tree (over
+//!   `pulldown-cmark`) and renders it back to HTML through interceptable hooks;
+//!   [`render`] emits media HTML (image/video/audio/iframe/pdf) for embeds.
+//! - **Frontmatter & schema** — [`frontmatter`] parses YAML while preserving the
+//!   body byte-for-byte; [`frontmatter_typed`] is the canonical `FrontMatter`
+//!   struct; [`schema_fields`] is the single source of truth for built-in fields;
+//!   [`validation`] produces LSP-style diagnostics against a schema.
+//! - **Links & content model** — [`resolve`] is the one place wikilinks and
+//!   embeds (`[[...]]`) become ordinary markdown links; [`content_graph`] does the
+//!   Obsidian-style fuzzy path matching underneath.
+//! - **Utilities** — small stateless helpers the editor and build share:
+//!   [`slug`], [`date`], [`sort`], [`home`], [`page_kind`], and `extract_headings`.
+//!
+//! Plus [`contract`]: the design surface (W3C design tokens + the `moss-*` HTML
+//! class table) that theme authors and codegen depend on.
+//!
+//! # Getting started
+//!
+//! Every entry point is a free function — pick the module and call it:
+//!
+//! ```
+//! use moss_core::frontmatter;
+//!
+//! let raw = "---\ntitle: Hello\n---\n\nBody text";
+//! let doc = frontmatter::parse(raw);
+//! assert_eq!(doc.frontmatter.get("title").and_then(|v| v.as_str()), Some("Hello"));
+//! assert_eq!(doc.body.trim(), "Body text"); // body preserved verbatim
+//! ```
+//!
+//! From there: [`ast`] for the body tree, [`resolve`] to flatten wikilinks,
+//! [`validation`] to lint frontmatter, and `extract_headings` for anchors.
+//!
+//! # Guarantees
+//!
+//! Total functions: bad input degrades to a best-effort value, never an `Err` or
+//! a panic. No `unsafe` (`#![forbid(unsafe_code)]`). Schema problems are reported
+//! out-of-band as [`validation`] diagnostics, not return values.
+//!
+//! moss ships this crate in a host built with `panic = "abort"` (release
+//! profile), so a panic on user input crashes the whole desktop app (see the
+//! `date.rs` fix for the
+//! editor-mount panic on Chinese filenames). The lint attributes below enforce
+//! the panic-free contract — `deny(clippy::string_slice)` plus
+//! `deny(clippy::unwrap_used/expect_used)` outside tests — each with a per-site
+//! escape-hatch rule.
 
 #![forbid(unsafe_code)]
 // `clippy::string_slice` flags `&s[..n]` byte-indexed slicing on `&str`. That
