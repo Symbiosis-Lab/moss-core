@@ -74,4 +74,15 @@ fn describe_token_json_includes_dark_value() {
     let bg = payload.tokens.get("color").unwrap().iter()
         .find(|t| t.name == "moss-color-bg").unwrap();
     assert_eq!(bg.dark_value, Some("#1c1914"));
+
+    // Light-only token must omit dark_value entirely at the JSON layer
+    // (skip_serializing_if = "Option::is_none" must produce no key, not null).
+    let light_only = r##"{"$order":["color"],"color":{"moss-color-accent":{"$type":"color","$value":"#2d5a2d"}}}"##;
+    let tokens2 = parse_tokens(light_only).unwrap();
+    let payload2 = DescribePayload::new(&tokens2);
+    let v = serde_json::to_value(&payload2).unwrap();
+    assert!(
+        v["tokens"]["color"][0].get("dark_value").is_none(),
+        "light-only token must have no dark_value key in JSON output (not null)"
+    );
 }
