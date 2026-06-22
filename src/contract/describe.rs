@@ -11,7 +11,7 @@ use crate::ast::shortcode::ShortcodeKind;
 use crate::contract::components::{COMPONENTS, Status};
 use crate::contract::tokens::Tokens;
 
-pub const DESCRIBE_SCHEMA_VERSION: u32 = 2;
+pub const DESCRIBE_SCHEMA_VERSION: u32 = 3;
 pub const MOSS_HTML_VERSION: u32 = 1;
 
 #[derive(Serialize)]
@@ -27,6 +27,8 @@ pub struct DescribePayload<'a> {
 pub struct TokenJson<'a> {
     pub name: &'a str,
     pub value: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dark_value: Option<&'a str>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub type_hint: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +71,7 @@ impl<'a> DescribePayload<'a> {
                 .map(|t| TokenJson {
                     name: &t.name,
                     value: &t.value,
+                    dark_value: t.dark_value.as_deref(),
                     type_hint: t.type_hint.as_deref(),
                     description: t.description.as_deref(),
                 })
