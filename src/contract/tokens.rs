@@ -172,6 +172,54 @@ pub fn format_root_block(tokens: &Tokens) -> String {
     out
 }
 
+/// Format the tokens whose `dark_value` is set as a CSS `:root[data-theme="dark"]` block.
+///
+/// Mirrors `format_root_block`'s style (group comments, 2-space indent, trailing
+/// semicolons). Returns an empty `String` if no token has a dark value.
+pub fn format_dark_root_block(tokens: &Tokens) -> String {
+    // Check whether any dark values exist at all.
+    let has_dark = tokens
+        .groups
+        .iter()
+        .any(|g| g.entries.iter().any(|e| e.dark_value.is_some()));
+    if !has_dark {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    out.push_str(":root[data-theme=\"dark\"] {\n");
+
+    let mut first_group = true;
+    for group in &tokens.groups {
+        // Only include groups that have at least one dark token.
+        let dark_entries: Vec<&TokenEntry> = group
+            .entries
+            .iter()
+            .filter(|e| e.dark_value.is_some())
+            .collect();
+        if dark_entries.is_empty() {
+            continue;
+        }
+
+        if !first_group {
+            out.push('\n');
+        }
+        first_group = false;
+
+        let title = title_case(&group.name);
+        out.push_str(&format!("  /* {} */\n", title));
+
+        for entry in dark_entries {
+            let dark_val = entry.dark_value.as_deref().unwrap();
+            let value = normalize_value(dark_val, entry.type_hint.as_deref());
+            out.push_str(&format!("  --{}: {};\n", entry.name, value));
+        }
+    }
+
+    out.push_str("}\n");
+    out
+}
+
 /// Title-case the group name. "typography" → "Typography", "color" → "Color".
 fn title_case(s: &str) -> String {
     let mut chars = s.chars();
@@ -214,6 +262,18 @@ fn normalize_hex_color(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_dark_root_block_emits_only_dark_tokens() {
+        let json = r##"{ "$order": ["color"], "color": {
+          "moss-color-bg": {"$type":"color","$value":{"light":"#faf8f5","dark":"#1c1914"}},
+          "moss-color-accent": {"$type":"color","$value":"#2d5a2d"} } }"##;
+        let t = parse_tokens(json).unwrap();
+        let dark = format_dark_root_block(&t);
+        assert!(dark.contains("[data-theme=\"dark\"]"));
+        assert!(dark.contains("--moss-color-bg: #1c1914"));
+        assert!(!dark.contains("--moss-color-accent")); // no dark value → not emitted
+    }
 
     #[test]
     fn parse_tokens_accepts_object_value_with_dark() {
