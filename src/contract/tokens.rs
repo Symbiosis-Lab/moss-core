@@ -367,6 +367,11 @@ mod tests {
             "moss-accent-hover light value must contain 'color-mix', got: {:?}",
             entry.value
         );
+        assert!(
+            entry.value.contains("var(--moss-color-accent)"),
+            "moss-accent-hover light value must reference var(--moss-color-accent), got: {:?}",
+            entry.value
+        );
 
         // Dark value must also be present and use color-mix (lightens accent on hover).
         let dark = entry
@@ -376,6 +381,11 @@ mod tests {
         assert!(
             dark.contains("color-mix"),
             "moss-accent-hover dark value must contain 'color-mix', got: {:?}",
+            dark
+        );
+        assert!(
+            dark.contains("var(--moss-color-accent)"),
+            "moss-accent-hover dark value must reference var(--moss-color-accent), got: {:?}",
             dark
         );
     }
