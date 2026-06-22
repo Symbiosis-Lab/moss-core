@@ -474,7 +474,8 @@ mod tests {
         ] {
             assert!(!names.contains(&old), "old token still present: {old}");
         }
-        assert!(names.len() >= 46, "expected >=46 tokens (added moss-size-md), got {}", names.len());
+        assert!(names.contains(&"moss-color-ui-accent"), "missing token: moss-color-ui-accent");
+        assert!(names.len() >= 47, "expected >=47 tokens (added moss-color-ui-accent), got {}", names.len());
     }
 
     #[test]
