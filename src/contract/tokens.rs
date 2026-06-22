@@ -220,6 +220,68 @@ pub fn format_dark_root_block(tokens: &Tokens) -> String {
     out
 }
 
+/// Format the dark-value tokens as a system-preference fallback block.
+///
+/// Produces:
+/// ```css
+/// @media (prefers-color-scheme: dark) {
+///   :root:not([data-theme]) {
+///     --moss-color-bg: #1c1914;
+///     ...
+///   }
+/// }
+/// ```
+///
+/// Only applies when NO explicit `data-theme` is set. Once the user or a
+/// script sets any `data-theme`, the explicit `:root[data-theme="dark"]` block
+/// (from `format_dark_root_block`) takes over.
+///
+/// Returns an empty `String` if no token has a dark value.
+pub fn format_dark_media_block(tokens: &Tokens) -> String {
+    // Check whether any dark values exist at all.
+    let has_dark = tokens
+        .groups
+        .iter()
+        .any(|g| g.entries.iter().any(|e| e.dark_value.is_some()));
+    if !has_dark {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    out.push_str("@media (prefers-color-scheme: dark) {\n");
+    out.push_str(":root:not([data-theme]) {\n");
+
+    let mut first_group = true;
+    for group in &tokens.groups {
+        let dark_entries: Vec<&TokenEntry> = group
+            .entries
+            .iter()
+            .filter(|e| e.dark_value.is_some())
+            .collect();
+        if dark_entries.is_empty() {
+            continue;
+        }
+
+        if !first_group {
+            out.push('\n');
+        }
+        first_group = false;
+
+        let title = title_case(&group.name);
+        out.push_str(&format!("  /* {} */\n", title));
+
+        for entry in dark_entries {
+            let dark_val = entry.dark_value.as_deref().unwrap();
+            let value = normalize_value(dark_val, entry.type_hint.as_deref());
+            out.push_str(&format!("  --{}: {};\n", entry.name, value));
+        }
+    }
+
+    out.push_str("}\n");
+    out.push_str("}\n");
+    out
+}
+
 /// Title-case the group name. "typography" → "Typography", "color" → "Color".
 fn title_case(s: &str) -> String {
     let mut chars = s.chars();
@@ -348,6 +410,27 @@ mod tests {
             assert!(names.contains(&n), "missing token: {n}");
         }
         assert!(names.len() >= 45, "expected >=45 tokens, got {}", names.len());
+    }
+
+    #[test]
+    fn format_dark_media_block_wraps_dark_tokens_in_media_query() {
+        let json = r##"{ "$order": ["color"], "color": {
+          "moss-color-bg": {"$type":"color","$value":{"light":"#faf8f5","dark":"#1c1914"}},
+          "moss-color-accent": {"$type":"color","$value":"#2d5a2d"} } }"##;
+        let t = parse_tokens(json).unwrap();
+        let media = format_dark_media_block(&t);
+        assert!(media.contains("@media (prefers-color-scheme: dark)"), "must be wrapped in @media");
+        assert!(media.contains(":root:not([data-theme])"), "must target :root:not([data-theme])");
+        assert!(media.contains("--moss-color-bg: #1c1914"), "must contain dark value");
+        assert!(!media.contains("--moss-color-accent"), "light-only token must not appear");
+    }
+
+    #[test]
+    fn format_dark_media_block_returns_empty_when_no_dark_values() {
+        let json = r##"{ "$order": ["color"], "color": {
+          "moss-color-accent": {"$type":"color","$value":"#2d5a2d"} } }"##;
+        let t = parse_tokens(json).unwrap();
+        assert_eq!(format_dark_media_block(&t), "");
     }
 
     /// Task 1.2: assert moss-accent-hover is derived via color-mix in both modes.
