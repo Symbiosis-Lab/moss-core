@@ -349,4 +349,34 @@ mod tests {
         }
         assert!(names.len() >= 45, "expected >=45 tokens, got {}", names.len());
     }
+
+    /// Task 1.2: assert moss-accent-hover is derived via color-mix in both modes.
+    #[test]
+    fn accent_hover_is_derived_from_accent_via_color_mix() {
+        let t = load_tokens().unwrap();
+        let entry = t
+            .groups
+            .iter()
+            .flat_map(|g| &g.entries)
+            .find(|e| e.name == "moss-accent-hover")
+            .expect("moss-accent-hover token must exist");
+
+        // Light value must use color-mix (derives from --moss-color-accent).
+        assert!(
+            entry.value.contains("color-mix"),
+            "moss-accent-hover light value must contain 'color-mix', got: {:?}",
+            entry.value
+        );
+
+        // Dark value must also be present and use color-mix (lightens accent on hover).
+        let dark = entry
+            .dark_value
+            .as_deref()
+            .expect("moss-accent-hover must have a dark value");
+        assert!(
+            dark.contains("color-mix"),
+            "moss-accent-hover dark value must contain 'color-mix', got: {:?}",
+            dark
+        );
+    }
 }
