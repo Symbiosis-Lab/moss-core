@@ -1234,15 +1234,15 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Form element inside `.moss-subscribe`.",
     },
     ComponentEntry {
-        class: "moss-subscribe-btn-slot",
+        class: "moss-btn-slot",
         kind: "instance",
         parent: "moss-subscribe",
         data_attrs: &[],
-        example_html: r#"<div class="moss-subscribe-btn-slot"><button class="moss-btn">...</button></div>"#,
+        example_html: r#"<div class="moss-btn-slot"><button class="moss-btn">...</button></div>"#,
         example_markdown: "",
         status: Status::Emerging,
         since: "0",
-        description: "Slot in the subscribe form that holds the submit button.",
+        description: "Fixed-width slot wrapping a form's submit button; used by both the subscribe and comment forms to prevent layout shift across idle/loading/success states.",
     },
     ComponentEntry {
         class: "moss-subscribe-status",
