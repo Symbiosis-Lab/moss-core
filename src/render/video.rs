@@ -21,9 +21,10 @@
 //!   the post-pass a no-op for synthesizer-emitted videos.
 //!   Source: moss-core pre-Phase-0 `VideoRenderer` at
 //!   `crates/moss-core/src/resolve/embed_renderer.rs:509-571` (commit `efb834a3e`).
-//! - `controls preload="metadata"` always emitted unconditionally — the
-//!   `controls` keyword is the historical default; the wikilink syntax
-//!   `![[clip.mp4]]` never had a "controls off" variant.
+//! - `controls preload="metadata"` emitted on the **default** branch. The
+//!   ambient loop branch (`![[clip.mp4|loop]]`) instead emits
+//!   `autoplay muted loop playsinline preload="metadata"` with no `controls`
+//!   and adds `data-loop` for JS/CSS targeting. See `AMBIENT_PLAYBACK_ATTRS`.
 //! - Width/height priority: (1) `TitleParams` `|WxH` sizing alias wins
 //!   when present (with units like `640px`). (2) `AssetSnapshot.dimensions`
 //!   lookup as fallback, emitted unitless (e.g. `width="1920"`). (3) Both
@@ -62,6 +63,14 @@ use crate::asset_snapshot::AssetSnapshot;
 use crate::resolve::embed_renderer::html_escape_attr;
 use crate::resolve::title_params::TitleParams;
 use std::path::PathBuf;
+
+/// Core playback attributes shared by the ambient loop branch and cover.rs.
+///
+/// The loop branch prepends `autoplay` to this. cover.rs intentionally omits
+/// `autoplay` (covers are hover-played, not auto) — if cover.rs can't import
+/// this const directly, keep its literal with:
+/// `// keep in sync with render::video::AMBIENT_PLAYBACK_ATTRS (covers omit autoplay)`
+pub const AMBIENT_PLAYBACK_ATTRS: &str = r#"muted loop playsinline preload="metadata""#;
 
 /// Synthesize video embed HTML for `Tag::Link` with `moss:kind=video` title.
 ///
@@ -116,11 +125,25 @@ pub fn synthesize_video_html(
         }
     };
 
+    // Ambient loop branch: `![[clip.mp4|loop]]` → autoplay + ambient set,
+    // no controls, data-loop JS/CSS hook. Default branch keeps controls.
+    let is_loop = params.get("loop").is_some();
+    let (playback, data_loop) = if is_loop {
+        (
+            format!("autoplay {}", AMBIENT_PLAYBACK_ATTRS),
+            r#" data-loop"#,
+        )
+    } else {
+        (r#"controls preload="metadata""#.to_string(), "")
+    };
+
     format!(
-        r#"<video class="moss-embed moss-embed-video" src="{src}" data-placeholder-src="{orig}" poster="{thumb}" data-thumb-src="{thumb}" controls preload="metadata"{w}{h}></video>"#,
+        r#"<video class="moss-embed moss-embed-video" data-type="video"{data_loop} src="{src}" data-placeholder-src="{orig}" poster="{thumb}" data-thumb-src="{thumb}" {playback}{w}{h}></video>"#,
+        data_loop = data_loop,
         src = html_escape_attr(&converted_src),
         orig = html_escape_attr(src),
         thumb = html_escape_attr(&thumb),
+        playback = playback,
         w = width_attr,
         h = height_attr,
     )
@@ -174,14 +197,14 @@ mod tests {
     }
 
     #[test]
-    fn video_emits_controls_unconditionally() {
-        // Pre-Phase-0 always emitted `controls preload="metadata"`. The
-        // wikilink syntax `![[clip.mp4]]` has no "no controls" form, so
-        // there is no `controls` param to consult; the synthesizer just
-        // emits the keyword.
+    fn video_emits_controls_on_default_path() {
+        // The default wikilink `![[clip.mp4]]` (no `loop` param) emits
+        // `controls preload="metadata"`. The loop branch is the one exception
+        // (it emits the ambient set instead). Relaxed from the original
+        // "unconditionally" test name — loop is the opt-in departure.
         let p = params_with(&[("kind", "video")]);
         let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
-        assert!(out.contains(" controls "), "got: {}", out);
+        assert!(out.contains(" controls"), "default path must emit controls, got: {}", out);
     }
 
     #[test]
@@ -392,4 +415,62 @@ mod tests {
     // moss-emitted <video> tags. The two regex-parity tests at
     // `src-tauri/tests/video_synth_regex_parity.rs` were deleted alongside
     // the regex.
+
+    // --- |loop ambient-video attribute (spec §3.6) -----------------------
+
+    #[test]
+    fn loop_keyword_emits_autoplay_muted_loop_playsinline_no_controls() {
+        // `![[clip.mp4|loop]]` must emit the ambient playback set and must
+        // NOT emit `controls` (the chrome-free ambient branch has no control bar).
+        let p = params_with(&[("kind", "video"), ("loop", "1")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(" autoplay"), "missing autoplay, got: {}", out);
+        assert!(out.contains(" muted"), "missing muted, got: {}", out);
+        assert!(out.contains(" loop"), "missing loop, got: {}", out);
+        assert!(out.contains(" playsinline"), "missing playsinline, got: {}", out);
+        assert!(!out.contains(" controls"), "controls must be absent on loop branch, got: {}", out);
+    }
+
+    #[test]
+    fn loop_keyword_emits_data_type_and_data_loop() {
+        // data-type="video" (drift fix) and data-loop (JS/CSS hook) must both
+        // be present on the loop branch.
+        let p = params_with(&[("kind", "video"), ("loop", "1")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(r#"data-type="video""#), "missing data-type=video, got: {}", out);
+        assert!(out.contains(" data-loop"), "missing data-loop attribute, got: {}", out);
+    }
+
+    #[test]
+    fn default_path_emits_controls() {
+        // The default `![[clip.mp4]]` (no loop param) must still emit `controls`.
+        // Relaxed from the previous test name "video_emits_controls_unconditionally"
+        // — the loop branch is the one exception.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(" controls"), "default path must emit controls, got: {}", out);
+    }
+
+    #[test]
+    fn loop_with_size_emits_width_height_and_loop_set() {
+        // `![[clip.mp4|640x360 loop]]` must set width AND height AND the loop
+        // ambient attribute set. The parser arm is tested end-to-end here via
+        // the synthesizer (width/height come from TitleParams the parser sets).
+        let p = params_with(&[("kind", "video"), ("loop", "1"), ("width", "640px"), ("height", "360px")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(r#"width="640px""#), "missing width, got: {}", out);
+        assert!(out.contains(r#"height="360px""#), "missing height, got: {}", out);
+        assert!(out.contains(" autoplay"), "missing autoplay, got: {}", out);
+        assert!(out.contains(" loop"), "missing loop, got: {}", out);
+        assert!(!out.contains(" controls"), "controls must be absent on loop branch, got: {}", out);
+    }
+
+    #[test]
+    fn data_type_video_emitted_on_default_branch() {
+        // data-type="video" must be on the default (non-loop) branch too — this
+        // is the drift fix bundled with the loop feature.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
+        assert!(out.contains(r#"data-type="video""#), "missing data-type=video on default branch, got: {}", out);
+    }
 }
