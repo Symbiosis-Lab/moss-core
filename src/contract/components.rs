@@ -1766,6 +1766,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "App-shell frame surface (preview chrome).",
     },
     ComponentEntry {
+        class: "moss-mobile-frame",
+        kind: "chrome",
+        parent: "moss-shell-frame",
+        data_attrs: &[],
+        example_html: r#"<html class="moss-shell-frame moss-mobile-frame">...</html>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Runtime marker the preview bridge adds to `<html>` when the shell is in mobile device-preview mode; drops the titlebar-clearance padding (the phone frame sits below the titlebar).",
+    },
+    ComponentEntry {
         class: "main-nav",
         kind: "chrome",
         parent: "",
