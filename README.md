@@ -22,7 +22,7 @@
 use moss_core::frontmatter;
 
 let raw = "---\ntitle: Hello\n---\n\nBody text";
-let doc = frontmatter::parse(raw)?;
+let doc = frontmatter::parse(raw);
 println!("{:?}", doc.frontmatter);
 ```
 

@@ -203,7 +203,11 @@ fn dispatch_in_shortcode(
 ) {
     match sc {
         // Variants with no typed block body — nothing to descend into.
-        Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Gallery(_) | Shortcode::Recent(_) => {}
+        Shortcode::Subscribe(_)
+        | Shortcode::Buttons(_)
+        | Shortcode::Gallery(_)
+        | Shortcode::Recent(_)
+        | Shortcode::Apply(_) => {}
         Shortcode::Hero(args) => {
             dispatch_in_block_children(
                 &mut args.overlay,
@@ -501,7 +505,8 @@ mod tests {
             Shortcode::Subscribe(_)
             | Shortcode::Buttons(_)
             | Shortcode::Gallery(_)
-            | Shortcode::Recent(_) => false,
+            | Shortcode::Recent(_)
+            | Shortcode::Apply(_) => false,
             Shortcode::Hero(args) => args.overlay.iter().any(block_has_wikilink_image),
             Shortcode::Grid(args) => args
                 .cells

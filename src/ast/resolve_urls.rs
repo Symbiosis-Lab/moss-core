@@ -314,7 +314,7 @@ fn resolve_shortcode_image_urls(
                     }
                 }
             }
-            Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) => {}
+            Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) | Shortcode::Apply(_) => {}
         },
         // Container blocks: recurse so nested shortcodes (Hero inside a
         // Callout, Grid inside a list, etc.) are reached.
@@ -666,7 +666,7 @@ where
     F: FnMut(&mut Inline),
 {
     match sc {
-        Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) => {}
+        Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) | Shortcode::Apply(_) => {}
         Shortcode::Gallery(args) => {
             // Gallery items carry their src as a structural `Url` on
             // GalleryItem, not as an `Inline::Image`. The Inline-image
@@ -798,7 +798,7 @@ where
     F: FnMut(&mut Url, &str, bool),
 {
     match sc {
-        Shortcode::Subscribe(_) | Shortcode::Recent(_) => {}
+        Shortcode::Subscribe(_) | Shortcode::Recent(_) | Shortcode::Apply(_) => {}
         Shortcode::Buttons(args) => {
             for item in &mut args.items {
                 // ButtonItem display text comes from item.text per the
