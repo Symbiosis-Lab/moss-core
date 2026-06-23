@@ -723,7 +723,7 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                 "slot" => {
                     if !value.is_empty() {
                         // Validation against known slot names happens at
-                        // consumer time in `build::footer::collect_footer_slots`,
+                        // consumer time in `build::footer::collect_footer_slots_by_language`,
                         // so authors get a deferred warning rather than a
                         // hard parse error.
                         frontmatter.slot = Some(value.to_string());

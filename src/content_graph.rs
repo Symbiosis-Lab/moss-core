@@ -393,21 +393,40 @@ impl ContentGraph {
             }
         }
 
-        // 5. Folder note: try all recognized home file stems in priority order
-        for stem in crate::home::INDEX_STEMS {
-            let folder_index = format!("{}/{}.md", norm_ref, stem);
-            if self.path_index.contains_key(&folder_index) {
-                return Some(self.files[self.path_index[&folder_index]].clone());
+        // 5. Folder note: a folder reference resolves to that folder's home
+        // file — either a recognized index stem (`<ref>/index.md`, in priority
+        // order) or the self-named note (`<ref>/<leaf>.md`).
+        let folder_note = |base: &str| -> Option<String> {
+            for stem in crate::home::INDEX_STEMS {
+                let folder_index = format!("{}/{}.md", base, stem);
+                if let Some(&idx) = self.path_index.get(&folder_index) {
+                    return Some(self.files[idx].clone());
+                }
+            }
+            let leaf = base.rsplit('/').next().unwrap_or(base);
+            let self_named = format!("{}/{}.md", base, leaf);
+            self.path_index
+                .get(&self_named)
+                .map(|&idx| self.files[idx].clone())
+        };
+
+        // 5a. Language-tree-scoped folder note: a bare folder reference like
+        // `docs/` written inside a `zh-hans/` page should resolve to the
+        // same-language `zh-hans/docs/index.md`, not the root `docs/index.md`.
+        // Mirrors the bare-name language scoping at step 1b. Skipped when the
+        // reference already names a language tree explicitly (handled below).
+        if let Some(lang) = from_lang {
+            if crate::home::lang_tree_prefix(&norm_ref).is_none() {
+                let scoped = format!("{}/{}", lang, norm_ref);
+                if let Some(found) = folder_note(&scoped) {
+                    return Some(found);
+                }
             }
         }
 
-        // 5b. Folder note: reference/<stem>.md  (self-named)
-        let self_named = {
-            let leaf = norm_ref.rsplit('/').next().unwrap_or(&norm_ref);
-            format!("{}/{}.md", norm_ref, leaf)
-        };
-        if self.path_index.contains_key(&self_named) {
-            return Some(self.files[self.path_index[&self_named]].clone());
+        // 5b. Folder note in the reference's own namespace (root fallback).
+        if let Some(found) = folder_note(&norm_ref) {
+            return Some(found);
         }
 
         None
@@ -715,6 +734,44 @@ mod tests {
         assert_eq!(
             g.resolve_path("projects", ""),
             Some("projects/index.md".into())
+        );
+    }
+
+    // 7a. Folder-note resolution prefers the source's language tree.
+    // A bare folder reference like `docs/` written inside a `zh-hans/` page
+    // must resolve to the same-language `zh-hans/docs/index.md`, not the
+    // root-level `docs/index.md`. Mirrors the bare-name language scoping at
+    // step 1b for the folder-note (step 5) path.
+    #[test]
+    fn test_folder_note_prefers_same_language_tree() {
+        let g = ContentGraph::from_paths(&[
+            "docs/index.md",
+            "zh-hans/docs/index.md",
+            "zh-hans/index.md",
+        ]);
+
+        // From a zh-hans page, `docs/` resolves to the zh-hans docs folder.
+        assert_eq!(
+            g.resolve_path("docs/", "zh-hans/index.md"),
+            Some("zh-hans/docs/index.md".into())
+        );
+
+        // From a root page, `docs/` still resolves to the root docs folder.
+        assert_eq!(
+            g.resolve_path("docs/", "index.md"),
+            Some("docs/index.md".into())
+        );
+    }
+
+    // 7a-fallback. When no same-language folder note exists, a language-tree
+    // page falls back to the root folder note rather than failing.
+    #[test]
+    fn test_folder_note_falls_back_to_root_when_no_language_sibling() {
+        let g = ContentGraph::from_paths(&["docs/index.md", "zh-hans/index.md"]);
+
+        assert_eq!(
+            g.resolve_path("docs/", "zh-hans/index.md"),
+            Some("docs/index.md".into())
         );
     }
 
