@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `resolve::md_extract`: pure markdown reference extractor (`extract_md_references`) returning every wikilink / embed / markdown-link / markdown-image token with byte offsets. Zero I/O; backs rename-with-references and delete-with-references in the editor.
+
 ### Changed
 - `ComponentEntry::is_public()` now also returns `false` for internal implementation classes (`moss-apply*`), hiding them from `moss describe` and `docs/contract/reference.md`.
 

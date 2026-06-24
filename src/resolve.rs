@@ -25,6 +25,7 @@ pub mod output_url;
 pub mod registry;
 pub mod title_params;
 pub mod wikilink_dispatch;
+pub mod md_extract;
 
 /// A link going out from a document.
 #[derive(Debug, Clone)]
