@@ -963,7 +963,39 @@ fn build_synth_params(
     // supports free-text titles.
     if let Some(alias) = embed.alias {
         match kind {
-            SynthKind::Video | SynthKind::Pdf | SynthKind::Model => match Sizing::parse(alias) {
+            SynthKind::Video => {
+                // Video alias supports a bare `loop` keyword (case-insensitive)
+                // plus an optional `WxH` sizing hint in any order.
+                // `![[clip.mp4|loop]]` → params["loop"]="1", no sizing.
+                // `![[clip.mp4|640x360 loop]]` → sizing AND loop.
+                // `![[clip.mp4|640x360]]` → sizing only (backward-compat).
+                //
+                // Strategy: tokenise on whitespace, extract the `loop` token,
+                // then run Sizing::parse on the remaining tokens joined by a
+                // space so multi-token sizing like "640x360" keeps working.
+                let mut tokens: Vec<&str> = alias.split_whitespace().collect();
+                let loop_pos = tokens
+                    .iter()
+                    .position(|t| t.eq_ignore_ascii_case("loop"));
+                if let Some(pos) = loop_pos {
+                    tokens.remove(pos);
+                    params.insert("loop", "1");
+                }
+                let remainder = tokens.join(" ");
+                if !remainder.is_empty() {
+                    match Sizing::parse(&remainder) {
+                        Some(Sizing::Width(w)) => {
+                            params.insert("width", w.to_css());
+                        }
+                        Some(Sizing::Box(w, h)) => {
+                            params.insert("width", w.to_css());
+                            params.insert("height", h.to_css());
+                        }
+                        None => {}
+                    }
+                }
+            }
+            SynthKind::Pdf | SynthKind::Model => match Sizing::parse(alias) {
                 Some(Sizing::Width(w)) => {
                     params.insert("width", w.to_css());
                 }
@@ -1899,6 +1931,126 @@ mod tests {
         match emit.output {
             EmitKind::Html(s) => assert!(s.contains(r#"data-width="wide""#), "got: {s}"),
             other => panic!("expected Html, got: {other:?}"),
+        }
+    }
+
+    // --- |loop ambient-video parser arm (spec §3.3a) ----------------------
+
+    #[test]
+    fn dispatch_video_loop_alias_emits_ambient_set() {
+        // `![[clip.mp4|loop]]` — bare `loop` token sets the ambient playback set
+        // and suppresses controls.
+        let graph = build_graph(&["clip.mp4"]);
+        let emit = dispatch_wikilink_embed(
+            "clip.mp4",
+            Some("loop"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains(" autoplay"), "missing autoplay, got: {}", s);
+                assert!(s.contains(" muted"), "missing muted, got: {}", s);
+                assert!(s.contains(" loop"), "missing loop, got: {}", s);
+                assert!(s.contains(" playsinline"), "missing playsinline, got: {}", s);
+                assert!(!s.contains(" controls"), "controls must be absent on loop branch, got: {}", s);
+                assert!(s.contains(" data-loop"), "missing data-loop, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_video_loop_alias_case_insensitive() {
+        // `![[clip.mp4|LOOP]]` — loop keyword must be case-insensitive.
+        let graph = build_graph(&["clip.mp4"]);
+        let emit = dispatch_wikilink_embed(
+            "clip.mp4",
+            Some("LOOP"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains(" autoplay"), "missing autoplay on LOOP alias, got: {}", s);
+                assert!(!s.contains(" controls"), "controls must be absent on LOOP alias, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_video_size_and_loop_alias_propagates_all() {
+        // `![[clip.mp4|640x360 loop]]` — sizing AND loop must both be set;
+        // order within the alias is irrelevant to the output.
+        let graph = build_graph(&["clip.mp4"]);
+        let emit = dispatch_wikilink_embed(
+            "clip.mp4",
+            Some("640x360 loop"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains(r#"width="640px""#), "missing width, got: {}", s);
+                assert!(s.contains(r#"height="360px""#), "missing height, got: {}", s);
+                assert!(s.contains(" autoplay"), "missing autoplay, got: {}", s);
+                assert!(s.contains(" data-loop"), "missing data-loop, got: {}", s);
+                assert!(!s.contains(" controls"), "controls must be absent, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_video_loop_first_then_size() {
+        // `![[clip.mp4|loop 640x360]]` — loop before size is also valid
+        // (order-independent within the alias).
+        let graph = build_graph(&["clip.mp4"]);
+        let emit = dispatch_wikilink_embed(
+            "clip.mp4",
+            Some("loop 640x360"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains(r#"width="640px""#), "missing width, got: {}", s);
+                assert!(s.contains(r#"height="360px""#), "missing height, got: {}", s);
+                assert!(s.contains(" autoplay"), "missing autoplay, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_video_sizing_alias_still_works_without_loop() {
+        // `![[clip.mp4|640x360]]` — sizing without loop must NOT emit autoplay
+        // (backward-compat; non-loop path unchanged).
+        let graph = build_graph(&["clip.mp4"]);
+        let emit = dispatch_wikilink_embed(
+            "clip.mp4",
+            Some("640x360"),
+            true,
+            &graph,
+            "index.md",
+            &empty_snapshot(),
+        );
+        match emit.output {
+            EmitKind::Html(s) => {
+                assert!(s.contains(r#"width="640px""#), "missing width, got: {}", s);
+                assert!(!s.contains(" autoplay"), "autoplay must NOT be emitted without loop, got: {}", s);
+                assert!(s.contains(" controls"), "controls must be emitted on non-loop path, got: {}", s);
+            }
+            other => panic!("expected Html, got: {:?}", other),
         }
     }
 

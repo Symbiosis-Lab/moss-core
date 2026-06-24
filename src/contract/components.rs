@@ -803,6 +803,12 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 description: "v1 embed kind. Set on the embed element. Theme authors target `.moss-embed[data-type=...]`.",
             },
             DataAttr {
+                name: "data-loop",
+                values: &[],
+                default: "",
+                description: "Ambient background video: autoplay + muted + loop + playsinline, controls off. Authored as `![[clip.mp4|loop]]`. Boolean presence flag (value is empty). JS reads it to apply the reduced-motion guard and mount the pause/play toggle.",
+            },
+            DataAttr {
                 name: "data-width",
                 values: &["body", "wide", "page", "screen"],
                 default: "body",
@@ -815,11 +821,11 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 description: "Identifies the embed provider for external URL embeds. Absent for generic iframes and local HTML embeds.",
             },
         ],
-        example_html: r#"<div class="moss-embed moss-embed-pdf"><iframe src="..."></iframe></div>"#,
-        example_markdown: "![[paper.pdf]]",
+        example_html: r#"<video class="moss-embed moss-embed-video" data-type="video" data-loop src="clip.mp4" autoplay muted loop playsinline preload="metadata"></video>"#,
+        example_markdown: "![[clip.mp4|loop]]",
         status: Status::Confirmed,
         since: "0",
-        description: "Base class on every typed embed. Kind on `data-type` (v1). `.moss-embed-audio` / `-video` / `-pdf` / `-notebook` / `-table` / `-iframe` / `-3d` retired in Phase 1c.",
+        description: "Base class on every typed embed. Kind on `data-type` (v1). Ambient video: add `data-loop` via `![[clip.mp4|loop]]`. `.moss-embed-audio` / `-video` / `-pdf` / `-notebook` / `-table` / `-iframe` / `-3d` retired in Phase 1c.",
     },
     ComponentEntry {
         class: "moss-embed-audio",
@@ -2000,6 +2006,43 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Emerging,
         since: "0",
         description: "Per-entry description slot inside `.moss-recent` (BEM child). Sourced from frontmatter `description`; empty when unset.",
+    },
+    // -------------------------------------------------------------------
+    // Ambient loop video — JS-injected wrapper + toggle (§3.5).
+    // The <video data-loop> synthesizer emits `data-loop` on the <video>;
+    // ambient-video.ts wraps it at init time.
+    // -------------------------------------------------------------------
+    ComponentEntry {
+        class: "moss-ambient-video",
+        kind: "standalone",
+        parent: "",
+        data_attrs: &[
+            DataAttr {
+                name: "data-paused",
+                values: &[],
+                default: "",
+                description: "Boolean presence flag set by ambient-video.ts when the video is paused (user-initiated or reduced-motion guard). CSS uses `[data-paused]` to keep the toggle visible.",
+            },
+        ],
+        example_html: r#"<div class="moss-ambient-video">
+  <video data-loop src="clip.mp4" autoplay muted loop playsinline preload="metadata"></video>
+  <button class="moss-ambient-toggle" type="button" aria-label="Pause video">⏸</button>
+</div>"#,
+        example_markdown: "![[clip.mp4|loop]]",
+        status: Status::Emerging,
+        since: "1",
+        description: "JS-injected wrapper around a `video[data-loop]` element. Provides the positioning context for `.moss-ambient-toggle` and the `[data-paused]` state hook. Not emitted by the Rust synthesizer — ambient-video.ts creates it at init.",
+    },
+    ComponentEntry {
+        class: "moss-ambient-toggle",
+        kind: "instance",
+        parent: "moss-ambient-video",
+        data_attrs: &[],
+        example_html: r#"<button class="moss-ambient-toggle" type="button" aria-label="Pause video">⏸</button>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "1",
+        description: "Chrome-free pause/play toggle button for ambient loop videos. Injected by ambient-video.ts. Keyboard-focusable; `aria-label` toggles between \"Pause video\" and \"Play video\". Visible on hover/focus of `.moss-ambient-video` and always visible when `[data-paused]`. Satisfies WCAG 2.2.2 Level A (Pause, Stop, Hide).",
     },
 ];
 
