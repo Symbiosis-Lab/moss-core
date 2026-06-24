@@ -2106,3 +2106,27 @@ pub fn retired_class_names() -> impl Iterator<Item = &'static str> {
         .filter(|e| e.status == Status::Retired)
         .map(|e| e.class)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Orphan-gate: every class in `INTERNAL_CLASSES` must exist as a `class`
+    /// in `COMPONENTS`. If a class is renamed in the emitter *and* in
+    /// `INTERNAL_CLASSES` but forgotten in `COMPONENTS`, it would silently
+    /// re-enter the public contract surface (`is_public()` only hides known
+    /// internals). This test prevents that gap.
+    #[test]
+    fn every_internal_class_has_a_components_entry() {
+        let component_classes: std::collections::HashSet<&'static str> =
+            COMPONENTS.iter().map(|e| e.class).collect();
+        for &internal in INTERNAL_CLASSES {
+            assert!(
+                component_classes.contains(internal),
+                "INTERNAL_CLASSES entry '{}' has no matching entry in COMPONENTS — \
+                 add a ComponentEntry for it or remove it from INTERNAL_CLASSES",
+                internal
+            );
+        }
+    }
+}
