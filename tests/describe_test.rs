@@ -1,5 +1,8 @@
 use moss_core::contract::components::COMPONENTS;
-use moss_core::contract::describe::{DescribePayload, DESCRIBE_SCHEMA_VERSION, MOSS_HTML_VERSION};
+use moss_core::contract::describe::{
+    CliCommandInfo, DescribePayload, ManifestFieldInfo, PluginHookInfo, SlotInfo,
+    DESCRIBE_SCHEMA_VERSION, MOSS_HTML_VERSION,
+};
 use moss_core::contract::tokens::{load_tokens, parse_tokens};
 
 #[test]
@@ -14,6 +17,13 @@ fn describe_payload_serializes_with_versions() {
     assert!(json["components"].is_array());
     // Payload must remain complete — no filtering in the JSON output.
     assert_eq!(json["components"].as_array().unwrap().len(), COMPONENTS.len());
+}
+
+#[test]
+fn describe_schema_version_is_5() {
+    // Guard against accidental version rollback. Any future bump must be
+    // intentional and accompanied by a CHANGELOG entry.
+    assert_eq!(DESCRIBE_SCHEMA_VERSION, 5);
 }
 
 #[test]
@@ -85,4 +95,78 @@ fn describe_token_json_includes_dark_value() {
         v["tokens"]["color"][0].get("dark_value").is_none(),
         "light-only token must have no dark_value key in JSON output (not null)"
     );
+}
+
+/// `DescribePayload::new()` in moss-core produces empty plugin-contract vecs
+/// (those are filled by the Tauri layer which has access to the plugin types).
+/// The serialized JSON must include the keys with empty arrays — not absent keys.
+#[test]
+fn describe_payload_plugin_contract_keys_present_as_empty_arrays() {
+    let tokens = load_tokens().expect("tokens");
+    let payload = DescribePayload::new(&tokens);
+    let json = serde_json::to_value(&payload).expect("serialize");
+
+    assert!(json["plugin_hooks"].is_array(), "plugin_hooks must serialize as array");
+    assert!(json["manifest_fields"].is_array(), "manifest_fields must serialize as array");
+    assert!(json["slots"].is_array(), "slots must serialize as array");
+    assert!(json["cli_commands"].is_array(), "cli_commands must serialize as array");
+}
+
+/// The plugin contract structs must round-trip through serde correctly.
+/// This tests that field names, types, and required flags serialize as expected.
+#[test]
+fn describe_plugin_contract_structs_serialize_correctly() {
+    let tokens = load_tokens().expect("tokens");
+    let payload = DescribePayload::new(&tokens).with_plugin_contract(
+        vec![PluginHookInfo {
+            name: "process",
+            description: "Pre-process files before generation.",
+            arity: "multiple",
+            context: "ProcessContext",
+        }],
+        vec![ManifestFieldInfo {
+            name: "name",
+            r#type: "string",
+            required: true,
+            description: "Plugin identifier.",
+        }],
+        vec![SlotInfo {
+            name: "head-end",
+            position: "Before </head>.",
+            authorable: false,
+        }],
+        vec![CliCommandInfo {
+            name: "build",
+            args: "<folder> [--serve]",
+            description: "Build the site.",
+        }],
+    );
+
+    let json = serde_json::to_value(&payload).expect("serialize");
+
+    // plugin_hooks
+    let hooks = json["plugin_hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0]["name"], "process");
+    assert_eq!(hooks[0]["arity"], "multiple");
+    assert_eq!(hooks[0]["context"], "ProcessContext");
+
+    // manifest_fields
+    let fields = json["manifest_fields"].as_array().unwrap();
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0]["name"], "name");
+    assert_eq!(fields[0]["type"], "string");
+    assert_eq!(fields[0]["required"], true);
+
+    // slots
+    let slots = json["slots"].as_array().unwrap();
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0]["name"], "head-end");
+    assert_eq!(slots[0]["authorable"], false);
+
+    // cli_commands
+    let cmds = json["cli_commands"].as_array().unwrap();
+    assert_eq!(cmds.len(), 1);
+    assert_eq!(cmds[0]["name"], "build");
+    assert!(cmds[0]["args"].as_str().unwrap().contains("--serve"));
 }
