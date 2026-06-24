@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Pending publish — cumulative since `0.1.0` (last released on main)._
 - Parse `color=` pipe attribute into `MediaAttrs` for cover-color override (repeated `color=` is last-wins).
+- Parse `loop=` pipe attribute into `MediaAttrs` for ambient looping video (emits `data-loop`); add the `moss-ambient-video` / `moss-ambient-toggle` component-contract entries for the JS-injected pause/play affordance.
+- Extend `moss describe --json` to schema **v5**: plugin hook contract (`plugin_hooks`), manifest fields (`manifest_fields`), slots, and CLI commands; `capabilities.required` now defaults to `false`; document the `-r|--recursive` import argument.
+- Resolve folder references inside a language tree to the sibling `<lang>/<folder>/` index before falling back to the root.
+- Parse nested `::::buttons` containers and `+++` thematic-break dividers (shortcode-structure parity corpus extended).
+- Resolve bare `![[note]]` wikilink embeds as transclusions.
 - **BREAKING:** Removed the `unlisted` frontmatter field. Use `draft` instead — a draft page now renders and is published at its direct URL but is hidden from all listings, feeds, sitemap, and navigation, and is marked `noindex`.
 - Plus the [0.1.1] changes below (`home` marker, unified `classify_reference`, reference resolution moved into moss-core).
 
