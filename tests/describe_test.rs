@@ -15,8 +15,20 @@ fn describe_payload_serializes_with_versions() {
     assert_eq!(json["moss_html_version"], MOSS_HTML_VERSION);
     assert!(json["tokens"].is_object());
     assert!(json["components"].is_array());
-    // Payload must remain complete — no filtering in the JSON output.
-    assert_eq!(json["components"].as_array().unwrap().len(), COMPONENTS.len());
+    // Internal classes (moss-apply*) are filtered out of the public contract.
+    // The payload length must be COMPONENTS.len() minus the internal class count.
+    let public_count = COMPONENTS.iter().filter(|c| c.is_public()).count();
+    assert_eq!(
+        json["components"].as_array().unwrap().len(),
+        public_count,
+        "payload must contain exactly the public (non-internal) components"
+    );
+    // Internal classes must not appear in the payload.
+    let components = json["components"].as_array().unwrap();
+    assert!(
+        components.iter().all(|c| !c["class"].as_str().unwrap_or("").starts_with("moss-apply")),
+        "internal moss-apply* classes must not appear in the public payload"
+    );
 }
 
 #[test]

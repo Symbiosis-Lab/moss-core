@@ -155,6 +155,7 @@ impl<'a> DescribePayload<'a> {
 
         let components: Vec<ComponentJson> = COMPONENTS
             .iter()
+            .filter(|c| c.is_public())
             .map(|c| ComponentJson {
                 class: c.class,
                 kind: c.kind,
@@ -215,5 +216,25 @@ impl<'a> DescribePayload<'a> {
         self.slots = slots;
         self.cli_commands = cli_commands;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::tokens::load_tokens;
+
+    #[test]
+    fn apply_is_absent_from_public_contract() {
+        let tokens = load_tokens().expect("tokens");
+        let payload = DescribePayload::new(&tokens);
+        assert!(
+            payload.components.iter().all(|c| !c.class.starts_with("moss-apply")),
+            "apply classes must be demoted from the public contract"
+        );
+        assert!(
+            !payload.components.iter().any(|c| c.class == "moss-apply" && c.authorable),
+            ":::apply must not be marked authorable"
+        );
     }
 }

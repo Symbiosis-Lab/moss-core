@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `ComponentEntry::is_public()` now also returns `false` for internal implementation classes (`moss-apply*`), hiding them from `moss describe` and `docs/contract/reference.md`.
+
 _Pending publish — cumulative since `0.1.0` (last released on main)._
 - Parse `color=` pipe attribute into `MediaAttrs` for cover-color override (repeated `color=` is last-wins).
 - Parse `loop=` pipe attribute into `MediaAttrs` for ambient looping video (emits `data-loop`); add the `moss-ambient-video` / `moss-ambient-toggle` component-contract entries for the JS-injected pause/play affordance.

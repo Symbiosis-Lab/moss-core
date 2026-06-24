@@ -2046,15 +2046,31 @@ pub const COMPONENTS: &[ComponentEntry] = &[
     },
 ];
 
+/// Implementation classes that are emitted by moss for internal functionality
+/// but must not appear in the public theme-facing contract (`moss describe` /
+/// `docs/contract/reference.md`). These classes ARE present in `COMPONENTS` for
+/// the sync-test to validate their HTML class literals, but `is_public()` hides
+/// them from agents, themes, and `reference.md` generation.
+const INTERNAL_CLASSES: &[&str] = &[
+    "moss-apply",
+    "moss-apply-form",
+    "moss-apply-matters",
+    "moss-apply-details",
+    "moss-apply-hp",
+    "moss-apply-status",
+    "moss-apply-label",
+    "moss-apply-helper",
+];
+
 impl ComponentEntry {
     /// True for entries that belong in the public, agent/theme-facing surface.
-    /// v1 rule: simply "not retired" — keeps the full theme vocabulary
-    /// (moss-card, moss-cards, breadcrumbs, etc.) while dropping retired noise.
-    /// (A finer internal-subclass split is deliberately NOT attempted here —
-    /// it risks hiding theme-targetable classes. Agents get the precise
-    /// shortcode set via the `authorable` flag instead.)
+    /// v1 rule: not retired AND not an internal implementation class.
+    ///
+    /// Internal classes (e.g. all `moss-apply*`) stay in COMPONENTS so the
+    /// sync-test can validate them, but they must not surface in `moss describe`
+    /// or `docs/contract/reference.md` — they are subject to change at any time.
     pub fn is_public(&self) -> bool {
-        self.status != Status::Retired
+        self.status != Status::Retired && !INTERNAL_CLASSES.contains(&self.class)
     }
 }
 
