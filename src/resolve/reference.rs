@@ -96,6 +96,20 @@ impl ResolvedReference {
     }
 }
 
+/// Filename extension of a root-relative path, lowercased, no leading dot.
+/// Basename-aware: a dot in a directory name is never mistaken for an extension
+/// (`a.b/README` → ``). Empty when the basename has no extension.
+fn filename_ext(path: &str) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        // Guard the empty stem so a dotfile (`.gitignore`) is treated as
+        // extension-less, not as extension `gitignore` — mirrors
+        // `content_graph::filename_stem`.
+        Some((stem, ext)) if !stem.is_empty() => ext.to_lowercase(),
+        _ => String::new(),
+    }
+}
+
 /// Classify a reference's inner text (target + optional |pothole / #anchor /
 /// ?query) into a kind + resolved source path. Pure.
 pub fn classify_reference(
@@ -241,11 +255,63 @@ pub fn classify_reference(
     }
 
     // File arm.
-    let ext = path_no_anchor.rsplit('.').next().unwrap_or("").to_lowercase();
-    let ext_kind = reference_kind_for_ext(&ext);
-    match resolve_asset_ref(path_no_anchor, from_source, ctx.assets) {
-        AssetResolution::Resolved { root_rel, provenance } => {
-            let kind = match ext_kind {
+    //
+    // Resolve the reference to a source file, then key the embed kind off the
+    // RESOLVED file's extension — NOT the query string's. A bare `![[note]]`
+    // carries no extension; the build resolves it to `note.md`
+    // (ContentGraph::resolve_path step 1b/2) and renders a Transclusion. Keying
+    // off the query instead (extensionless → Other → Link) was the editor-only
+    // drift that showed `![[support-band]]` as "not found" while the build
+    // transcluded it. `query_ext_kind` is used only to decide the *unresolved*
+    // fallback (known-ext miss = broken embed; unknown-ext miss = note Link).
+    let query_ext_kind = reference_kind_for_ext(&filename_ext(path_no_anchor));
+
+    let resolved: Option<(String, AssetProvenance)> =
+        match resolve_asset_ref(path_no_anchor, from_source, ctx.assets) {
+            AssetResolution::Resolved { root_rel, provenance } => Some((root_rel, provenance)),
+            AssetResolution::Ambiguous { candidates, .. } => {
+                let mut r = ResolvedReference::not_found();
+                r.kind = ReferenceKind::Ambiguous;
+                r.candidates = candidates;
+                return r;
+            }
+            // Bare extensionless EMBED (`![[note]]`): retry as a markdown note so
+            // the editor and build agree on Transclusion. resolve_asset_ref's
+            // source-relative resolution reproduces the build's lang-scoping for
+            // free (sibling `<lang>/note.md` wins before root). Non-embed refs and
+            // refs that already carry a known extension are untouched.
+            AssetResolution::NotFound
+                if is_embed && matches!(query_ext_kind, ExtKind::Other) =>
+            {
+                let mut hit = None;
+                for note_ext in ["md", "markdown"] {
+                    match resolve_asset_ref(
+                        &format!("{path_no_anchor}.{note_ext}"),
+                        from_source,
+                        ctx.assets,
+                    ) {
+                        AssetResolution::Resolved { root_rel, provenance } => {
+                            hit = Some((root_rel, provenance));
+                            break;
+                        }
+                        AssetResolution::Ambiguous { candidates, .. } => {
+                            let mut r = ResolvedReference::not_found();
+                            r.kind = ReferenceKind::Ambiguous;
+                            r.candidates = candidates;
+                            return r;
+                        }
+                        AssetResolution::NotFound => {}
+                    }
+                }
+                hit
+            }
+            AssetResolution::NotFound => None,
+        };
+
+    match resolved {
+        Some((root_rel, provenance)) => {
+            // Kind keyed off the RESOLVED file's extension (see comment above).
+            let kind = match reference_kind_for_ext(&filename_ext(&root_rel)) {
                 ExtKind::Image => ReferenceKind::Image,
                 ExtKind::Iframe => ReferenceKind::Iframe,
                 ExtKind::Pdf => ReferenceKind::Pdf,
@@ -267,14 +333,8 @@ pub fn classify_reference(
             r.debug_check_invariant();
             r
         }
-        AssetResolution::Ambiguous { candidates, .. } => {
-            let mut r = ResolvedReference::not_found();
-            r.kind = ReferenceKind::Ambiguous;
-            r.candidates = candidates;
-            r
-        }
-        AssetResolution::NotFound => {
-            if matches!(ext_kind, ExtKind::Other) {
+        None => {
+            if matches!(query_ext_kind, ExtKind::Other) {
                 // An unresolved reference with no known file extension is a note
                 // link (classify-only here; link resolution/emission is sub-project #4).
                 let mut r = ResolvedReference::not_found();
@@ -449,6 +509,84 @@ mod tests {
         let u = FakeUrlIndex::new();
         let r = classify_reference("note.md", "page.md", true, &ctx(&a, &f, &u));
         assert_eq!(r.kind, ReferenceKind::Transclusion);
+    }
+
+    // ── Bare-name embed transclusion parity (Bug 3) ──────────────────────────
+    // The build resolves `![[support-band]]` (no extension) to `support-band.md`
+    // via ContentGraph::resolve_path (exact-path + `.md`, lang-scoped) and renders
+    // a Transclusion. The editor classifier previously keyed the embed kind off
+    // the QUERY string's extension (extensionless → Other → Link), so the same
+    // reference showed "not found" in the editor. These lock the parity.
+
+    #[test]
+    fn bare_embed_resolves_markdown_note_as_transclusion() {
+        let a = FakeAssetIndex::new(&["support-band.md"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("support-band", "index.md", true, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Transclusion);
+        assert_eq!(r.target_path.as_deref(), Some("support-band.md"));
+        r.debug_check_invariant();
+    }
+
+    #[test]
+    fn bare_embed_prefers_source_relative_md_note() {
+        // From a language-tree source, the sibling note wins — mirrors
+        // ContentGraph::resolve_path step 1b lang-scoping (source-relative
+        // resolution in resolve_asset_ref gives this for free).
+        let a = FakeAssetIndex::new(&["support-band.md", "zh-hans/support-band.md"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("support-band", "zh-hans/index.md", true, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Transclusion);
+        assert_eq!(r.target_path.as_deref(), Some("zh-hans/support-band.md"));
+        r.debug_check_invariant();
+    }
+
+    #[test]
+    fn bare_embed_resolves_root_note_from_root_source() {
+        // Both root and lang-tree notes exist; a root source resolves the root one
+        // deterministically (source-relative join), never Ambiguous.
+        let a = FakeAssetIndex::new(&["support-band.md", "zh-hans/support-band.md"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("support-band", "index.md", true, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Transclusion);
+        assert_eq!(r.target_path.as_deref(), Some("support-band.md"));
+        r.debug_check_invariant();
+    }
+
+    #[test]
+    fn bare_embed_path_qualified_note_is_transclusion() {
+        // `![[work/daowu]]` (path, no extension) resolves work/daowu.md.
+        let a = FakeAssetIndex::new(&["work/daowu.md"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("work/daowu", "index.md", true, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Transclusion);
+        assert_eq!(r.target_path.as_deref(), Some("work/daowu.md"));
+    }
+
+    #[test]
+    fn bare_embed_unresolved_stays_link() {
+        // No matching note → still a classify-only Link, not Transclusion.
+        let a = FakeAssetIndex::new(&["other.md"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("support-band", "index.md", true, &ctx(&a, &f, &u));
+        assert_eq!(r.kind, ReferenceKind::Link { anchor: None });
+        assert!(r.target_path.is_none());
+    }
+
+    #[test]
+    fn bare_link_not_embed_does_not_use_md_fallback() {
+        // is_embed=false resolves against the URL space, NOT the note-extension
+        // fallback — a non-embed `[[support-band]]` must never become Transclusion.
+        let a = FakeAssetIndex::new(&["support-band.md"]);
+        let f = FakeFolderIndex::new();
+        let u = FakeUrlIndex::new();
+        let r = classify_reference("support-band", "index.md", false, &ctx(&a, &f, &u));
+        assert_ne!(r.kind, ReferenceKind::Transclusion);
     }
 
     #[test]
