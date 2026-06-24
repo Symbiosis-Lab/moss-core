@@ -1370,6 +1370,28 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Status region inside `.moss-apply-form` (also carries `.moss-subscribe-status`).",
     },
+    ComponentEntry {
+        class: "moss-apply-label",
+        kind: "instance",
+        parent: "moss-apply",
+        data_attrs: &[],
+        example_html: r#"<label class="moss-apply-label" for="moss-apply-email">邮箱</label>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Visible field label inside `.moss-apply-form`. Emitted before the email input and before the Matters input. Internal — not part of the public component contract.",
+    },
+    ComponentEntry {
+        class: "moss-apply-helper",
+        kind: "instance",
+        parent: "moss-apply",
+        data_attrs: &[],
+        example_html: r#"<p class="moss-apply-helper">用于获取邀请及免费托管服务</p>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "0",
+        description: "Helper text line beneath the email input in `.moss-apply-form`. Internal — not part of the public component contract.",
+    },
     // -------------------------------------------------------------------
     // Series navigation (prev/next + collection links).
     // -------------------------------------------------------------------
