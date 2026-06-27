@@ -94,10 +94,13 @@ pub struct FieldDefinition {
     /// `None` when no key is registered (frontend falls back to field name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_key: Option<String>,
-    /// Display priority for chip bar ordering. Lower values appear first.
-    /// 0 means unset (defaults to end). Typical range: 10 (title) to 110 (cascade).
-    #[serde(default)]
-    pub priority: u8,
+    /// Display score for chip bar ordering and add-property search list ordering.
+    /// Lower values appear first / sort higher in the list.
+    /// Formula: score = 100 - (Frequency*6 + Importance*4); see schema_fields.rs.
+    /// 0 means unset (skip-schema or plugin-contributed fields, sort to end).
+    /// Serialized as "priority" for backwards compatibility with the frontend.
+    #[serde(default, rename = "priority")]
+    pub score: u8,
     /// Source of this field definition.
     /// `None` for builtin fields, `Some("review")` for plugin-contributed fields.
     /// Used by the frontend to group fields by source in the editor form.
@@ -210,7 +213,7 @@ fn materialize_field(bf: &BuiltinField) -> FieldDefinition {
             description: None,
             label: None,
             label_key: None,
-            priority: 0,
+            score: 0,
             source: None,
             group: None,
         })
@@ -245,7 +248,7 @@ fn materialize_field(bf: &BuiltinField) -> FieldDefinition {
         },
         label: bf.label.map(|s| s.to_string()),
         label_key: if bf.label_key.is_empty() { None } else { Some(bf.label_key.to_string()) },
-        priority: bf.priority,
+        score: bf.score,
         source: None,
         group: if bf.group.is_empty() { None } else { Some(bf.group.to_string()) },
     }

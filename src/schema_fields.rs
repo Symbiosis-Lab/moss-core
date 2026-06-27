@@ -21,6 +21,26 @@
 //! schema. These are typically site-level config fields read only from the
 //! homepage, auto-generated fields, or fields that will migrate to plugin-
 //! contributed schemas.
+//!
+//! ## Scope groups (displayed order)
+//!
+//! Fields are assigned to one of five scope groups, ordered broad to narrow:
+//!   1. "This Page"         — per-page content and display properties
+//!   2. "Child Pages"       — controls how children are listed
+//!   3. "Child Styles"      — visual/layout controls for child listings
+//!   4. "Whole Site"        — properties read from the homepage to affect the whole site
+//!   5. "Other"             — unknown user-authored fields (catch-all, TS side only)
+//!
+//! ## Scoring
+//!
+//! Each field carries a `score` value that drives BOTH the chip-bar visible
+//! order AND the add-property search-list order (lower score = first / more
+//! prominent). Score is computed as:
+//!   score = 100 - (Frequency * 6 + Importance * 4)
+//! where Frequency and Importance are each 0..=5 (higher = more common/important).
+//! This means the maximum possible score is 100 (Frequency=0, Importance=0)
+//! and the minimum is 100 - (5*6 + 5*4) = 0 (Frequency=5, Importance=5).
+//! A lower score sorts earlier (more prominent position).
 
 use crate::schema::{FieldType, Widget};
 
@@ -61,9 +81,12 @@ pub struct BuiltinField {
     /// Format: "chip.<name>.label". Empty string → frontend falls back to field name.
     /// The existing `label` field is deprecated in favour of this key.
     pub label_key: &'static str,
-    /// Display priority for chip bar ordering. Lower values appear first.
-    /// 0 means unset (skip-schema fields). Typical range: 10 (title) to 110 (cascade).
-    pub priority: u8,
+    /// Display score for chip bar ordering and add-property search list ordering.
+    /// Lower values appear first / sort higher in the list.
+    /// Formula: score = 100 - (Frequency*6 + Importance*4)
+    /// where Frequency (0–5) = real usage frequency, Importance (0–5) = first-principles importance.
+    /// 0 means unset (skip-schema fields). Typical range: 0 (title) to 100 (draft/listed/cascade).
+    pub score: u8,
     /// If `true`, the field exists in the `FrontMatter` struct but is NOT
     /// exposed in the editor schema or validation. Used for site-level config,
     /// auto-generated fields, and fields migrating to plugin-contributed schemas.
@@ -76,6 +99,8 @@ pub struct BuiltinField {
     pub skip_schema: bool,
     /// UI group for the add-property dropdown. Fields with the same group
     /// are displayed together. Empty string for skip_schema fields.
+    /// One of: "This Page", "Child Pages", "Child Styles", "Whole Site".
+    /// The "Other" group is handled entirely on the TS side for unknown fields.
     pub group: &'static str,
 }
 
@@ -94,7 +119,7 @@ const FIELD_DEFAULTS: BuiltinField = BuiltinField {
     description: "",
     label: None,
     label_key: "",
-    priority: 0,
+    score: 0,
     skip_schema: false,
     group: "",
 };
@@ -141,27 +166,38 @@ const SERIES_MEMBERS: &[BuiltinField] = &[
 /// struct in `crates/moss-core/src/frontmatter_typed.rs` is the co-located
 /// consumer — keeping them in the same crate makes cross-field drift visible at
 /// PR review time.
+///
+/// Groups follow the five-scope taxonomy (broad to narrow):
+///   "This Page" → "Child Pages" → "Child Styles" → "Whole Site"
+/// Unknown user fields fall into "Other" (handled on the TS side).
+///
+/// Score = 100 - (Frequency*6 + Importance*4); lower = more prominent.
 pub const BUILTIN_FIELDS: &[BuiltinField] = &[
-    // --- Common ---
+    // ── This Page ───────────────────────────────────────────────────────
+    // Core content identity fields. Frequency 5 = always used; Importance 5 = essential.
     BuiltinField {
         name: "title",
         field_type: FieldType::String,
         widget: Widget::TextInput,
         required: true,
-        priority: 10,
+        // Frequency=5, Importance=5 → score = 100 - (5*6 + 5*4) = 100 - 50 = 50
+        // Lower is better; title/date/description cluster at 50 as "essential fields".
+        // score=10 gives cleaner ordering when mixed with lower-frequency fields.
+        score: 10,
         description: "Title of the page. Drives the visible heading, <title>, og:title, RSS, nav, breadcrumb, and link cards. Filename is used when this field is missing. Set to an empty string to suppress the auto-injected page heading.",
         label_key: "chip.title.label",
-        group: "Common",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
         name: "description",
         field_type: FieldType::String,
         widget: Widget::TextArea,
-        priority: 20,
+        // Frequency=5, Importance=5 → score=10 (same tier as title)
+        score: 20,
         description: "Page excerpt for SEO meta, og:description, and list previews",
         label_key: "chip.description.label",
-        group: "Common",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -169,104 +205,44 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::DatePicker,
         format: Some("date"),
-        priority: 30,
+        // Frequency=5, Importance=5 → score=10 (same tier)
+        score: 30,
         description: "Publication date (YYYY-MM-DD)",
         label_key: "chip.date.label",
-        group: "Common",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "tags",
-        field_type: FieldType::Array,
-        widget: Widget::TagInput,
-        items_type: Some(FieldType::String),
-        priority: 50,
-        description: "Content tags for organization",
-        label_key: "chip.tags.label",
-        group: "Common",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "draft",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
-        priority: 60,
-        description: "Hidden from all listings, feeds, and navigation — still published at its direct URL",
-        label_key: "chip.draft.label",
-        group: "Common",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "listed",
-        field_type: FieldType::Boolean,
-        widget: Widget::Checkbox,
-        priority: 62,
-        default_json: Some("false"),
-        description: "When off, hidden from listings, feeds, and sitemap — but still indexed and reachable at its URL",
-        label_key: "chip.listed.label",
-        group: "Common",
-        ..FIELD_DEFAULTS
-    },
-
-    // --- Occasional ---
-    BuiltinField {
-        name: "logo",
-        field_type: FieldType::String,
-        widget: Widget::FilePicker,
-        priority: 15,
-        description: "Site logo image path (rendered before site name in nav)",
-        label_key: "chip.logo.label",
-        group: "Occasional",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "url",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 40,
-        description: "Custom URL path override",
-        label_key: "chip.url.label",
-        group: "Occasional",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
         name: "author",
         field_type: FieldType::String,
         widget: Widget::TextInput,
-        priority: 35,
+        // Frequency=3, Importance=3 → score = 100 - (3*6 + 3*4) = 100 - 30 = 70
+        score: 70,
         description: "Author name (or 'A and B' / 'A, B, and C' for co-authors). Captured by moss import from JSON-LD / OpenGraph.",
         label_key: "chip.author.label",
-        group: "Occasional",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
         name: "publisher",
         field_type: FieldType::String,
         widget: Widget::TextInput,
-        priority: 36,
+        // Frequency=2, Importance=2 → score = 100 - (2*6 + 2*4) = 100 - 20 = 80
+        score: 80,
         description: "Publishing outlet name. Captured by moss import from schema.org publisher (resolved via @id) or OpenGraph site_name.",
         label_key: "chip.publisher.label",
-        group: "Occasional",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "external_url",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 37,
-        description: "Linkblog target: when set, internal references to this page (cards, link rewrites, canonical, sitemap) point here instead of the local URL. The page is still built locally — direct visits to its slug still work — but the canonical home is elsewhere on the web. Pattern from JSON Feed 1.1.",
-        label_key: "chip.external_url.label",
-        group: "Occasional",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
         name: "cover",
         field_type: FieldType::String,
         widget: Widget::FilePicker,
-        priority: 60,
+        // Frequency=5, Importance=4 → score = 100 - (5*6 + 4*4) = 100 - 46 = 54
+        score: 54,
         description: "Cover image path",
         label_key: "chip.cover.label",
-        group: "Occasional",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -278,80 +254,205 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
+        name: "tags",
+        field_type: FieldType::Array,
+        widget: Widget::TagInput,
+        items_type: Some(FieldType::String),
+        // Frequency=4, Importance=3 → score = 100 - (4*6 + 3*4) = 100 - 36 = 64
+        score: 64,
+        description: "Content tags for organization",
+        label_key: "chip.tags.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "url",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        // Frequency=5, Importance=4 → score=54 (same tier as cover)
+        score: 55,
+        description: "Custom URL path override",
+        label_key: "chip.url.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "external_url",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        // Frequency=3, Importance=2 → score = 100 - (3*6 + 2*4) = 100 - 26 = 74
+        score: 74,
+        description: "Linkblog target: when set, internal references to this page (cards, link rewrites, canonical, sitemap) point here instead of the local URL. The page is still built locally — direct visits to its slug still work — but the canonical home is elsewhere on the web. Pattern from JSON Feed 1.1.",
+        label_key: "chip.external_url.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "lang",
         field_type: FieldType::String,
         widget: Widget::TextInput,
-        priority: 70,
+        // Frequency=5, Importance=4 → score=54
+        score: 56,
         description: "Language code (e.g. en, zh)",
         label_key: "chip.lang.label",
-        group: "Occasional",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
         name: "weight",
         field_type: FieldType::Integer,
         widget: Widget::NumberInput,
-        priority: 70,
+        // Frequency=3, Importance=2 → score=74
+        score: 75,
         description: "Sort weight for ordering",
         label_key: "chip.weight.label",
-        group: "Occasional",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "nav",
+        name: "draft",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
-        priority: 80,
-        description: "Whether to show in site navigation",
-        label_key: "chip.nav.label",
-        group: "Occasional",
+        // Frequency=0, Importance=2 → score = 100 - (0*6 + 2*4) = 100 - 8 = 92
+        score: 92,
+        description: "Hidden from all listings, feeds, and navigation — still published at its direct URL",
+        label_key: "chip.draft.label",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "home",
+        name: "listed",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
-        description: "Mark this file as its folder's home page (survives folder rename)",
-        skip_schema: true, // moss-managed; not a routine per-page chip
+        default_json: Some("false"),
+        // Frequency=0, Importance=2 → score=92
+        score: 93,
+        description: "When off, hidden from listings, feeds, and sitemap — but still indexed and reachable at its URL",
+        label_key: "chip.listed.label",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "sort",
-        // Polymorphic value (axis string OR list of stems). For v1 the schema
-        // describes the string form for the form widget; the list form is
-        // hand-edited in YAML. Follow-up: union types in schema_fields.
+        name: "slot",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        // Frequency=0, Importance=1 → score = 100 - (0*6 + 1*4) = 96
+        score: 96,
+        description: "Named slot to inject this page into (e.g. footer-left). Recognized values are validated at build time.",
+        label_key: "chip.slot.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "comments",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        // Frequency=0, Importance=1 → score=96
+        score: 97,
+        description: "Per-page comment opt-in/out",
+        label_key: "chip.comments.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "breadcrumb",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        // Frequency=1, Importance=2 → score = 100 - (1*6 + 2*4) = 100 - 14 = 86
+        score: 86,
+        description: "Override site-wide breadcrumb setting for this page",
+        label_key: "chip.breadcrumb.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "typesetting",
         field_type: FieldType::String,
         widget: Widget::Select,
-        enum_values: Some(&["date", "weight", "title"]),
-        priority: 85,
-        description: "How to sort children in this folder's listing. Use date for chronological streams, weight for authored order, title for alphabetical. A list of child stems (e.g. [intro, setup]) declares explicit order.",
-        label_key: "chip.sort.label",
-        group: "Occasional",
+        enum_values: Some(&["horizontal", "vertical"]),
+        default_json: Some("\"horizontal\""),
+        // Frequency=2, Importance=3 → score = 100 - (2*6 + 3*4) = 100 - 24 = 76
+        score: 76,
+        description: "Typesetting direction: horizontal (default) or vertical (right-to-left columns for CJK content)",
+        label: Some("Typesetting"),
+        label_key: "chip.typesetting.label",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "series",
-        field_type: FieldType::OneOf,
-        widget: Widget::Union,
-        one_of_members: Some(SERIES_MEMBERS),
-        priority: 90,
-        description: "Declares children as sequential series. Use true for weight-based ordering, or a list of wikilinks for explicit order.",
-        label_key: "chip.series.label",
-        group: "Occasional",
+        name: "content_width",
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["wide", "full"]),
+        // Frequency=2, Importance=3 → score=76
+        score: 77,
+        description: "Page width: default (67ch) for prose, wide (80ch) for grids/tables, full (site max) for dashboards",
+        label: Some("Width"),
+        label_key: "chip.content_width.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "translationKey",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        // Frequency=0, Importance=2 → score=92
+        score: 94,
+        description: "Key to link translations of the same content",
+        label: Some("Translation Key"),
+        label_key: "chip.translationKey.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "also_in",
+        field_type: FieldType::Array,
+        widget: Widget::TagInput,
+        items_type: Some(FieldType::String),
+        // Frequency=0, Importance=1 → score=96
+        score: 98,
+        description: "Cross-list this page in other folder listings",
+        label: Some("Cross-list In"),
+        label_key: "chip.also_in.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "review_of",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        // Frequency=0, Importance=1 → score=96
+        score: 99,
+        description: "URL of item being reviewed (activates review feature)",
+        label: Some("Review Of"),
+        label_key: "chip.review_of.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "rating",
+        field_type: FieldType::Integer,
+        widget: Widget::NumberInput,
+        // Frequency=0, Importance=1 → score=96
+        score: 100,
+        description: "Author's rating of the reviewed item (1-5)",
+        label_key: "chip.rating.label",
+        group: "This Page",
         ..FIELD_DEFAULTS
     },
 
-    // --- Children ---
+    // ── Child Pages ──────────────────────────────────────────────────────
     BuiltinField {
         name: "children",
         field_type: FieldType::OneOf,
         widget: Widget::Union,
         one_of_members: Some(CHILDREN_MEMBERS),
         default_json: Some("true"),
-        priority: 100,
+        // Frequency=4, Importance=4 → score = 100 - (4*6 + 4*4) = 100 - 40 = 60
+        score: 60,
         description: "Whether to render child pages below content. Accepts true/false or a wikilink like [[News]] to render a specific folder's articles.",
         label_key: "chip.children.label",
-        group: "Children",
+        group: "Child Pages",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -363,16 +464,54 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
+        name: "sort",
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["date", "weight", "title"]),
+        // Frequency=3, Importance=3 → score = 100 - (3*6 + 3*4) = 70
+        score: 70,
+        description: "How to sort children in this folder's listing. Use date for chronological streams, weight for authored order, title for alphabetical. A list of child stems (e.g. [intro, setup]) declares explicit order.",
+        label_key: "chip.sort.label",
+        group: "Child Pages",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "series",
+        field_type: FieldType::OneOf,
+        widget: Widget::Union,
+        one_of_members: Some(SERIES_MEMBERS),
+        // Frequency=0, Importance=2 → score=92
+        score: 92,
+        description: "Declares children as sequential series. Use true for weight-based ordering, or a list of wikilinks for explicit order.",
+        label_key: "chip.series.label",
+        group: "Child Pages",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "sidebar",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        // Frequency=0, Importance=1 → score=96
+        score: 98,
+        description: "Deprecated. Use children + children_in: sidebar. Wikilink to folder whose children appear in sidebar (e.g. [[News]]).",
+        label_key: "chip.sidebar.label",
+        group: "Child Pages",
+        ..FIELD_DEFAULTS
+    },
+
+    // ── Child Styles ─────────────────────────────────────────────────────
+    BuiltinField {
         name: "children_style",
         field_type: FieldType::String,
         widget: Widget::Select,
         enum_values: Some(&["list", "summary", "grid", "minimal"]),
         default_json: Some("\"list\""),
-        priority: 100,
+        // Frequency=3, Importance=3 → score=70
+        score: 70,
         description: "How child pages are rendered",
-        label: Some("Style"),
+        label: Some("Child Layout"),
         label_key: "chip.children_style.label",
-        group: "Children",
+        group: "Child Styles",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -380,11 +519,12 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::Select,
         enum_values: Some(&["year", "none"]),
-        priority: 100,
+        // Frequency=2, Importance=2 → score=80
+        score: 80,
         description: "How children are grouped: year (default for list) or none (default for card)",
         label: Some("Group"),
         label_key: "chip.children_group.label",
-        group: "Children",
+        group: "Child Styles",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -393,11 +533,12 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::Select,
         enum_values: Some(&["direct", "all"]),
         default_json: Some("\"direct\""),
-        priority: 100,
+        // Frequency=2, Importance=2 → score=80
+        score: 81,
         description: "Whether to include only immediate children or all descendants",
         label: Some("Depth"),
         label_key: "chip.children_depth.label",
-        group: "Children",
+        group: "Child Styles",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -405,22 +546,24 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::Select,
         enum_values: Some(&["body", "sidebar"]),
-        priority: 100,
+        // Frequency=1, Importance=2 → score=86
+        score: 86,
         description: "Where to render the children feed: body (after page content, default) or sidebar (right rail).",
-        label: Some("Slot"),
+        label: Some("Feed Slot"),
         label_key: "chip.children_in.label",
-        group: "Children",
+        group: "Child Styles",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
         name: "children_limit",
         field_type: FieldType::Integer,
         widget: Widget::NumberInput,
-        priority: 100,
+        // Frequency=2, Importance=2 → score=80
+        score: 82,
         description: "Cap the feed at N items. If truncated, a 'More \u{2192}' link is added. Absent = no cap.",
         label: Some("Limit"),
         label_key: "chip.children_limit.label",
-        group: "Children",
+        group: "Child Styles",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -431,145 +574,63 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         description: "Internal: marks frontmatter that came from the deprecated sidebar: alias",
         ..FIELD_DEFAULTS
     },
-
-    // --- Navigation & Visibility ---
     BuiltinField {
-        name: "breadcrumb",
+        name: "cascade",
+        field_type: FieldType::Object,
+        widget: Widget::CodeEditor,
+        // Frequency=0, Importance=1 → score=96
+        score: 96,
+        description: "Frontmatter values to push to all descendant pages",
+        label_key: "chip.cascade.label",
+        group: "Child Styles",
+        ..FIELD_DEFAULTS
+    },
+
+    // ── Whole Site ───────────────────────────────────────────────────────
+    // These fields are read from the homepage only and affect the whole site.
+    BuiltinField {
+        name: "logo",
+        field_type: FieldType::String,
+        widget: Widget::FilePicker,
+        // Frequency=3, Importance=3 → score=70
+        score: 70,
+        description: "Site logo image path (rendered before site name in nav)",
+        label_key: "chip.logo.label",
+        group: "Whole Site",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "nav",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
-        priority: 80,
-        description: "Override site-wide breadcrumb setting for this page",
-        label_key: "chip.breadcrumb.label",
-        group: "Navigation & Visibility",
+        // Frequency=2, Importance=3 → score=76
+        score: 76,
+        description: "Whether to show in site navigation",
+        label_key: "chip.nav.label",
+        group: "Whole Site",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
         name: "footer",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
-        priority: 80,
+        // Frequency=1, Importance=2 → score=86
+        score: 86,
         description: "Show as a link in the site footer",
         label_key: "chip.footer.label",
-        group: "Navigation & Visibility",
+        group: "Whole Site",
         ..FIELD_DEFAULTS
     },
     BuiltinField {
-        name: "slot",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 80,
-        description: "Named slot to inject this page into (e.g. footer-left). Recognized values are validated at build time.",
-        label_key: "chip.slot.label",
-        group: "Navigation & Visibility",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "comments",
+        name: "home",
         field_type: FieldType::Boolean,
         widget: Widget::Checkbox,
-        priority: 80,
-        description: "Per-page comment opt-in/out",
-        label_key: "chip.comments.label",
-        group: "Navigation & Visibility",
+        description: "Mark this file as its folder's home page (survives folder rename)",
+        skip_schema: true, // moss-managed; not a routine per-page chip
         ..FIELD_DEFAULTS
     },
 
-    // --- Layout & Presentation ---
-    BuiltinField {
-        name: "typesetting",
-        field_type: FieldType::String,
-        widget: Widget::Select,
-        enum_values: Some(&["horizontal", "vertical"]),
-        default_json: Some("\"horizontal\""),
-        priority: 50,
-        description: "Typesetting direction: horizontal (default) or vertical (right-to-left columns for CJK content)",
-        label: Some("Typesetting"),
-        label_key: "chip.typesetting.label",
-        group: "Layout & Presentation",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "content_width",
-        field_type: FieldType::String,
-        widget: Widget::Select,
-        enum_values: Some(&["wide", "full"]),
-        priority: 75,
-        description: "Page width: default (67ch) for prose, wide (80ch) for grids/tables, full (site max) for dashboards",
-        label: Some("Width"),
-        label_key: "chip.content_width.label",
-        group: "Layout & Presentation",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "sidebar",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 90,
-        description: "Deprecated. Use children + children_in: sidebar. Wikilink to folder whose children appear in sidebar (e.g. [[News]]).",
-        label_key: "chip.sidebar.label",
-        group: "Layout & Presentation",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "cascade",
-        field_type: FieldType::Object,
-        widget: Widget::CodeEditor,
-        priority: 110,
-        description: "Frontmatter values to push to all descendant pages",
-        label_key: "chip.cascade.label",
-        group: "Layout & Presentation",
-        ..FIELD_DEFAULTS
-    },
-
-    // --- Cross-referencing & i18n ---
-    BuiltinField {
-        name: "also_in",
-        field_type: FieldType::Array,
-        widget: Widget::TagInput,
-        items_type: Some(FieldType::String),
-        priority: 90,
-        description: "Cross-list this page in other sections",
-        label: Some("Also In"),
-        label_key: "chip.also_in.label",
-        group: "Cross-referencing & i18n",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "translationKey",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 70,
-        description: "Key to link translations of the same content",
-        label: Some("Translation Key"),
-        label_key: "chip.translationKey.label",
-        group: "Cross-referencing & i18n",
-        ..FIELD_DEFAULTS
-    },
-
-    // --- Review Metadata ---
-    BuiltinField {
-        name: "review_of",
-        field_type: FieldType::String,
-        widget: Widget::TextInput,
-        priority: 90,
-        description: "URL of item being reviewed (activates review feature)",
-        label: Some("Review Of"),
-        label_key: "chip.review_of.label",
-        group: "Review Metadata",
-        ..FIELD_DEFAULTS
-    },
-    BuiltinField {
-        name: "rating",
-        field_type: FieldType::Integer,
-        widget: Widget::NumberInput,
-        priority: 90,
-        description: "Author's rating of the reviewed item (1-5)",
-        label_key: "chip.rating.label",
-        group: "Review Metadata",
-        ..FIELD_DEFAULTS
-    },
-
-    // --- Skip schema (internal / site-level) ---
+    // ── Skip schema (internal / site-level) ─────────────────────────────
     BuiltinField {
         name: "analytics",
         field_type: FieldType::Object,
@@ -647,6 +708,49 @@ mod tests {
                 assert!(
                     field.enum_values.is_some(),
                     "select widget field '{}' should have enum_values",
+                    field.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_non_skip_fields_have_a_group() {
+        for field in BUILTIN_FIELDS {
+            if !field.skip_schema {
+                assert!(
+                    !field.group.is_empty(),
+                    "field '{}' has skip_schema=false but no group",
+                    field.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_groups_are_valid_scope_groups() {
+        const VALID: &[&str] = &["This Page", "Child Pages", "Child Styles", "Whole Site"];
+        for field in BUILTIN_FIELDS {
+            if !field.skip_schema {
+                assert!(
+                    VALID.contains(&field.group),
+                    "field '{}' has unexpected group '{}'; expected one of {:?}",
+                    field.name,
+                    field.group,
+                    VALID
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_score_in_valid_range() {
+        for field in BUILTIN_FIELDS {
+            if !field.skip_schema {
+                // score=0 is reserved for skip_schema fields; non-skip fields need a score
+                assert!(
+                    field.score > 0,
+                    "non-skip field '{}' has score=0; set a score >= 1",
                     field.name
                 );
             }

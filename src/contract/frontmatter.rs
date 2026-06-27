@@ -117,7 +117,7 @@ mod tests {
             Some(&["list", "summary", "grid", "minimal"][..])
         );
         assert!(!cs.skip_schema);
-        assert_eq!(cs.group, "Children");
+        assert_eq!(cs.group, "Child Styles");
     }
 
     #[test]
