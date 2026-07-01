@@ -163,10 +163,10 @@ pub struct FrontMatter {
     /// [JSON Feed 1.1](https://www.jsonfeed.org/version/1.1/): `external_url`
     /// is the same as the href in a linkblog post.
     ///
-    /// `moss import` populates this from the captured source URL so imported
-    /// pages route every internal link (card href, wikilink rewrite, canonical,
-    /// sitemap) to the outlet's URL while the local archive remains addressable
-    /// at its slug.
+    /// This is a manual linkblog field. Note: `moss import` does NOT set it —
+    /// an import is the user's own content (POSSE), so the vault copy is
+    /// canonical and the source URL is recorded in `syndicated` instead. (Before
+    /// 2026-07 import wrote `external_url`; that was reversed.)
     ///
     /// `source_url` alias — accepts existing files with the previous (one-PR)
     /// field name without breaking. Single-direction back-compat: writes use
