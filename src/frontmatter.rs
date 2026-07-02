@@ -144,9 +144,11 @@ pub fn serialize(
     }
 
     // Ensure string values that look numeric are serialized as quoted strings.
+    // Also strip stray control characters (defense-in-depth mirror of the
+    // frontend `beforeinput` guard, see below) before either transform.
     let safe_fm: HashMap<String, serde_yaml::Value> = frontmatter
         .iter()
-        .map(|(k, v)| (k.clone(), ensure_strings_quoted(v)))
+        .map(|(k, v)| (k.clone(), ensure_strings_quoted(&strip_control_chars(v))))
         .collect();
 
     let yaml =
@@ -154,6 +156,59 @@ pub fn serialize(
 
     // serde_yaml adds a trailing newline; no need to add another.
     Ok(format!("---\n{}---\n{}", yaml, body))
+}
+
+/// Recursively strip stray C0/C1 control characters from `serde_yaml::Value`
+/// strings (write-boundary defense-in-depth).
+///
+/// ── Why this exists (root cause) ─────────────────────────────────────────
+/// On macOS, Tauri v2's multiwebview path (moss enables the `unstable`
+/// feature and creates the editor as a child webview via `window.add_child`)
+/// hits an unfixed wry bug: arrow keys forward into AppKit's
+/// `interpretKeyEvents:` -> `insertText:`, which types the arrow key's
+/// legacy control code (Left 0x1C, Right 0x1D, Up 0x1E, Down 0x1F) into a
+/// plain `<input>`/`<textarea>` instead of only moving the caret. See
+/// `tauri-apps/tauri#10194` (open upstream issue).
+///
+/// The frontend guards this at the DOM `beforeinput` boundary (see
+/// `frontend/app/ui/control-char-guard.ts`), but this Rust strip mirrors it
+/// at the write boundary as defense-in-depth — any control char that reaches
+/// this point (e.g. a value set before the guard was installed, or via a
+/// path that bypasses the DOM entirely) is stripped before it is ever
+/// persisted to disk.
+///
+/// Removes C0 controls (0x00-0x1F) EXCEPT TAB (0x09), LF (0x0A), CR (0x0D);
+/// DEL (0x7F); and C1 controls (0x80-0x9F). This numeric-range approach
+/// mirrors the frontend guard's `CONTROL_RANGES` table exactly.
+fn strip_control_chars(value: &serde_yaml::Value) -> serde_yaml::Value {
+    match value {
+        serde_yaml::Value::String(s) => serde_yaml::Value::String(strip_control_chars_str(s)),
+        serde_yaml::Value::Sequence(seq) => {
+            serde_yaml::Value::Sequence(seq.iter().map(strip_control_chars).collect())
+        }
+        serde_yaml::Value::Mapping(map) => {
+            let mut new_map = serde_yaml::Mapping::new();
+            for (k, v) in map {
+                new_map.insert(k.clone(), strip_control_chars(v));
+            }
+            serde_yaml::Value::Mapping(new_map)
+        }
+        // Leave other types as-is
+        other => other.clone(),
+    }
+}
+
+/// True if `c` is a C0/C1 control character that must never survive into
+/// saved frontmatter (excludes TAB/LF/CR, which are legitimate whitespace).
+fn is_stray_control_char(c: char) -> bool {
+    matches!(c as u32,
+        0x00..=0x08 | 0x0b..=0x0c | 0x0e..=0x1f | 0x7f..=0x9f
+    )
+}
+
+/// Remove all stray C0/C1 control characters (excluding TAB/LF/CR) from `s`.
+fn strip_control_chars_str(s: &str) -> String {
+    s.chars().filter(|c| !is_stray_control_char(*c)).collect()
 }
 
 /// Recursively ensure that `serde_yaml::Value::Number` values that were
@@ -506,5 +561,41 @@ mod tests {
 
         // But value_as_string can still extract it
         assert!(value_as_string(uid_val).is_some());
+    }
+
+    #[test]
+    fn test_serialize_strips_stray_control_chars() {
+        // Regression test for the macOS Tauri multiwebview arrow-key bug
+        // (tauri-apps/tauri#10194): a child webview's beforeinput/keyDown
+        // path can insert the arrow key's legacy control code (Right =
+        // U+001D GROUP SEPARATOR) into a plain input instead of just moving
+        // the caret. The frontend guards this at `beforeinput`
+        // (frontend/app/ui/control-char-guard.ts); this write-boundary strip
+        // is the defense-in-depth backstop so a corrupted value can never
+        // reach disk even if it slips past the DOM guard.
+        let corrupted = format!("websites.{}", "\u{1D}".repeat(8));
+
+        let mut fm = HashMap::new();
+        fm.insert(
+            "description".to_string(),
+            serde_yaml::Value::String(corrupted),
+        );
+
+        let output = serialize(&fm, "Body.").expect("serialize");
+        let doc = parse(&output);
+
+        assert_eq!(
+            doc.frontmatter.get("description").and_then(|v| v.as_str()),
+            Some("websites."),
+            "control chars must be stripped from the written value"
+        );
+    }
+
+    #[test]
+    fn test_strip_control_chars_str_keeps_tab_lf_cr() {
+        // TAB/LF/CR are legitimate whitespace and must survive the strip —
+        // mirrors the frontend guard's CONTROL_RANGES exclusions.
+        let input = "a\tb\nc\rd\u{00}\u{7f}\u{85}e";
+        assert_eq!(strip_control_chars_str(input), "a\tb\nc\rde");
     }
 }
