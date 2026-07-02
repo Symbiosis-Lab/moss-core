@@ -146,8 +146,10 @@ pub struct FrontMatter {
     pub date: Option<String>,
     /// Navigation weight for ordering (lower numbers = higher priority)
     pub weight: Option<i32>,
-    /// Custom URL path override (e.g., "links" -> "/links/")
-    /// Takes priority over filename-based slug generation
+    /// Custom URL slug (e.g., "links" -> "/links/"). Pin a stable ASCII slug when
+    /// the filename isn't one — moss's convention is to name files after the page
+    /// title in their own language, then pin `url:` here (隐私.md + url: privacy -> /privacy).
+    /// Takes priority over filename-based slug generation.
     pub url: Option<String>,
     /// Author name. Single name or pre-formatted list ("A and B", "A, B, and C").
     /// Captured automatically by `moss import` from JSON-LD / OpenGraph metadata.

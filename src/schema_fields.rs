@@ -184,7 +184,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         // Lower is better; title/date/description cluster at 50 as "essential fields".
         // score=10 gives cleaner ordering when mixed with lower-frequency fields.
         score: 10,
-        description: "Title of the page. Drives the visible heading, <title>, og:title, RSS, nav, breadcrumb, and link cards. Filename is used when this field is missing. Set to an empty string to suppress the auto-injected page heading.",
+        description: "Title of the page. Drives the visible heading, <title>, og:title, RSS, nav, breadcrumb, and link cards. Filename is used when this field is missing — by convention, name files after the title in the page's own language and let it fall back. Set to an empty string to suppress the auto-injected page heading.",
         label_key: "chip.title.label",
         group: "This Page",
         ..FIELD_DEFAULTS
@@ -271,7 +271,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         widget: Widget::TextInput,
         // Frequency=5, Importance=4 → score=54 (same tier as cover)
         score: 55,
-        description: "Custom URL path override",
+        description: "Custom URL slug (e.g. `links` → /links/). Pin a stable ASCII slug when the filename isn't one — moss's convention is to name files after the page title in their own language, then pin `url:` here (`隐私.md` + `url: privacy` → /privacy). Keeps `[[wikilinks]]` working across a rename.",
         label_key: "chip.url.label",
         group: "This Page",
         ..FIELD_DEFAULTS
