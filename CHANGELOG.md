@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `resolve::md_extract`: pure markdown reference extractor (`extract_md_references`) returning every wikilink / embed / markdown-link / markdown-image token with byte offsets. Zero I/O; backs rename-with-references and delete-with-references in the editor.
+- `frontmatter::strip_control_chars_str`: strips stray C0/C1 control characters (excluding TAB/LF/CR) from a string. Applied at the frontmatter write boundary as defense-in-depth against a macOS Tauri multiwebview bug that can type raw arrow-key control codes into text inputs (`tauri-apps/tauri#10194`); exposed `pub` so other crates' write paths can apply the same strip.
 
 ### Changed
 - `ComponentEntry::is_public()` now also returns `false` for internal implementation classes (`moss-apply*`), hiding them from `moss describe` and `docs/contract/reference.md`.
