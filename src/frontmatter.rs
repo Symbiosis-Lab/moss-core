@@ -207,7 +207,14 @@ fn is_stray_control_char(c: char) -> bool {
 }
 
 /// Remove all stray C0/C1 control characters (excluding TAB/LF/CR) from `s`.
-fn strip_control_chars_str(s: &str) -> String {
+///
+/// The shared control-char stripper: this is the same string-level primitive
+/// `strip_control_chars` (above) applies recursively to `serde_yaml::Value`
+/// trees. It is `pub` so other crates (e.g. `src-tauri`'s scrape/email write
+/// paths) can apply the identical defense-in-depth strip at their own
+/// hand-rolled or `serde_yaml`-based frontmatter funnels — see
+/// `tauri-apps/tauri#10194`.
+pub fn strip_control_chars_str(s: &str) -> String {
     s.chars().filter(|c| !is_stray_control_char(*c)).collect()
 }
 
