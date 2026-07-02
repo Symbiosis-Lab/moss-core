@@ -1210,9 +1210,15 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         data_attrs: &[
             DataAttr {
                 name: "data-position",
-                values: &["footer", "inline"],
-                default: "footer",
-                description: "Placement variant. `footer` for the auto-injected footer form, `inline` for the `:::subscribe` shortcode. Drives the CSS layout in email.css.",
+                values: &["inline", "apply"],
+                default: "inline",
+                description: "Placement/behavior variant. All moss-hosted subscribe forms are `inline` (the auto-injected footer form and the `:::subscribe` shortcode emit identical HTML — footer vs in-page styling keys on the `footer` ancestor in CSS, not this attribute). `apply` marks the `:::apply` form (terminal success, FormData body).",
+            },
+            DataAttr {
+                name: "data-button-override",
+                values: &["true"],
+                default: "true",
+                description: "Emitted only when the author overrides the button label (`:::subscribe{button=\"...\"}`). Signals subscribe.ts to leave the button label AND placeholder as authored instead of overwriting them with the language-default copy.",
             },
             DataAttr {
                 name: "data-moss-hosted",
@@ -1230,7 +1236,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-moss-pending-site",
                 values: &["true"],
                 default: "true",
-                description: "Pre-first-publish pending wiring (`action=\"#\"`, no site_id yet). Hidden on published pages (body without `data-moss-preview`) via the email.css defense rule; detected by deploy's email wiring guard.",
+                description: "Pre-first-publish pending wiring (`action=\"#\"`, no site_id yet). Hidden on published pages (body without `data-moss-preview`) via the email.css defense rule so a pending form never faces real readers.",
             },
         ],
         example_html: r#"<form class="moss-subscribe-form">...</form>"#,

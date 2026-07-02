@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `ComponentEntry::is_public()` now also returns `false` for internal implementation classes (`moss-apply*`), hiding them from `moss describe` and `docs/contract/reference.md`.
+- Subscribe-form contract: `moss-subscribe-form` now always uses `data-position="inline"` (the auto-injected email footer and the `:::subscribe` shortcode emit identical HTML; footer vs in-page styling keys on the `footer` ancestor). Adds a `data-button-override` attribute, emitted when an author overrides the button label (`:::subscribe{button="…"}`); on such forms `subscribe.ts` leaves both the button label and the placeholder as authored instead of overwriting them with the language default. The former `data-position="footer"` value and the `footer-shape` slot / `data-moss-shape` footer attribute are removed.
 
 _Pending publish — cumulative since `0.1.0` (last released on main)._
 - Parse `color=` pipe attribute into `MediaAttrs` for cover-color override (repeated `color=` is last-wins).
