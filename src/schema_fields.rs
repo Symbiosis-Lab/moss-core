@@ -504,7 +504,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         name: "children_style",
         field_type: FieldType::String,
         widget: Widget::Select,
-        enum_values: Some(&["list", "summary", "grid", "minimal"]),
+        enum_values: Some(&["list", "summary", "grid"]),
         default_json: Some("\"list\""),
         // Frequency=3, Importance=3 → score=70
         score: 70,
