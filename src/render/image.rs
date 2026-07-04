@@ -622,6 +622,25 @@ fn lookup_color<'a>(assets: &'a AssetSnapshot, src: &str) -> Option<&'a String> 
 }
 
 fn probe_paths<T>(src: &str, mut probe: impl FnMut(PathBuf) -> Option<T>) -> Option<T> {
+    if let Some(v) = probe_normalized(src, &mut probe) {
+        return Some(v);
+    }
+    // BUG 6.2 (belt-and-suspenders): body/wikilink images arrive percent-encoded
+    // (`Europe%20-%20A%20Prophecy`), but snapshot keys are the RAW source path.
+    // Decode `%XX` and re-probe so the encoded URL reverses to the source key.
+    // Pure + zero-I/O; on invalid/lone `%` `percent_decode` returns the input
+    // unchanged, so we only re-probe when decoding actually changed something.
+    let decoded = percent_decode(src);
+    if decoded != src {
+        if let Some(v) = probe_normalized(&decoded, &mut probe) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Probe `src` plus its leading-`/` and leading-`./`/`../`-stripped forms.
+fn probe_normalized<T>(src: &str, probe: &mut impl FnMut(PathBuf) -> Option<T>) -> Option<T> {
     if let Some(v) = probe(PathBuf::from(src)) {
         return Some(v);
     }
@@ -641,6 +660,40 @@ fn probe_paths<T>(src: &str, mut probe: impl FnMut(PathBuf) -> Option<T>) -> Opt
         }
     }
     None
+}
+
+/// Percent-decode `%XX` byte sequences in a URL path (pure, zero-I/O).
+/// Mirrors `html_post::percent_decode_path` semantics: a lone/invalid `%` is
+/// passed through verbatim, and non-UTF-8 decode results fall back to the raw
+/// input. Returns the input unchanged when there is nothing to decode.
+fn percent_decode(path: &str) -> String {
+    if !path.contains('%') {
+        return path.to_string();
+    }
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| path.to_string())
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Emit just the `<img>` tag with all attributes. Internal helper for
@@ -779,6 +832,47 @@ mod tests {
 
     fn snapshot_dims(path: &str, w: u32, h: u32) -> AssetSnapshot {
         snapshot_with(path, Some((w, h)), None, None, false)
+    }
+
+    // --- BUG 6: output-URL-form lookups must hit real dims, not 800x600 ---
+
+    /// A body/wikilink image arrives percent-encoded (`Europe%20-%20A%20Prophecy`).
+    /// `probe_paths` must percent-decode and reverse `../` so it hits the RAW
+    /// source dims key, instead of missing → 800x600 fallback.
+    #[test]
+    fn probe_paths_percent_decodes_src() {
+        let snap = snapshot_dims("assets/Europe - A Prophecy/e-006.jpg", 4515, 6158);
+        assert_eq!(
+            lookup_dims(&snap, "../../assets/Europe%20-%20A%20Prophecy/e-006.jpg"),
+            Some((4515, 6158))
+        );
+    }
+
+    /// A cover arrives as a slugified output URL (`/assets/europe-a-prophecy/...`).
+    /// With the snapshot additively indexed under the slug key (Bug6.1), the
+    /// synthesized `<img>` must carry the real portrait dims, NOT the fallback.
+    #[test]
+    fn cover_slug_url_emits_real_dimensions_not_fallback() {
+        let mut snap = snapshot_dims("assets/Europe - A Prophecy/e-006.jpg", 4515, 6158);
+        snap.dimensions.insert(
+            PathBuf::from("assets/europe-a-prophecy/e-006.jpg"),
+            (4515, 6158),
+        );
+        let html = synthesize_image_html(
+            "/assets/europe-a-prophecy/e-006.jpg",
+            "cover",
+            &snap,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(r#"width="4515" height="6158""#),
+            "expected real dims, got: {html}"
+        );
+        assert!(
+            !html.contains(r#"width="800" height="600""#),
+            "800x600 fallback fired: {html}"
+        );
     }
 
     // --- <picture>-wrapped shape (raster originals always wrapped 2026-05-20) ---
