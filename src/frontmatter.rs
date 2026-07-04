@@ -20,6 +20,36 @@ pub struct ParsedDocument {
     /// Byte offsets of the frontmatter block: (start_of_opening_delimiter, end_of_closing_delimiter).
     /// `None` if no frontmatter was found.
     pub frontmatter_range: Option<(usize, usize)>,
+    /// serde_yaml error message when a delimited `---...---` block failed to
+    /// parse as YAML. `None` when the block parsed cleanly or there was no
+    /// delimited block. When `Some`, `frontmatter` is empty and `body` still
+    /// holds the WHOLE document (so the editor can show/repair the bad block);
+    /// use `render_body()` for the HTML-render view that excludes it.
+    ///
+    /// `#[serde(default)]` is defensive: the type derives Deserialize but is
+    /// transient (no code deserializes INTO it).
+    #[serde(default)]
+    pub frontmatter_error: Option<String>,
+}
+
+impl ParsedDocument {
+    /// Body suitable for RENDERING to HTML (build pipeline): excludes a
+    /// delimited frontmatter block that FAILED to parse, so malformed YAML never
+    /// leaks verbatim into output. Equal to `body` when the frontmatter parsed
+    /// cleanly or there was no block.
+    ///
+    /// The EDITOR must NOT use this — it needs the raw `body` so the author can
+    /// see/repair the bad block and a full-reserialize save preserves it.
+    #[allow(clippy::string_slice)]
+    // `fm_end` is a line-boundary offset (the `frontmatter_range` contract); on
+    // the error path `body` == the CRLF-normalized content that `fm_end` indexes,
+    // so the slice is char-aligned and CRLF-safe.
+    pub fn render_body(&self) -> &str {
+        match (self.frontmatter_error.as_ref(), self.frontmatter_range) {
+            (Some(_), Some((_, fm_end))) => &self.body[fm_end..],
+            _ => &self.body,
+        }
+    }
 }
 
 /// Parse a markdown document, extracting frontmatter and body.
@@ -45,6 +75,7 @@ pub fn parse(content: &str) -> ParsedDocument {
             frontmatter: HashMap::new(),
             body: content.to_string(),
             frontmatter_range: None,
+            frontmatter_error: None,
         };
     }
 
@@ -57,6 +88,7 @@ pub fn parse(content: &str) -> ParsedDocument {
                 frontmatter: HashMap::new(),
                 body: content.to_string(),
                 frontmatter_range: None,
+                frontmatter_error: None,
             };
         }
     };
@@ -94,12 +126,21 @@ pub fn parse(content: &str) -> ParsedDocument {
             let frontmatter: HashMap<String, serde_yaml::Value> =
                 match serde_yaml::from_str(yaml_text) {
                     Ok(map) => map,
-                    Err(_) => {
-                        // Invalid YAML — treat as no frontmatter.
+                    Err(e) => {
+                        // Invalid YAML. Record the block range + surface the
+                        // error instead of silently swallowing it (which used to
+                        // dump the raw `---...---` block into `body`, leaking it
+                        // verbatim into rendered HTML with no warning — the
+                        // "Europe - A Prophecy.md" bug). `body` stays the WHOLE
+                        // document so the editor can still show/repair the block
+                        // and a re-serialize save preserves the file; the build
+                        // renders `render_body()` (block-excluded) so nothing
+                        // leaks. See ADR-020.
                         return ParsedDocument {
                             frontmatter: HashMap::new(),
                             body: content.to_string(),
-                            frontmatter_range: None,
+                            frontmatter_range: Some((0, fm_end)),
+                            frontmatter_error: Some(e.to_string()),
                         };
                     }
                 };
@@ -113,6 +154,7 @@ pub fn parse(content: &str) -> ParsedDocument {
                 frontmatter,
                 body: body.to_string(),
                 frontmatter_range: Some((0, fm_end)),
+                frontmatter_error: None,
             };
         }
         offset += line.len() + 1; // +1 for '\n'
@@ -123,6 +165,7 @@ pub fn parse(content: &str) -> ParsedDocument {
         frontmatter: HashMap::new(),
         body: content.to_string(),
         frontmatter_range: None,
+        frontmatter_error: None,
     }
 }
 
@@ -282,6 +325,7 @@ mod tests {
         );
         assert_eq!(doc.body, "Body content here.");
         assert!(doc.frontmatter_range.is_some());
+        assert!(doc.frontmatter_error.is_none(), "valid YAML reports no error");
     }
 
     #[test]
@@ -292,6 +336,7 @@ mod tests {
         assert!(doc.frontmatter.is_empty());
         assert_eq!(doc.body, "Just body content.");
         assert!(doc.frontmatter_range.is_none());
+        assert!(doc.frontmatter_error.is_none(), "no block → no YAML error");
     }
 
     #[test]
@@ -314,6 +359,10 @@ mod tests {
         assert!(doc.frontmatter.is_empty());
         assert_eq!(doc.body, input);
         assert!(doc.frontmatter_range.is_none());
+        assert!(
+            doc.frontmatter_error.is_none(),
+            "unterminated block is not a YAML parse error; body stays whole"
+        );
     }
 
     #[test]
@@ -407,8 +456,13 @@ mod tests {
         let input = "---\n: invalid: yaml: [unclosed\n---\nBody.";
         let doc = parse(input);
 
-        // Invalid YAML should fall back to no-frontmatter.
+        // Invalid YAML should fall back to no-frontmatter, but now the block is
+        // recorded, the error surfaced, and the body kept whole (no data loss).
         assert!(doc.frontmatter.is_empty());
+        assert_eq!(doc.body, input, "body preserved whole on YAML error");
+        assert!(doc.frontmatter_error.is_some());
+        assert!(doc.frontmatter_range.is_some());
+        assert_eq!(doc.render_body(), "Body.", "render view excludes the bad block");
     }
 
     #[test]
@@ -596,6 +650,68 @@ mod tests {
             Some("websites."),
             "control chars must be stripped from the written value"
         );
+    }
+
+    /// THE anti-regression test for the "malformed frontmatter leaks verbatim"
+    /// bug (William Blake "Europe - A Prophecy.md"). Two YAML keys collapsed onto
+    /// one line (`uid: blk-europecover: "006.jpg"`) make serde_yaml fail. The
+    /// parser must (a) report the error, (b) keep the WHOLE document as `body`
+    /// (no data loss — the editor must still see and be able to repair the block),
+    /// and (c) record the block's byte range.
+    #[test]
+    fn test_parse_invalid_yaml_preserves_body_no_data_loss() {
+        let input =
+            "---\nchildren_style: grid\nseries: true\nweight: 10\nuid: blk-europecover: \"006.jpg\"\n---\n\n\ngh\n![[x.jpg]]\n";
+        let doc = parse(input);
+
+        assert!(doc.frontmatter.is_empty(), "malformed YAML yields no fields");
+        assert!(
+            doc.frontmatter_error.is_some(),
+            "the serde_yaml error must be surfaced, not swallowed"
+        );
+        // Range covers the delimited block; body is the WHOLE document (block NOT
+        // trimmed) so the editor can still show/repair it and a re-serialize save
+        // preserves the file.
+        let (start, fm_end) = doc.frontmatter_range.expect("range on malformed block");
+        assert_eq!(start, 0);
+        assert_eq!(doc.body, input, "body must be the whole document — no data loss");
+        #[allow(clippy::string_slice)] // line-boundary offsets, char-aligned
+        {
+            assert!(
+                input[0..fm_end].starts_with("---\n") && input[0..fm_end].ends_with("---\n"),
+                "frontmatter_range must bound the `---...---\\n` block"
+            );
+        }
+    }
+
+    /// The build-facing render view excludes a failed block so malformed YAML
+    /// never leaks verbatim into published HTML.
+    #[test]
+    fn test_render_body_excludes_failed_block() {
+        let input =
+            "---\nchildren_style: grid\nseries: true\nweight: 10\nuid: blk-europecover: \"006.jpg\"\n---\n\n\ngh\n![[x.jpg]]\n";
+        let doc = parse(input);
+
+        let rendered = doc.render_body();
+        assert!(!rendered.contains("---"), "delimiters must not leak: {rendered:?}");
+        assert!(!rendered.contains("uid:"), "raw YAML must not leak: {rendered:?}");
+        assert_eq!(
+            rendered, "\n\ngh\n![[x.jpg]]\n",
+            "render_body is exactly the content after the closing delimiter"
+        );
+    }
+
+    /// On success (and no-frontmatter), render_body is a no-op equal to body.
+    #[test]
+    fn test_render_body_equals_body_on_success() {
+        let ok = parse("---\ntitle: Hi\n---\nBody.");
+        assert!(ok.frontmatter_error.is_none());
+        assert_eq!(ok.render_body(), ok.body);
+        assert_eq!(ok.render_body(), "Body.");
+
+        let none = parse("No frontmatter here.");
+        assert!(none.frontmatter_error.is_none());
+        assert_eq!(none.render_body(), none.body);
     }
 
     #[test]
