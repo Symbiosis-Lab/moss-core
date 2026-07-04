@@ -542,11 +542,18 @@ fn synthesize_inner(
     let img_tag = render_img_tag(src, alt, assets, options);
 
     // For raster originals, always emit <picture><source srcset=X.webp>.
-    // The preview server's AssetRegistry intercept (preview/server/placeholder.rs)
-    // ensures the webp URL never 404s in preview mode — it returns LQIP bytes
-    // for Pending entries — and publish mode encodes variants synchronously
-    // before HTML ships (PluginMode::Blocking). So the URL is always live in
-    // both modes.
+    // This markup is MODE-INDEPENDENT — the on-disk HTML is identical in
+    // preview and publish. The webp is encoded in the BACKGROUND for ALL modes
+    // (blocking.rs registers the variant Pending; a BackgroundHandle worker
+    // runs the encode). Two mechanisms keep the webp URL live without a 404:
+    //   • Preview: the server serves the FULL ORIGINAL source bytes (source
+    //     passthrough, preview/server/router.rs) for the not-yet-encoded
+    //     variant URL, so the first paint is sharp; a Failed encode instead
+    //     surfaces a warning SVG (preview/server/placeholder.rs).
+    //   • Publish: the seal/persist task AWAITS the background drain barrier
+    //     before sealing, so the sealed/deployed generation always contains the
+    //     encoded .webp on disk (ADR-013 by construction).
+    // So the URL is always live in both modes.
     //
     // We must never emit a <source> that might 404 because a chosen <source>
     // 404 is non-recoverable inside <picture> per HTML spec §
