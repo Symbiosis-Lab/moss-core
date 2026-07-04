@@ -566,4 +566,61 @@ mod tests {
             dark
         );
     }
+
+    /// Dark-theme legibility: `--moss-color-accent` must carry a dark override.
+    /// The light forest green (#2d5a2d) is too dark to read as text/icon/border on
+    /// the dark page background (#1c1914) — ~2.2:1, failing WCAG AA (needs 4.5:1).
+    /// This was the root cause of the unreadable comment "回复" button in dark mode.
+    /// The dark value #6a9a5a clears ~5.3:1; it is the same green the codebase
+    /// already derives for accent-hover / code-green in dark
+    /// (color-mix(in oklch, #2d5a2d 80%, white)), so dark mode stays internally
+    /// consistent. Light mode is unchanged.
+    #[test]
+    fn accent_has_legible_dark_value() {
+        let t = load_tokens().unwrap();
+        let accent = t
+            .groups
+            .iter()
+            .flat_map(|g| &g.entries)
+            .find(|e| e.name == "moss-color-accent")
+            .expect("moss-color-accent token must exist");
+        assert_eq!(accent.value, "#2d5a2d", "light accent must stay unchanged");
+        assert_eq!(
+            accent.dark_value.as_deref(),
+            Some("#6a9a5a"),
+            "moss-color-accent needs a dark override legible on #1c1914 (WCAG AA); \
+             raw #2d5a2d is only ~2.2:1"
+        );
+        // The dark value must actually reach the emitted [data-theme="dark"] block.
+        let dark = format_dark_root_block(&t);
+        assert!(
+            dark.contains("--moss-color-accent: #6a9a5a"),
+            "dark block must set --moss-color-accent to the legible green"
+        );
+    }
+
+    /// Ripple guard: now that `--moss-color-accent` is itself lightened in dark,
+    /// `--moss-code-accent-primary` must NOT re-derive from it via color-mix — that
+    /// would double-lighten the syntax green and drift code-block colors. Its dark
+    /// value is pinned to the concrete green so the accent fix is decoupled from
+    /// syntax highlighting.
+    #[test]
+    fn code_accent_primary_dark_is_pinned_not_derived_from_accent() {
+        let t = load_tokens().unwrap();
+        let code = t
+            .groups
+            .iter()
+            .flat_map(|g| &g.entries)
+            .find(|e| e.name == "moss-code-accent-primary")
+            .expect("moss-code-accent-primary token must exist");
+        let dark = code
+            .dark_value
+            .as_deref()
+            .expect("moss-code-accent-primary must have a dark value");
+        assert!(
+            !dark.contains("var(--moss-color-accent)"),
+            "code-accent-primary dark must not re-derive from accent (would \
+             double-lighten); pin it to a concrete value instead, got: {dark:?}"
+        );
+    }
 }
