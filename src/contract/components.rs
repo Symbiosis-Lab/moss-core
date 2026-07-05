@@ -1741,6 +1741,21 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Excerpt slot inside `.moss-preview-popup` (auto-extracted from the linked article body).",
     },
+    // -------------------------------------------------------------------
+    // Missing-image fallback — emitted by the inline `#moss-img-fallback`
+    // script in shell.html at runtime, when an <img> fails to load.
+    // -------------------------------------------------------------------
+    ComponentEntry {
+        class: "moss-img-fallback",
+        kind: "chrome",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-img-fallback" role="img" aria-label="A cat" style="aspect-ratio:800/600"></span>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Static blueprint-grid-motif placeholder swapped in for any <img> that fails to load (deleted/renamed/typo'd source). Replaces the browser's native broken-image icon. A capture-phase `error` listener (inlined in shell.html, not a separate hashed asset) replaces the failed <img> — or its enclosing <picture>, if any — with this element, sized via aspect-ratio from the original width/height attributes.",
+    },
     ComponentEntry {
         class: "moss-colophon",
         kind: "chrome",
