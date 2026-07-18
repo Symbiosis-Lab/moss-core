@@ -62,7 +62,10 @@ pub fn rank_completions(
 
     let mut idx: Vec<usize> = (0..candidates.len()).collect();
     idx.retain(|&i| matches(prefix, &candidates[i].insert));
-    idx.sort_by_key(|&i| score(prefix, &candidates[i], embed, from_lang, &from_dirs));
+    // `sort_by_cached_key`, not `sort_by_key`: `score` normalizes the candidate
+    // path (NFC + lowercase, plus a Vec alloc), so caching one key per element
+    // avoids re-running it on every comparison across the whole-vault list.
+    idx.sort_by_cached_key(|&i| score(prefix, &candidates[i], embed, from_lang, &from_dirs));
     idx
 }
 
@@ -86,15 +89,22 @@ fn matches(prefix: &str, insert: &str) -> bool {
     norm(insert).contains(&norm(prefix))
 }
 
-/// Lower score sorts first. Ordering, in priority (mirrors the resolver's
-/// tiebreak chain in [`crate::content_graph`] so the dropdown matches how a
-/// link would actually resolve):
+/// Lower score sorts first. Ordering, in priority:
 /// 1. kind matches the trigger (`embed` → Asset first, else Page first)
 /// 2. prefix-at-start beats prefix-in-middle (match quality)
 /// 3. same language tree as the source (or both tree-less) beats a different one
 /// 4. closer in the directory tree (longer shared dir prefix) beats farther
 /// 5. shorter insert value (closer match) beats longer
-/// 6. lexicographic insert value (stable, deterministic)
+/// 6. lexicographic insert value
+/// 7. lexicographic normalized path (fully deterministic, independent of the
+///    filesystem walk order)
+///
+/// Keys 3, 4 and 7 mirror the resolver's tiebreak chain in
+/// [`crate::content_graph`] (`tree_match`, `common_prefix_len`,
+/// `Reverse(normalized path)`), so when two candidates share a stem the
+/// dropdown surfaces the same one the link would resolve to. Keys 1–2 are
+/// completion-specific — the resolver matches exact stems and has no notion of
+/// trigger kind or partial-match quality.
 ///
 /// `from_lang` / `from_dirs` are the source file's language-tree prefix and
 /// directory components (computed once by the caller).
@@ -104,7 +114,7 @@ fn score(
     embed: bool,
     from_lang: Option<&str>,
     from_dirs: &[&str],
-) -> (u8, u8, u8, Reverse<usize>, usize, String) {
+) -> (u8, u8, u8, Reverse<usize>, usize, String, String) {
     let kind_rank = match (embed, c.kind) {
         (true, CandidateKind::Asset) | (false, CandidateKind::Page) => 0u8,
         _ => 1u8,
@@ -132,6 +142,7 @@ fn score(
         Reverse(proximity), // more shared dirs sorts first under ascending order
         c.insert.chars().count(), // scalar count, not byte len — CJK filenames sort correctly
         norm(&c.insert),
+        cand_norm, // terminal: alphabetical-by-normalized-path (smallest wins, mirroring the resolver's Reverse(path))
     )
 }
 
@@ -298,9 +309,10 @@ mod tests {
 
     #[test]
     fn match_quality_outranks_language() {
-        // Chosen ordering mirrors the resolver: match quality (starts-with vs
-        // substring) is a HIGHER-priority key than language. A starts-with match
-        // in another language beats a middle-substring match in the same one.
+        // Match quality (starts-with vs substring) is a higher-priority key than
+        // language — a completion-specific choice (the resolver has no partial
+        // match). A starts-with match in another language beats a middle-
+        // substring match in the same one.
         let cands = vec![
             cand_at("周报report", "zh-hans/周报report.md", CandidateKind::Page), // same lang, middle
             cand_at("report-en", "en/report-en.md", CandidateKind::Page),        // other lang, starts
@@ -319,6 +331,19 @@ mod tests {
         ];
         let ranked = rank_completions("about", &cands, false, "index.md");
         assert_eq!(cands[ranked[0]].rel_path, "about.md");
+    }
+
+    #[test]
+    fn ties_break_by_path_deterministically() {
+        // Same stem, same language, same proximity, same length → the resolver's
+        // terminal key (alphabetically-smaller normalized path) decides, so the
+        // result is independent of candidate walk order.
+        let cands = vec![
+            cand_at("guide", "zh-hans/b/guide.md", CandidateKind::Page),
+            cand_at("guide", "zh-hans/a/guide.md", CandidateKind::Page),
+        ];
+        let ranked = rank_completions("guide", &cands, false, "zh-hans/x.md");
+        assert_eq!(cands[ranked[0]].rel_path, "zh-hans/a/guide.md");
     }
 
     #[test]
