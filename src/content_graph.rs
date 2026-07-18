@@ -23,7 +23,11 @@ fn normalize_component(s: &str) -> String {
 /// NFC-normalize and lowercase every component of a `/`-separated path.
 /// Also normalises backslashes to forward slashes and collapses runs of
 /// separators.
-fn normalize_path(path: &str) -> String {
+///
+/// `pub(crate)` so the wikilink-completion ranker (`link_completions`) folds
+/// paths identically to the resolver when scoring same-language / tree
+/// proximity, keeping the completion order aligned with how links resolve.
+pub(crate) fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
         .split('/')
         .filter(|c| !c.is_empty())
@@ -50,7 +54,8 @@ fn filename_with_ext(path: &str) -> &str {
 
 
 /// Return the directory prefix components of a path as a Vec.
-fn dir_components(path: &str) -> Vec<&str> {
+/// `pub(crate)` — shared with `link_completions` (see `normalize_path`).
+pub(crate) fn dir_components(path: &str) -> Vec<&str> {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() <= 1 {
         vec![]
@@ -60,7 +65,8 @@ fn dir_components(path: &str) -> Vec<&str> {
 }
 
 /// Count the length of the longest common prefix between two component lists.
-fn common_prefix_len(a: &[&str], b: &[&str]) -> usize {
+/// `pub(crate)` — shared with `link_completions` (see `normalize_path`).
+pub(crate) fn common_prefix_len(a: &[&str], b: &[&str]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
