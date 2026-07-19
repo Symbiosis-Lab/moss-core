@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `link_completions::rank_completions`: deterministic ranking for wikilink/embed completion candidates. Sort keys: trigger-kind fit, prefix-at-start match quality, same-language-tree as `from_file`, directory-tree proximity, insert-value length, then lexicographic tiebreaks — mirroring `content_graph`'s resolver tiebreak chain so the dropdown surfaces the candidate a `[[link]]` would actually resolve to.
 - `resolve::md_extract`: pure markdown reference extractor (`extract_md_references`) returning every wikilink / embed / markdown-link / markdown-image token with byte offsets. Zero I/O; backs rename-with-references and delete-with-references in the editor.
 - `frontmatter::strip_control_chars_str`: strips stray C0/C1 control characters (excluding TAB/LF/CR) from a string. Applied at the frontmatter write boundary as defense-in-depth against a macOS Tauri multiwebview bug that can type raw arrow-key control codes into text inputs (`tauri-apps/tauri#10194`); exposed `pub` so other crates' write paths can apply the same strip.
 
