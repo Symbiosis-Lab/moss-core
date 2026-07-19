@@ -2662,10 +2662,11 @@ mod tests {
     }
 
     #[test]
-    fn source_line_offset_shifts_to_real_file_lines() {
-        // Frontmatter is stripped before parsing, so source lines are body-
-        // relative. source_line_offset (= the frontmatter line count) realigns
-        // them with the editor's real file lines (CM6 doc.lineAt).
+    fn source_line_offset_is_applied_additively() {
+        // The parser applies `source_line_offset` additively to every block's
+        // body-relative line. What the offset MEANS (how it maps the body back
+        // to the editor's CM6 buffer) is decided by the caller in pipeline.rs —
+        // this test only pins the additive mechanism, not a coordinate model.
         let md = "# H1\n\npara on line 3\n";
         let config = ParseConfig {
             emit_source_lines: true,
