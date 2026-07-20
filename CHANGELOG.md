@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `resolve::md_extract`: pure markdown reference extractor (`extract_md_references`) returning every wikilink / embed / markdown-link / markdown-image token with byte offsets. Zero I/O; backs rename-with-references and delete-with-references in the editor.
 - `frontmatter::strip_control_chars_str`: strips stray C0/C1 control characters (excluding TAB/LF/CR) from a string. Applied at the frontmatter write boundary as defense-in-depth against a macOS Tauri multiwebview bug that can type raw arrow-key control codes into text inputs (`tauri-apps/tauri#10194`); exposed `pub` so other crates' write paths can apply the same strip.
 
+### Fixed
+- Section-scoped embeds with a human-readable anchor (e.g. `![[file#Heading With Spaces]]`) now slugify the target before matching, so they inline just the referenced section. Previously the raw anchor was compared against slugified headings, never matched, emitted a spurious `Heading '#...' not found` diagnostic, and fell back to inlining the entire file. Anchors already in slug form are unaffected.
+
 ### Changed
 - `ComponentEntry::is_public()` now also returns `false` for internal implementation classes (`moss-apply*`), hiding them from `moss describe` and `docs/contract/reference.md`.
 - Subscribe-form contract: `moss-subscribe-form` now always uses `data-position="inline"` (the auto-injected email footer and the `:::subscribe` shortcode emit identical HTML; footer vs in-page styling keys on the `footer` ancestor). Adds a `data-button-override` attribute, emitted when an author overrides the button label (`:::subscribe{button="…"}`); on such forms `subscribe.ts` leaves both the button label and the placeholder as authored instead of overwriting them with the language default. The former `data-position="footer"` value and the `footer-shape` slot / `data-moss-shape` footer attribute are removed.
