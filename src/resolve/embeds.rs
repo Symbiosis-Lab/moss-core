@@ -292,11 +292,18 @@ fn extract_heading_section(body: &str, target_anchor: &str) -> Option<String> {
     let mut start_idx = None;
     let mut heading_level = 0;
 
+    // Slug the target the same way headings are slugged. The wikilink resolver
+    // emits the marker with the RAW anchor the author typed (`#Template slots`),
+    // so comparing it directly against slugged heading anchors (`template-slots`)
+    // would falsely miss. `obsidian_heading_anchor` is idempotent, so a target
+    // that is already in slug form (`#getting-started`) still matches.
+    let target = obsidian_heading_anchor(target_anchor);
+
     // Find the heading whose anchor matches.
     for (i, line) in lines.iter().enumerate() {
         if let Some((level, text)) = parse_heading(line) {
             let anchor = obsidian_heading_anchor(text);
-            if anchor == target_anchor {
+            if anchor == target {
                 start_idx = Some(i);
                 heading_level = level;
                 break;
@@ -545,6 +552,54 @@ mod tests {
         assert!(!result.content.contains("Advanced stuff."));
         assert!(!result.content.contains("Intro text."));
         assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_heading_scoped_embed_raw_anchor() {
+        // Regression: the wikilink resolver emits the embed marker with the
+        // RAW, un-slugged anchor exactly as the author typed it — e.g.
+        // `![[slots#Template slots]]` becomes
+        // `<!-- moss-embed:slots.md#Template slots -->` (space + capital T).
+        // The resolver must slug the target anchor the same way it slugs each
+        // heading, or it falsely reports "Heading not found" and inlines the
+        // WHOLE file as a fallback (leaking every sibling section).
+        let mut files = HashMap::new();
+        files.insert(
+            "slots.md".to_string(),
+            "---\ntitle: Slots\n---\n## Template slots\nSlots are injection points. ^def-template-slots\n## How slots work\nOther content.".to_string(),
+        );
+
+        let content = "<!-- moss-embed:slots.md#Template slots -->";
+        let result = resolve_embeds(content, "hooks.md", &mock_reader(&files));
+
+        // No false "not found" diagnostic.
+        assert!(
+            result.diagnostics.is_empty(),
+            "raw anchor should resolve cleanly, got diagnostics: {:?}",
+            result.diagnostics
+        );
+        // Only the target section is inlined — the sibling section must NOT leak.
+        assert!(
+            result.content.contains("Slots are injection points."),
+            "target section content missing: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("Other content."),
+            "whole-file leak: sibling section inlined:\n{}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_extract_heading_section_raw_anchor() {
+        // `extract_heading_section` must accept a raw (un-slugged) target
+        // anchor — spaces and mixed case — not just a pre-slugged one.
+        let body = "## Template Slots\nBody.\n## Next\nNope.";
+        let section =
+            extract_heading_section(body, "Template Slots").expect("raw anchor should match");
+        assert!(section.contains("Body."));
+        assert!(!section.contains("Nope."));
     }
 
     #[test]
