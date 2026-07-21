@@ -451,6 +451,11 @@ fn parse_block(
     start: usize,
     line_ctx: Option<&LineCtx<'_>>,
 ) -> (Option<Block>, usize) {
+    // Block-level dispatch. pulldown always wraps loose inlines (math
+    // included) in Tag::Paragraph at top level, so no math event ever reaches
+    // this match; the paragraph's inlines are collected by the math-aware
+    // parse_inline. Pinned by `display_math_block_survives_on_its_own_lines`.
+    // allow:math-events-ignored — see above.
     match &events[start] {
         Event::Start(tag) => parse_block_with_tag(events, start, tag, line_ctx),
         Event::Text(_) | Event::Code(_) | Event::Html(_) | Event::SoftBreak | Event::HardBreak => {
@@ -541,6 +546,9 @@ fn parse_block_with_tag(
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
+                    // allow:math-events-ignored — pulldown does not parse math
+                    // inside a code fence, so it emits no math event here;
+                    // ```\n$x^2$\n``` is byte-identical at math on and off.
                     Event::End(TagEnd::CodeBlock) => break,
                     Event::Text(t) => value.push_str(t),
                     _ => {}
@@ -599,6 +607,10 @@ fn parse_block_with_tag(
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
+                    // allow:math-events-ignored — structural walk that only
+                    // locates item boundaries; every item's content is parsed
+                    // by the math-aware collect_item_blocks. Pinned by
+                    // `math_survives_inside_list_items`.
                     Event::End(TagEnd::List(_)) => break,
                     Event::Start(Tag::Item) => {
                         if track_lines {
@@ -636,6 +648,10 @@ fn parse_block_with_tag(
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
+                    // allow:math-events-ignored — structural walk over table
+                    // section/row/cell boundaries; cell content is collected by
+                    // the math-aware collect_inlines_until. Pinned by
+                    // `math_survives_inside_a_table_cell`.
                     Event::End(TagEnd::Table) => break,
                     Event::Start(Tag::TableHead) => {
                         in_head = true;
@@ -700,6 +716,9 @@ fn parse_block_with_tag(
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
+                    // allow:math-events-ignored — a raw HTML block is passed
+                    // through verbatim; pulldown emits only Html/Text inside
+                    // one, never a math event.
                     Event::End(TagEnd::HtmlBlock) => break,
                     Event::Html(s) | Event::Text(s) => html.push_str(s),
                     _ => {}
@@ -1287,6 +1306,12 @@ fn detect_and_assemble_callout(
     //       paragraph. The author can use a separator paragraph for
     //       clarity if they want clean title isolation.
     let mut body_blocks: Vec<Block> = Vec::new();
+    // This match chooses WHERE the callout body starts; it does not collect
+    // content. A math event directly after the marker falls into the `_` arm,
+    // which starts the body at `i` and hands it to the math-aware
+    // collect_inlines_until. Pinned by
+    // `callout_title_is_not_truncated_at_the_first_dollar`.
+    // allow:math-events-ignored — see above.
     let body_paragraph_start: Option<usize> = match events.get(i) {
         Some(Event::SoftBreak) | Some(Event::HardBreak) => {
             // Skip the break; collect remaining inlines for the body
