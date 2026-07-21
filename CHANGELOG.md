@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **BREAKING** — `PageKind::Asset` is gone. It described a synthetic page generated per non-markdown file (the per-image pages an image-only folder produced). That generator was removed in 2026-07 because it could not tell an illustrations folder from a gallery — a folder of 83 article illustrations became 83 standalone pages titled with raw UUIDs. Nothing constructs the variant any more, so the enum no longer advertises a state that cannot occur, and `is_listable_at_depth_all` / `is_listable_at_depth_direct` lose an arm each. `PageKind` is not serialized into any on-disk artifact, so there is no stored data to migrate. **This is a breaking API change: the next release must bump the minor (0.1.x → 0.2.0) and update the workspace `moss-core` version constraint.**
+
 ### Added
 - `link_completions::rank_completions`: deterministic ranking for wikilink/embed completion candidates. Sort keys: trigger-kind fit, prefix-at-start match quality, same-language-tree as `from_file`, directory-tree proximity, insert-value length, then lexicographic tiebreaks — mirroring `content_graph`'s resolver tiebreak chain so the dropdown surfaces the candidate a `[[link]]` would actually resolve to.
 - `resolve::md_extract`: pure markdown reference extractor (`extract_md_references`) returning every wikilink / embed / markdown-link / markdown-image token with byte offsets. Zero I/O; backs rename-with-references and delete-with-references in the editor.

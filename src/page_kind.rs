@@ -15,16 +15,15 @@
 //!   (e.g. `文字/文字.md`, `docs/index.md`, `blog/readme.md`). Listed in
 //!   children only at depth 1 (at depth `all`, its descendants are listed
 //!   directly).
-//! * [`PageKind::Asset`] — a synthetic page generated for a non-markdown
-//!   file (e.g. per-image pages in image-only folders). Never listed as
-//!   a child regardless of depth.
 //!
 //! # Why an enum, not a bool
 //!
-//! The previous model used `is_index: bool` and inferred "article vs.
-//! asset" from context. That made the children-listing filter impossible
-//! to get right — image pages passed `!is_index` and leaked into listings
-//! on sites using `children_depth: all`. See `moss/docs/page-kinds.md`.
+//! The previous model used `is_index: bool` and inferred the rest from
+//! context. That made the children-listing filter impossible to get right.
+//! A third `Asset` variant (synthetic per-image pages) existed until the
+//! image-as-page feature was removed in 2026-07; nothing produced it, so it
+//! was dropped rather than left as an unreachable state. See
+//! `moss/docs/page-kinds.md`.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,8 +35,6 @@ pub enum PageKind {
     /// Markdown file recognized as a folder index by
     /// [`crate::home::is_home_file`].
     Folder,
-    /// Synthetic page for a non-markdown asset (per-image pages, etc.).
-    Asset,
 }
 
 impl PageKind {
@@ -68,14 +65,12 @@ mod tests {
     fn listable_at_depth_all_is_article_only() {
         assert!(PageKind::Article.is_listable_at_depth_all());
         assert!(!PageKind::Folder.is_listable_at_depth_all());
-        assert!(!PageKind::Asset.is_listable_at_depth_all());
     }
 
     #[test]
     fn listable_at_depth_direct_is_article_and_folder() {
         assert!(PageKind::Article.is_listable_at_depth_direct());
         assert!(PageKind::Folder.is_listable_at_depth_direct());
-        assert!(!PageKind::Asset.is_listable_at_depth_direct());
     }
 
     #[test]
