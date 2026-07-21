@@ -21,6 +21,7 @@
 use super::attrs::gather_multi_line_attrs;
 use super::cells::split_cells;
 use super::node::Block;
+use super::parser::{parse_with_config, ParseConfig};
 use super::shortcode::{
     ApplyShortcode, ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode,
     HeroShortcode, RecentShortcode, Shortcode, SubscribeShortcode,
@@ -75,13 +76,18 @@ fn is_typed_known(name: &str) -> bool {
 /// Returns `(Some(Shortcode), Vec<String>)` where the second element is
 /// parse-time deprecation warnings. An empty warning vec means the block
 /// used only current-grammar syntax.
-fn parse_shortcode_block(name: &str, args: &str, body: &str) -> (Option<Shortcode>, Vec<String>) {
+fn parse_shortcode_block(
+    name: &str,
+    args: &str,
+    body: &str,
+    config: &ParseConfig,
+) -> (Option<Shortcode>, Vec<String>) {
     match name {
         "subscribe" => (Some(Shortcode::Subscribe(parse_subscribe_args(args))), vec![]),
         "buttons" => (Some(Shortcode::Buttons(parse_buttons_body(args, body))), vec![]),
         "gallery" => (Some(Shortcode::Gallery(parse_gallery_body(args, body))), vec![]),
         "hero" => {
-            let (sc, used_p3) = parse_hero(args, body);
+            let (sc, used_p3) = parse_hero(args, body, config);
             let mut warns = vec![];
             if used_p3 {
                 warns.push(
@@ -102,7 +108,7 @@ fn parse_shortcode_block(name: &str, args: &str, body: &str) -> (Option<Shortcod
             (Some(Shortcode::Hero(sc)), warns)
         }
         "grid" => {
-            let (sc, legacy) = parse_grid(args, body);
+            let (sc, legacy) = parse_grid(args, body, config);
             let mut warns = vec![];
             if legacy {
                 warns.push(
@@ -157,7 +163,7 @@ pub fn parse_recent_args(args: &str, body: &str) -> RecentShortcode {
 ///
 /// Returns `(GridShortcode, bool)` where the bool is `true` when any
 /// `---` legacy divider was encountered (triggers a deprecation warning).
-fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
+fn parse_grid(args: &str, body: &str, config: &ParseConfig) -> (GridShortcode, bool) {
     let trimmed = args.trim();
     let (positional, attr_block): (&str, &str) = if let Some(pos) = trimmed.find('{') {
         // char-aligned: pos points to ASCII '{' from str::find — safe to slice.
@@ -221,7 +227,7 @@ fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
     //   substituted) and drop the wrapping `Document`.
     let cells: Vec<Vec<Block>> = raw_cells
         .iter()
-        .map(|raw| parse_cell_to_blocks(raw))
+        .map(|raw| parse_cell_to_blocks(raw, config))
         .collect();
 
     (
@@ -243,7 +249,7 @@ fn parse_grid(args: &str, body: &str) -> (GridShortcode, bool) {
 /// emits a single-element `vec![Block::LinkCard { url, children }]` where
 /// `children` is the inner parsed as blocks. On no match, parses the cell
 /// directly via [`super::parser::parse`].
-fn parse_cell_to_blocks(raw: &str) -> Vec<Block> {
+fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
     if let Some((url, inner)) = detect_compound_link(raw) {
         let inner_trimmed = inner.trim();
         // Simple compound-link special case: when the inner content is
@@ -269,9 +275,9 @@ fn parse_cell_to_blocks(raw: &str) -> Vec<Block> {
             // Re-emit as standard markdown link inside a paragraph so the
             // grid_post post-pass owns the rendering.
             let linkified = format!("[{}]({})", inner_trimmed, url);
-            return super::parser::parse(&linkified).blocks;
+            return parse_with_config(&linkified, config).blocks;
         }
-        let inner_doc = super::parser::parse(inner_trimmed);
+        let inner_doc = parse_with_config(inner_trimmed, config);
         return vec![Block::LinkCard {
             url: Url::unresolved(url),
             children: inner_doc.blocks,
@@ -291,10 +297,10 @@ fn parse_cell_to_blocks(raw: &str) -> Vec<Block> {
     // parse time so the bytes flow through the typed AST.
     if let Some(url) = detect_bare_url_cell(raw) {
         let linkified = format!("[]({})", url);
-        let doc = super::parser::parse(&linkified);
+        let doc = parse_with_config(&linkified, config);
         return doc.blocks;
     }
-    let doc = super::parser::parse(raw);
+    let doc = parse_with_config(raw, config);
     doc.blocks
 }
 
@@ -579,7 +585,7 @@ fn split_grid_cells(body: &str) -> (Vec<String>, bool) {
 /// Returns `(HeroShortcode, bool)` where the bool is `true` when the
 /// body-image fallback (Priority 3) fired, signaling the caller to
 /// emit a deprecation warning.
-fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
+fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, bool) {
     let trimmed_args = args.trim();
 
     // Split args on the first `{` to separate the directive-line path
@@ -606,7 +612,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
     if let Some(image_value) = parsed.get("image") {
         let (path, attrs_str) = crate::media::split_pipe(image_value);
         let overlay_text = body.trim().to_string();
-        let overlay = parse_overlay_to_blocks(&overlay_text);
+        let overlay = parse_overlay_to_blocks(&overlay_text, config);
         return (
             HeroShortcode {
                 image: if path.trim().is_empty() {
@@ -631,7 +637,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
     if !positional.is_empty() {
         let (path, attrs_str) = crate::media::split_pipe(positional);
         let overlay_text = body.trim().to_string();
-        let overlay = parse_overlay_to_blocks(&overlay_text);
+        let overlay = parse_overlay_to_blocks(&overlay_text, config);
         return (
             HeroShortcode {
                 image: if path.trim().is_empty() {
@@ -671,7 +677,7 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
         overlay_lines.push(line);
     }
     let overlay_text = overlay_lines.join("\n").trim().to_string();
-    let overlay = parse_overlay_to_blocks(&overlay_text);
+    let overlay = parse_overlay_to_blocks(&overlay_text, config);
     (
         HeroShortcode {
             image: image_path.map(Url::unresolved),
@@ -692,11 +698,11 @@ fn parse_hero(args: &str, body: &str) -> (HeroShortcode, bool) {
 /// grid-cell path but without compound-link detection (an overlay is not
 /// a compound-link surface; the SoCiviC pattern is grid-cell-specific).
 /// Returns an empty vec when the overlay is empty.
-fn parse_overlay_to_blocks(raw: &str) -> Vec<Block> {
+fn parse_overlay_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
     if raw.is_empty() {
         return Vec::new();
     }
-    let doc = super::parser::parse(raw);
+    let doc = parse_with_config(raw, config);
     doc.blocks
 }
 
@@ -1051,10 +1057,26 @@ fn compute_nonce(input: &str) -> String {
 /// blocks pass through verbatim (the legacy string-rewriter still
 /// processes them during the staged migration).
 pub fn extract_shortcodes(markdown: &str) -> ExtractionResult {
+    extract_shortcodes_with_config(markdown, &ParseConfig::default())
+}
+
+/// [`extract_shortcodes`], parsing shortcode bodies with the caller's
+/// [`ParseConfig`].
+///
+/// Shortcode inner content is sub-parsed, so a config that stops here does
+/// not stop being observable — it produces a page written in two dialects.
+/// With math on, `$E=mc^2$` one line outside a `:::hero` became an
+/// equation while the identical bytes inside it stayed literal text,
+/// because every sub-parse called the default-config `parse()`.
+/// `shortcode_config_leak_invariant` pins the bare call out of existence.
+pub fn extract_shortcodes_with_config(
+    markdown: &str,
+    config: &ParseConfig,
+) -> ExtractionResult {
     let nonce = compute_nonce(markdown);
     let mut extracted: Vec<ExtractedShortcode> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    let output = extract_with_state(markdown, &nonce, &mut extracted, &mut warnings);
+    let output = extract_with_state(markdown, &nonce, &mut extracted, &mut warnings, config);
     ExtractionResult {
         markdown_with_placeholders: output,
         extracted,
@@ -1074,6 +1096,7 @@ fn extract_with_state(
     nonce: &str,
     extracted: &mut Vec<ExtractedShortcode>,
     warnings: &mut Vec<String>,
+    config: &ParseConfig,
 ) -> String {
     let mut output = String::with_capacity(markdown.len());
     let lines: Vec<&str> = markdown.lines().collect();
@@ -1178,7 +1201,7 @@ fn extract_with_state(
                 // closer-search only matches the outer's exact arity;
                 // the recursive call then handles the inner.
                 let parsed = super::attrs::parse_attrs(args).unwrap_or_default();
-                let body_processed = extract_with_state(&body, nonce, extracted, warnings);
+                let body_processed = extract_with_state(&body, nonce, extracted, warnings, config);
                 output.push_str(&render_div_open(&parsed.classes, parsed.id.as_deref(), None));
                 output.push_str("\n\n");
                 output.push_str(&body_processed);
@@ -1191,7 +1214,7 @@ fn extract_with_state(
             }
 
             if is_typed_known(name) {
-                if let (Some(sc), parse_warnings) = parse_shortcode_block(name, args, &body) {
+                if let (Some(sc), parse_warnings) = parse_shortcode_block(name, args, &body, config) {
                     warnings.extend(parse_warnings);
                     let index = extracted.len();
                     output.push_str(&placeholder_for(&nonce, index));
@@ -1234,7 +1257,7 @@ fn extract_with_state(
             let mut classes = vec!["moss-unknown-shortcode".to_string()];
             classes.extend(parsed.classes.iter().cloned());
             let extra_attrs = format!(r#" data-name="{}""#, html_escape_attr(name));
-            let body_processed = extract_with_state(&body, nonce, extracted, warnings);
+            let body_processed = extract_with_state(&body, nonce, extracted, warnings, config);
             output.push_str(&render_div_open(&classes, parsed.id.as_deref(), Some(&extra_attrs)));
             output.push_str("\n\n");
             output.push_str(&body_processed);
@@ -2898,6 +2921,7 @@ mod tests {
             "recent",
             r#"{since="2026-04-01" count="5"}"#,
             "",
+            &ParseConfig::default(),
         );
         assert!(warns.is_empty());
         match sc.expect("expected Some(Shortcode)") {
@@ -2913,7 +2937,7 @@ mod tests {
 
     #[test]
     fn parses_recent_with_last_window() {
-        let (sc, _) = parse_shortcode_block("recent", r#"{last="month"}"#, "");
+        let (sc, _) = parse_shortcode_block("recent", r#"{last="month"}"#, "", &ParseConfig::default());
         match sc.expect("expected Some(Shortcode)") {
             Shortcode::Recent(args) => {
                 assert_eq!(args.last.as_deref(), Some("month"));
@@ -2927,7 +2951,7 @@ mod tests {
     #[test]
     fn captures_recent_body_as_fallback_markdown() {
         let body = "No posts yet. [Follow along](/).";
-        let (sc, _) = parse_shortcode_block("recent", "", body);
+        let (sc, _) = parse_shortcode_block("recent", "", body, &ParseConfig::default());
         match sc.expect("expected Some(Shortcode)") {
             Shortcode::Recent(args) => {
                 assert_eq!(args.fallback_markdown, body);
@@ -2938,7 +2962,7 @@ mod tests {
 
     #[test]
     fn recent_with_no_args_yields_all_none() {
-        let (sc, warns) = parse_shortcode_block("recent", "", "");
+        let (sc, warns) = parse_shortcode_block("recent", "", "", &ParseConfig::default());
         assert!(warns.is_empty());
         match sc.expect("expected Some(Shortcode)") {
             Shortcode::Recent(args) => {
@@ -2957,6 +2981,7 @@ mod tests {
             "recent",
             r#"{since="2026-01-01" last="month" count="3"}"#,
             "",
+            &ParseConfig::default(),
         );
         assert!(warns.is_empty());
         match sc.expect("expected Some(Shortcode)") {
@@ -2974,7 +2999,7 @@ mod tests {
         // Tolerant parsing: a non-numeric count value drops to None
         // rather than failing the whole block. The renderer will fall
         // back to its default (10).
-        let (sc, _) = parse_shortcode_block("recent", r#"{count="lots"}"#, "");
+        let (sc, _) = parse_shortcode_block("recent", r#"{count="lots"}"#, "", &ParseConfig::default());
         match sc.expect("expected Some(Shortcode)") {
             Shortcode::Recent(args) => assert!(args.count.is_none()),
             other => panic!("expected Recent, got {other:?}"),
@@ -2985,7 +3010,7 @@ mod tests {
     fn recent_body_is_trimmed() {
         // Surrounding whitespace and trailing newlines do not need to
         // travel as part of the fallback markdown.
-        let (sc, _) = parse_shortcode_block("recent", "", "\n  hello world  \n\n");
+        let (sc, _) = parse_shortcode_block("recent", "", "\n  hello world  \n\n", &ParseConfig::default());
         match sc.expect("expected Some(Shortcode)") {
             Shortcode::Recent(args) => assert_eq!(args.fallback_markdown, "hello world"),
             other => panic!("expected Recent, got {other:?}"),
@@ -3007,7 +3032,7 @@ mod tests {
 
     #[test]
     fn apply_parse_bare_has_none_overrides() {
-        let (sc, warns) = parse_shortcode_block("apply", "", "");
+        let (sc, warns) = parse_shortcode_block("apply", "", "", &ParseConfig::default());
         assert!(warns.is_empty());
         match sc.expect("expected Some(Shortcode)") {
             Shortcode::Apply(args) => {
@@ -3020,7 +3045,7 @@ mod tests {
 
     #[test]
     fn apply_parse_with_overrides() {
-        let (sc, _) = parse_shortcode_block("apply", r#"{placeholder="email" button="申请"}"#, "");
+        let (sc, _) = parse_shortcode_block("apply", r#"{placeholder="email" button="申请"}"#, "", &ParseConfig::default());
         match sc.expect("expected Some(Shortcode)") {
             Shortcode::Apply(args) => {
                 assert_eq!(args.placeholder.as_deref(), Some("email"));

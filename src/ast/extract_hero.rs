@@ -187,7 +187,14 @@ fn inlines_plain_text(inlines: &[Inline]) -> String {
             }
             Inline::LineBreak => out.push(' '),
             Inline::Image { alt, .. } => out.push_str(alt),
-            Inline::Other(_) => {}
+            // Recover math rather than dropping it: `overlay_text` is the
+            // homepage-hero rung of the description chain, so a hole here
+            // ships as a truncated `<meta name="description">` and OG card.
+            Inline::Other(html) => {
+                if let Some(src) = super::math_text::math_source_from_other(html) {
+                    out.push_str(&src);
+                }
+            }
         }
     }
     out

@@ -37,6 +37,7 @@ pub mod document;
 pub mod editor_scan;
 pub mod extract_hero;
 pub mod hooks;
+pub mod math_text;
 pub mod node;
 pub mod parser;
 pub mod query;

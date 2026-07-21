@@ -172,3 +172,130 @@ fn math_survives_inside_a_table_cell() {
         "math dropped inside a table cell: {html}"
     );
 }
+
+/// The shortcode sub-parse used to call the default-config `parse()`, so a
+/// math-on site rendered `$E=mc^2$` as an equation in prose and as literal
+/// text one line later inside a `:::hero` or `:::grid` — the same page in
+/// two dialects. These pin every sub-parse surface to the caller's config.
+mod shortcode_bodies_inherit_the_callers_config {
+    use moss_core::ast::parser::{parse_with_config, ParseConfig};
+
+    fn math_on() -> ParseConfig {
+        ParseConfig { math: true, ..Default::default() }
+    }
+
+    fn rendered(md: &str, config: &ParseConfig) -> String {
+        let doc = parse_with_config(md, config);
+        moss_core::ast::render::render_document(&doc, &moss_core::ast::hooks::DefaultHooks::new())
+    }
+
+    #[test]
+    fn hero_overlay_typesets_math_like_surrounding_prose() {
+        let html = rendered(":::hero\ntext $E=mc^2$ end\n:::\n", &math_on());
+        assert!(
+            html.contains(r#"<code class="moss-math" data-moss-math="inline">E=mc^2</code>"#),
+            "hero overlay kept literal $…$ while prose became math: {html}"
+        );
+        assert!(!html.contains("$E=mc^2$"), "raw delimiters leaked: {html}");
+    }
+
+    #[test]
+    fn grid_cell_typesets_math_like_surrounding_prose() {
+        let html = rendered(":::grid\nEnergy is $E=mc^2$ here\n|\nsecond cell\n:::\n", &math_on());
+        assert!(
+            html.contains(r#"data-moss-math="inline">E=mc^2</code>"#),
+            "grid cell kept literal $…$: {html}"
+        );
+    }
+
+    #[test]
+    fn math_off_leaves_shortcode_bodies_literal() {
+        let html = rendered(":::hero\ntext $E=mc^2$ end\n:::\n", &ParseConfig::default());
+        assert!(html.contains("$E=mc^2$"), "math=off must not typeset: {html}");
+        assert!(!html.contains("moss-math"));
+    }
+
+    /// Once the config reaches the overlay, the equation becomes an
+    /// `Inline::Other` — and the hero's plain-text walker feeds
+    /// `<meta name="description">`. Fixing the leak without this arm would
+    /// have converted a rendering inconsistency into silent data loss.
+    #[test]
+    fn hero_overlay_text_keeps_math_for_the_description_chain() {
+        let mut doc = parse_with_config(
+            ":::hero\nEnergy is $E=mc^2$ exactly.\n:::\n",
+            &math_on(),
+        );
+        let extraction = moss_core::ast::extract_hero::extract_hero(
+            &mut doc,
+            &moss_core::ast::hooks::DefaultHooks::new(),
+        )
+        .expect("hero must be extracted");
+        let text = extraction.overlay_text.expect("hero must yield overlay text");
+        assert!(text.contains("$E=mc^2$"), "meta description lost the equation: {text:?}");
+    }
+}
+
+/// P1's contract is that math is never *silently deleted*. Three text
+/// collectors inside `parse_inline` matched `Event::Text`/`Event::Code`
+/// and swallowed everything else, so an equation in an image caption, a
+/// heading, or a callout title vanished from the page. Each of these
+/// asserts the recovered markdown source, not merely "something survived".
+mod plain_text_collectors_keep_math {
+    use moss_core::ast::node::{Block, Inline};
+    use moss_core::ast::parser::{parse_with_config, ParseConfig};
+
+    fn math_on() -> ParseConfig {
+        ParseConfig { math: true, ..Default::default() }
+    }
+
+    /// `alt` is an HTML attribute AND (via the implicit-figure path) the
+    /// visible `<figcaption>`, so the equation must come back as source
+    /// text — markup here would leak a tag into `alt=`.
+    #[test]
+    fn image_alt_and_caption_keep_the_equation() {
+        let doc = parse_with_config("![before $E=mc^2$ after](a.png)\n", &math_on());
+        let Block::Figure { image, caption, .. } = &doc.blocks[0] else {
+            panic!("expected a figure, got {:?}", doc.blocks[0]);
+        };
+        let Inline::Image { alt, .. } = image else {
+            panic!("expected an image");
+        };
+        assert_eq!(alt, "before $E=mc^2$ after");
+        assert!(!alt.contains('<'), "alt must stay plain text, got {alt:?}");
+
+        let caption = caption.as_ref().expect("implicit figure must have a caption");
+        assert_eq!(caption, &vec![Inline::Text("before $E=mc^2$ after".into())]);
+    }
+
+    /// Not a deletion but a shape change: the title truncated at the first
+    /// `$` and the remainder fell into the callout body.
+    #[test]
+    fn callout_title_is_not_truncated_at_the_first_dollar() {
+        let doc = parse_with_config("> [!note] Energy $E=mc^2$ explained\n> body\n", &math_on());
+        let Block::Callout { title, children, .. } = &doc.blocks[0] else {
+            panic!("expected a callout, got {:?}", doc.blocks[0]);
+        };
+        assert_eq!(title.as_deref(), Some("Energy $E=mc^2$ explained"));
+        // The tail must not have spilled into the body.
+        let body = format!("{children:?}");
+        assert!(!body.contains("explained"), "title tail leaked into body: {body}");
+    }
+
+    /// The heading TEXT was always fine (`Inline::Other` is a raw
+    /// passthrough); it was the id/anchor that lost the math.
+    #[test]
+    fn heading_renders_math_but_slugs_the_source() {
+        let doc = parse_with_config("# Euler $e^{i\\pi}=-1$ identity\n", &math_on());
+        let Block::Heading { id, children, .. } = &doc.blocks[0] else {
+            panic!("expected a heading");
+        };
+        // Byte-identical to the math=OFF slug — enabling [site].math must
+        // not silently rewrite a published anchor.
+        assert_eq!(id.as_deref(), Some("euler-$e{ipi}=-1$-identity"));
+        let off = parse_with_config("# Euler $e^{i\\pi}=-1$ identity\n", &ParseConfig::default());
+        let Block::Heading { id: off_id, .. } = &off.blocks[0] else { panic!() };
+        assert_eq!(id, off_id);
+        // …while the visible heading still typesets the equation.
+        assert!(children.iter().any(|c| matches!(c, Inline::Other(h) if h.contains("moss-math"))));
+    }
+}

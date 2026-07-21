@@ -23,9 +23,9 @@ use std::collections::HashMap;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::document::{BlockMeta, Document};
-use super::hooks::escape_text;
+use super::math_text::{math_inline, math_source};
 use super::node::{Block, CalloutKind, Fold, Inline};
-use super::shortcode_extract::{extract_shortcodes, parse_placeholder, ExtractedShortcode};
+use super::shortcode_extract::{extract_shortcodes_with_config, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
 use crate::heading_anchor::obsidian_heading_anchor;
 
@@ -181,7 +181,7 @@ pub fn parse(markdown: &str) -> Document {
 /// of its first event; a [`LineLookup`] converts the offset to a 1-based
 /// line number stored in [`BlockMeta::source_line`].
 pub fn parse_with_config(markdown: &str, config: &ParseConfig) -> Document {
-    let extraction = extract_shortcodes(markdown);
+    let extraction = extract_shortcodes_with_config(markdown, config);
 
     let options = parser_options(config.math);
 
@@ -912,20 +912,6 @@ where
     (out, i)
 }
 
-/// Build the P1 math fallback node: the equation's own LaTeX source,
-/// HTML-escaped, in a marked `<code>` span.
-///
-/// The `data-moss-math` attribute carries display-vs-inline so a later
-/// phase's renderer can typeset from the AST without re-deriving it, and so
-/// the CSS can size display math differently without a second class.
-fn math_inline(tex: &str, display: bool) -> Inline {
-    let mode = if display { "display" } else { "inline" };
-    Inline::Other(format!(
-        r#"<code class="moss-math" data-moss-math="{mode}">{}</code>"#,
-        escape_text(tex)
-    ))
-}
-
 /// Parse one inline construct starting at `events[start]`.
 fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
     match &events[start] {
@@ -1013,6 +999,13 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                         Event::End(TagEnd::Image) => break,
                         Event::Text(t) => alt.push_str(t),
                         Event::Code(c) => alt.push_str(c),
+                        // `alt` is a plain-text attribute AND (via the
+                        // implicit-figure path) the visible `<figcaption>`,
+                        // so math is carried as its markdown source, not as
+                        // the `<code>` node. Dropping it deleted the
+                        // equation from both surfaces.
+                        Event::InlineMath(t) => alt.push_str(&math_source(t, false)),
+                        Event::DisplayMath(t) => alt.push_str(&math_source(t, true)),
                         _ => {}
                     }
                     i += 1;
@@ -1242,12 +1235,28 @@ fn detect_and_assemble_callout(
     // Coalesce the leading run of `Event::Text` into one logical
     // string. Stops at SoftBreak, HardBreak, any Start/End tag, or
     // any non-Text inline.
+    //
+    // Math events join the run as their markdown source. `Callout.title`
+    // is a `String`, so source text is the only shape it can hold — and
+    // breaking here instead would not merely drop the equation, it would
+    // TRUNCATE the title at the first `$` and spill the remainder into the
+    // callout body (`[!note] Energy $E=mc^2$ explained` → title "Energy ").
+    // If a later phase needs a typed title, this is the line that has to
+    // become `Vec<Inline>`.
     let mut leading = String::new();
     let mut i = start + 1;
     while let Some(event) = events.get(i) {
         match event {
             Event::Text(t) => {
                 leading.push_str(t);
+                i += 1;
+            }
+            Event::InlineMath(t) => {
+                leading.push_str(&math_source(t, false));
+                i += 1;
+            }
+            Event::DisplayMath(t) => {
+                leading.push_str(&math_source(t, true));
                 i += 1;
             }
             _ => break,
@@ -1453,12 +1462,21 @@ fn flush_pending_paragraph(out: &mut Vec<Block>, pending_inlines: &mut Vec<Inlin
 /// link href text are NOT included; the events inside `Tag::Link` /
 /// `Tag::Image` are walked transparently and their `Event::Text`
 /// payloads (the link/image label) ARE captured, matching production.
+///
+/// Math is captured as its **markdown source** (`$…$` / `$$…$$`, via
+/// [`math_source`]) rather than as bare TeX. That is what makes turning
+/// `[site].math` on a non-breaking change for anchors: the slug for
+/// `# Euler $e^{i\pi}=-1$ identity` is byte-identical with math off and on,
+/// and matches the raw-line slug the wikilink graph computes in
+/// `build/scan/scan.rs`. See [`math_source`] for the full argument.
 fn collect_heading_text(events: &[Event<'_>], start: usize, end: usize) -> String {
     let mut text = String::new();
     for i in start..end {
         match &events[i] {
             Event::Text(t) => text.push_str(t),
             Event::Code(c) => text.push_str(c),
+            Event::InlineMath(t) => text.push_str(&math_source(t, false)),
+            Event::DisplayMath(t) => text.push_str(&math_source(t, true)),
             _ => {}
         }
     }
