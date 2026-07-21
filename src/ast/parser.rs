@@ -1449,11 +1449,11 @@ fn parse_inline_event(events: &[Event<'_>], i: usize) -> Option<(Option<Inline>,
         | Event::InlineHtml(_)
         | Event::SoftBreak
         | Event::HardBreak
-        // Math events are inline leaves. This whitelist is the ONLY way
-        // they reach `parse_inline` from `collect_item_blocks`, so omitting
-        // them here deletes math inside list items, callouts and table cells
-        // while paragraph-level math still looks fine — a wiring failure
-        // that a mechanism-level test cannot see.
+        // Math events are inline leaves. This whitelist is the ONLY way they
+        // reach `parse_inline` from `collect_item_blocks` (its sole caller),
+        // so omitting them deletes math in LIST ITEMS while paragraph math
+        // still looks fine — a wiring failure a mechanism test cannot see.
+        // Table cells/blockquotes take other routes (tests/math_parsing.rs).
         | Event::InlineMath(_)
         | Event::DisplayMath(_) => Some(parse_inline(events, i)),
         Event::Start(tag) => match tag {

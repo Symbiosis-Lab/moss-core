@@ -2081,7 +2081,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-moss-math",
                 values: &["inline", "display"],
                 default: "inline",
-                description: "Which delimiter produced the equation: `inline` for `$…$`, `display` for `$$…$$`. Carries the distinction to CSS (display math centres and gets its own block spacing) and to the P2 typesetter, so neither has to re-derive it from context.",
+                description: "Which delimiter produced the equation: `inline` for `$…$`, `display` for `$$…$$`. Carries the distinction to CSS and to the typesetter so neither has to re-derive it from context — a theme can select on it today to centre display math; moss ships no math stylesheet of its own yet, so both variants currently inherit plain `<code>` styling.",
             },
         ],
         example_html: r#"<code class="moss-math" data-moss-math="inline">E = mc^2</code>"#,

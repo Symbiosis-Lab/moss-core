@@ -149,9 +149,16 @@ fn math_cannot_inject_markup() {
 
 // ---------------------------------------------------------------------------
 // Wiring: math inside constructs whose inlines flow through
-// `parse_inline_event`'s whitelist (list items, callouts, table cells).
-// A missing whitelist entry drops math ONLY here — parse_inline alone
-// looks green. This is the mechanism-vs-wiring guard.
+// `parse_inline_event`'s whitelist. `collect_item_blocks` is its ONLY
+// caller, so **list items are the whole of that surface** — a missing
+// whitelist entry drops math only there, while parse_inline alone looks
+// green. This is the mechanism-vs-wiring guard.
+//
+// Table cells do NOT go through it: `Tag::TableCell` uses
+// `collect_inlines_until` → `parse_inline` directly. The table-cell test
+// below is a real regression test for that separate path, but it is not
+// load-bearing for the whitelist — verified by deleting the two math arms,
+// which fails the list-item test and leaves the table-cell test green.
 // ---------------------------------------------------------------------------
 
 #[test]
