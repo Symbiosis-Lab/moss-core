@@ -135,10 +135,17 @@ mod tests {
     }
 
     /// The keystone invariant, with math in the heading — the case that
-    /// broke it. Asserts all four surfaces agree byte-for-byte:
-    /// the extracted slug, the parsed `<hN id>`, the slug the page would
-    /// have had with math OFF, and the raw-line slug the wikilink graph
-    /// computes in `build/scan/scan.rs`.
+    /// broke it. The slug the walker extracts, the `<hN id>` the renderer
+    /// emits, and the raw-line slug the wikilink graph computes in
+    /// `build/scan/scan.rs` must agree byte-for-byte. That is the invariant
+    /// that holds unconditionally, because all three see the same `$` bytes.
+    ///
+    /// **Agreement with the math=OFF slug is NOT universal**, and asserting
+    /// it as such was wrong. With math off the TeX is ordinary markdown, so
+    /// any markdown-active character inside it is consumed before slugging:
+    /// `$f*g$ and $h*k$` has its two `*` eaten as emphasis, and `$V^*$ and
+    /// $W^*$` — plain dual-space notation — likewise. See the `*` cases
+    /// below and ADR-030 §"Upgrade-time anchor movement".
     #[test]
     fn math_heading_slug_is_identical_across_every_surface() {
         let md = "# Euler $e^{i\\pi}=-1$ identity\n";
@@ -154,17 +161,20 @@ mod tests {
         };
         assert_eq!(extracted[0].slug, *id.as_ref().expect("heading must have an id"));
 
-        // 3: turning [site].math on must not move the anchor.
-        let off = extract_headings_with_config(md, &ParseConfig::default());
-        assert_eq!(
-            extracted[0].slug, off[0].slug,
-            "enabling [site].math silently rewrote a published anchor"
-        );
-
-        // 4: the wikilink graph slugs the RAW heading line.
+        // 3: the wikilink graph slugs the RAW heading line. THIS is the
+        // strong one — a mismatch resolves a link to a fragment the page
+        // does not have.
         assert_eq!(
             extracted[0].slug,
             crate::heading_anchor::obsidian_heading_anchor("Euler $e^{i\\pi}=-1$ identity")
+        );
+
+        // 4: this TeX has no markdown-active characters, so the math=OFF
+        // slug happens to coincide too. Conditional, not universal.
+        let off = extract_headings_with_config(md, &ParseConfig::default());
+        assert_eq!(
+            extracted[0].slug, off[0].slug,
+            "TeX with no markdown-active characters must slug identically either way"
         );
 
         // And the human-readable label keeps the equation rather than
@@ -173,11 +183,54 @@ mod tests {
         assert_eq!(extracted[0].text, off[0].text);
     }
 
+    /// Pins the exception, so nobody re-asserts the false universal.
+    ///
+    /// `*` inside TeX is emphasis to a math-OFF parser. Turning `[site].math`
+    /// on therefore MOVES these anchors — a real, user-visible upgrade cost
+    /// recorded in ADR-030 and the moss-core CHANGELOG. What must still hold
+    /// is graph agreement: math-ON slug == the raw-line slug the wikilink
+    /// scanner computes, so links and anchors never disagree on a live site.
+    #[test]
+    fn markdown_active_chars_in_tex_move_the_anchor_but_keep_graph_agreement() {
+        let math_on = ParseConfig { math: true, ..Default::default() };
+        for (md, raw, expect_off) in [
+            (
+                "# Convolution $f*g$ and $h*k$ end\n",
+                "Convolution $f*g$ and $h*k$ end",
+                "convolution-$fg$-and-$hk$-end",
+            ),
+            ("# Dual $V^*$ and $W^*$ end\n", "Dual $V^*$ and $W^*$ end", "dual-$v$-and-$w$-end"),
+        ] {
+            let on = extract_headings_with_config(md, &math_on);
+            let off = extract_headings_with_config(md, &ParseConfig::default());
+
+            // Graph agreement — unconditional.
+            assert_eq!(
+                on[0].slug,
+                crate::heading_anchor::obsidian_heading_anchor(raw),
+                "math-ON slug diverged from the raw-line slug the wikilink graph computes"
+            );
+
+            // The documented divergence: emphasis ate the `*` with math off.
+            assert_eq!(off[0].slug, expect_off, "math-OFF slug drifted from what ADR-030 records");
+            assert_ne!(
+                on[0].slug, off[0].slug,
+                "expected this heading's anchor to MOVE when math is enabled"
+            );
+        }
+    }
+
+    /// `$$…$$` has no markdown-active characters here, so both slugs agree.
     #[test]
     fn display_math_in_a_heading_keeps_both_delimiters() {
         let math_on = ParseConfig { math: true, ..Default::default() };
         let hs = extract_headings_with_config("# Case $$a+b$$ tail\n", &math_on);
         assert_eq!(hs[0].text, "Case $$a+b$$ tail");
+        assert_eq!(
+            hs[0].slug,
+            crate::heading_anchor::obsidian_heading_anchor("Case $$a+b$$ tail"),
+            "graph agreement — the invariant that always holds"
+        );
         assert_eq!(
             hs[0].slug,
             extract_headings_with_config("# Case $$a+b$$ tail\n", &ParseConfig::default())[0].slug
