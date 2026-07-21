@@ -50,7 +50,12 @@ pub(crate) fn math_inline(tex: &str, display: bool) -> Inline {
 
 /// Reconstruct an equation's markdown source — the TeX with its `$` / `$$`
 /// delimiters restored — from the inner TeX pulldown hands the walker.
-pub(crate) fn math_source(tex: &str, display: bool) -> String {
+///
+/// `pub` because plain-text collectors are not confined to this crate: the
+/// email walker in `moss::infra::newsletter` builds an image `alt` attribute
+/// and needs the same restored-delimiter form, or the two surfaces disagree
+/// about what an equation looks like in plain text.
+pub fn math_source(tex: &str, display: bool) -> String {
     let delim = if display { "$$" } else { "$" };
     format!("{delim}{tex}{delim}")
 }
