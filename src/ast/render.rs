@@ -1454,6 +1454,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let mut doc = super::super::parser::parse_with_config(md, &config);
         super::super::visit::visit_urls_mut(&mut doc, |u| match u {

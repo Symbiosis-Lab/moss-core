@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::document::{BlockMeta, Document};
+use super::hooks::escape_text;
 use super::node::{Block, CalloutKind, Fold, Inline};
 use super::shortcode_extract::{extract_shortcodes, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
@@ -77,6 +78,19 @@ pub struct ParseConfig {
     /// See `process_markdown_file` and docs/architecture/editor-preview-sync.md
     /// "Known defect — source-line coordinate-system mismatch".
     pub source_line_offset: usize,
+
+    /// When true, `$…$` / `$$…$$` parse as math ([`Options::ENABLE_MATH`])
+    /// and render as escaped LaTeX source in `<code class="moss-math">`.
+    /// When false (default), `$` is an ordinary character and math source
+    /// passes through as literal text.
+    ///
+    /// Default is `false` — unlike the other flags, this one changes what
+    /// the *characters* mean, so every in-crate `parse()` caller and every
+    /// committed snapshot fixture keeps today's behavior until a site opts
+    /// in. Production wires it from `site_config.math` (`[site].math`,
+    /// default on), which is where the "is `$5` currency or an unclosed
+    /// equation?" judgment belongs.
+    pub math: bool,
 }
 
 impl Default for ParseConfig {
@@ -88,8 +102,53 @@ impl Default for ParseConfig {
             // callers all assume figure promotion happens.
             implicit_figure: true,
             source_line_offset: 0,
+            // Off by default so the ~40 in-crate `parse()` callers and every
+            // committed snapshot fixture are untouched by math landing.
+            // Production opts in via `[site].math`.
+            math: false,
         }
     }
+}
+
+/// **The** pulldown-cmark option set moss parses markdown with.
+///
+/// Every parser construction site in the repo must call this rather than
+/// hand-assembling its own `Options` — moss previously had five independent
+/// `Options` blocks (typed AST, newsletter ×2, `llms_txt`, the markdown
+/// pipeline), and each one that drifted became a surface where the same
+/// document parsed differently depending on which output it was headed for.
+/// A site that legitimately needs a different set (the newsletter walker
+/// deliberately omits `ENABLE_FOOTNOTES`, because footnote backlinks are
+/// meaningless in an inbox) calls this and then removes the one option, so
+/// the divergence reads as an explicit delta at the call site instead of
+/// being invisibly re-hand-rolled.
+///
+/// `math` gates `ENABLE_MATH` (`$…$` / `$$…$$` → [`Event::InlineMath`] /
+/// [`Event::DisplayMath`]). It is a parameter rather than part of the base
+/// set because it changes the meaning of a character that appears in
+/// ordinary prose (`$5`), so it is the one option a site must opt into —
+/// production wires it from `[site].math` on `SiteConfig`.
+///
+/// **Enabling `math` obliges the caller's event walker to handle both math
+/// events.** pulldown emits them as leaf inline events; a walker that
+/// pattern-matches known events and ignores the rest will *silently delete*
+/// every equation in the document (measured: `Energy $E = mc^2$.` →
+/// `<p>Energy .</p>`). See `src-tauri/tests/math_wiring_invariant_test.rs`,
+/// which fails any site that turns math on without arms in the same walker.
+pub fn parser_options(math: bool) -> Options {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    // Phase 3 PR2: pulldown-cmark emits `LinkType::WikiLink` events for
+    // `[[…]]` / `![[…]]` natively. The typed-AST parser preserves them as
+    // `Inline::Link`/`Inline::Image` with `Url::Unresolved`; resolution
+    // happens in the later `visit_urls_mut` pass.
+    options.insert(Options::ENABLE_WIKILINKS);
+    if math {
+        options.insert(Options::ENABLE_MATH);
+    }
+    options
 }
 
 /// Parse markdown into a typed [`Document`] using the default config.
@@ -124,15 +183,7 @@ pub fn parse(markdown: &str) -> Document {
 pub fn parse_with_config(markdown: &str, config: &ParseConfig) -> Document {
     let extraction = extract_shortcodes(markdown);
 
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    // Phase 3 PR2: pulldown-cmark emits `LinkType::WikiLink` events for
-    // `[[…]]` / `![[…]]` natively. The typed-AST parser preserves them as
-    // `Inline::Link`/`Inline::Image` with `Url::Unresolved`; resolution
-    // happens in the later `visit_urls_mut` pass.
-    options.insert(Options::ENABLE_WIKILINKS);
+    let options = parser_options(config.math);
 
     // Source-line tracking requires the `into_offset_iter` form of the
     // parser, which yields (Event, Range<usize>). When tracking is off,
@@ -861,6 +912,20 @@ where
     (out, i)
 }
 
+/// Build the P1 math fallback node: the equation's own LaTeX source,
+/// HTML-escaped, in a marked `<code>` span.
+///
+/// The `data-moss-math` attribute carries display-vs-inline so a later
+/// phase's renderer can typeset from the AST without re-deriving it, and so
+/// the CSS can size display math differently without a second class.
+fn math_inline(tex: &str, display: bool) -> Inline {
+    let mode = if display { "display" } else { "inline" };
+    Inline::Other(format!(
+        r#"<code class="moss-math" data-moss-math="{mode}">{}</code>"#,
+        escape_text(tex)
+    ))
+}
+
 /// Parse one inline construct starting at `events[start]`.
 fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
     match &events[start] {
@@ -877,6 +942,21 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
         Event::SoftBreak => (Some(Inline::Text("\n".to_string())), 1),
         Event::HardBreak => (Some(Inline::LineBreak), 1),
         Event::Html(s) | Event::InlineHtml(s) => (Some(Inline::Other(s.to_string())), 1),
+        // Math (ADR-030). Both are LEAF inline events carrying the raw TeX.
+        // These arms are load-bearing: without them the two catch-alls below
+        // return `(None, 1)` and every equation is silently deleted from the
+        // document (`Energy $E = mc^2$.` → `<p>Energy .</p>`).
+        //
+        // P1 has no typesetting engine, so math renders as its own escaped
+        // source — honest, never blank. `Inline::Other` is a RAW passthrough
+        // at render time (render.rs), which is exactly why the escaping has
+        // to happen HERE, at construction: the TeX is author input and is
+        // full of `<`, `>` and `&`. ADR-030 §4 records why this rides
+        // `Inline::Other` instead of a new `Inline::Math` variant (the enum
+        // is published, serialized and not `#[non_exhaustive]`, so a variant
+        // is a semver one-way door).
+        Event::InlineMath(tex) => (Some(math_inline(tex, false)), 1),
+        Event::DisplayMath(tex) => (Some(math_inline(tex, true)), 1),
         Event::Start(tag) => match tag {
             Tag::Emphasis => {
                 let (children, end) = collect_inlines_until(events, start + 1, |e| {
@@ -1334,7 +1414,14 @@ fn parse_inline_event(events: &[Event<'_>], i: usize) -> Option<(Option<Inline>,
         | Event::Html(_)
         | Event::InlineHtml(_)
         | Event::SoftBreak
-        | Event::HardBreak => Some(parse_inline(events, i)),
+        | Event::HardBreak
+        // Math events are inline leaves. This whitelist is the ONLY way
+        // they reach `parse_inline` from `collect_item_blocks`, so omitting
+        // them here deletes math inside list items, callouts and table cells
+        // while paragraph-level math still looks fine — a wiring failure
+        // that a mechanism-level test cannot see.
+        | Event::InlineMath(_)
+        | Event::DisplayMath(_) => Some(parse_inline(events, i)),
         Event::Start(tag) => match tag {
             Tag::Emphasis | Tag::Strong | Tag::Link { .. } | Tag::Image { .. } => {
                 Some(parse_inline(events, i))
@@ -2649,6 +2736,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         // Expected blocks: H1, P, H2, P (4 blocks).
@@ -2672,6 +2760,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 7,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(
@@ -2698,6 +2787,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         // Blocks: H1 (line 1), Shortcode grid (line 3), H2 "After" (line 13).
@@ -2720,6 +2810,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 2);
@@ -2741,6 +2832,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 1);
@@ -2795,6 +2887,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 1);
@@ -2915,6 +3008,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 2);
@@ -2948,6 +3042,7 @@ mod tests {
             emit_source_lines: false,
             implicit_figure: false,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config("![alt](photo.jpg)\n", &config);
         assert_eq!(doc.blocks.len(), 1);
