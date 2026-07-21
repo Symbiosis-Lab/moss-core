@@ -332,3 +332,35 @@ mod plain_text_collectors_keep_math {
         assert!(children.iter().any(|c| matches!(c, Inline::Other(h) if h.contains("moss-math"))));
     }
 }
+
+// ---------------------------------------------------------------------------
+// The published contract must describe what moss actually emits
+// ---------------------------------------------------------------------------
+
+/// The `.moss-math` component contract is what theme authors read, via
+/// `moss describe` and `docs/contract/reference.md`. Nothing compared its
+/// declared `example_html` to a real render, so when the P1 fallback
+/// changed to keep the `$` delimiters, the contract kept advertising the
+/// old bare-TeX output and no test noticed. `components_sync_test` cannot
+/// catch this — it only matches `class="moss-..."` literals.
+///
+/// Mutation check: drop the `$` from either side of the contract's
+/// `example_html` and this goes red.
+#[test]
+fn moss_math_contract_example_matches_a_real_render() {
+    let entry = moss_core::contract::components::COMPONENTS
+        .iter()
+        .find(|c| c.class == "moss-math")
+        .expect("the .moss-math component must be declared in COMPONENTS");
+
+    let html = render(entry.example_markdown, true);
+
+    assert!(
+        html.contains(entry.example_html),
+        "the declared example_html is not what moss emits for the declared \
+         example_markdown.\n  markdown: {:?}\n  declared: {}\n  actual:   {}",
+        entry.example_markdown,
+        entry.example_html,
+        html.trim()
+    );
+}
