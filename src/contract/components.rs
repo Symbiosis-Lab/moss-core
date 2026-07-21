@@ -2090,6 +2090,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "1",
         description: "A LaTeX equation. In P1 the element holds the author's own markdown source — `$` / `$$` delimiters included — HTML-escaped: an honest fallback that never shows a blank where an equation was written, and never deletes the delimiters of prose that merely looked like math. Requires `[site].math` (default on).",
     },
+    ComponentEntry {
+        class: "moss-math-scroll",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-math-scroll"><svg class="moss-math" data-moss-math="display">…</svg></div>"#,
+        example_markdown: "$$E = mc^2$$",
+        status: Status::Emerging,
+        since: "1",
+        description: "Horizontal-scroll container the build path wraps around typeset display math (`svg.moss-math[data-moss-math=\"display\"]`). On a narrow viewport a wide equation scrolls inside this box at its natural size rather than shrinking to unreadability or pushing the page into horizontal overflow. Emitted only by P2's typeset path; the P1 `<code>` fallback is never wrapped. A display SVG left unwrapped still cannot overflow the page — it falls back to scaling down via `max-width: 100%`.",
+    },
 ];
 
 /// Implementation classes that are emitted by moss for internal functionality
