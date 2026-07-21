@@ -520,7 +520,7 @@ fn split_path_suffix(url: &str) -> (&str, Option<&str>) {
 /// - `?query` → `?query` (no fragment, untouched)
 /// - `?query#frag` → `?query#<slug>` (query verbatim, fragment slugged)
 fn slug_wikilink_suffix(suffix: &str) -> String {
-    use crate::heading_anchor::obsidian_heading_anchor;
+    use crate::heading::anchor::obsidian_heading_anchor;
 
     // Find the fragment (`#…`); everything before it is a `?query` we leave
     // untouched. There is at most one `#` in a well-formed suffix.

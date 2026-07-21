@@ -304,7 +304,7 @@ pub fn lookup_renderer(ext: &str) -> Option<&'static dyn EmbedRenderer> {
 // ImageRenderer
 // ---------------------------------------------------------------------------
 
-use crate::heading_anchor::obsidian_heading_anchor;
+use crate::heading::anchor::obsidian_heading_anchor;
 use crate::media::parse_media_attrs;
 
 use super::fuzzy_path::relative_asset_path;

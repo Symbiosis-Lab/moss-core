@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use crate::heading_anchor::obsidian_heading_anchor;
+use crate::heading::anchor::obsidian_heading_anchor;
 
 use super::Diagnostic;
 

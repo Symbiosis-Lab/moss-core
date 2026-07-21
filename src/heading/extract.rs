@@ -131,7 +131,7 @@ mod tests {
         // punctuation that the algorithm keeps/strips distinctively.
         let md = "## Step 1: Install\n";
         let hs = extract_headings(md);
-        assert_eq!(hs[0].slug, crate::heading_anchor::obsidian_heading_anchor("Step 1: Install"));
+        assert_eq!(hs[0].slug, crate::heading::anchor::obsidian_heading_anchor("Step 1: Install"));
     }
 
     /// The keystone invariant, with math in the heading — the case that
@@ -166,7 +166,7 @@ mod tests {
         // does not have.
         assert_eq!(
             extracted[0].slug,
-            crate::heading_anchor::obsidian_heading_anchor("Euler $e^{i\\pi}=-1$ identity")
+            crate::heading::anchor::obsidian_heading_anchor("Euler $e^{i\\pi}=-1$ identity")
         );
 
         // 4: this TeX has no markdown-active characters, so the math=OFF
@@ -207,7 +207,7 @@ mod tests {
             // Graph agreement — unconditional.
             assert_eq!(
                 on[0].slug,
-                crate::heading_anchor::obsidian_heading_anchor(raw),
+                crate::heading::anchor::obsidian_heading_anchor(raw),
                 "math-ON slug diverged from the raw-line slug the wikilink graph computes"
             );
 
@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(hs[0].text, "Case $$a+b$$ tail");
         assert_eq!(
             hs[0].slug,
-            crate::heading_anchor::obsidian_heading_anchor("Case $$a+b$$ tail"),
+            crate::heading::anchor::obsidian_heading_anchor("Case $$a+b$$ tail"),
             "graph agreement — the invariant that always holds"
         );
         assert_eq!(

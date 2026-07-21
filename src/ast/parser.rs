@@ -27,7 +27,7 @@ use super::math_text::{math_inline, math_source};
 use super::node::{Block, CalloutKind, Fold, Inline};
 use super::shortcode_extract::{extract_shortcodes_with_config, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
-use crate::heading_anchor::obsidian_heading_anchor;
+use crate::heading::anchor::obsidian_heading_anchor;
 
 /// Parser configuration flags.
 ///

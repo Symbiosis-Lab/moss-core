@@ -166,7 +166,7 @@ proptest! {
 
     #[test]
     fn obsidian_heading_anchor_never_panics(heading in any_str()) {
-        let _ = moss_core::heading_anchor::obsidian_heading_anchor(&heading);
+        let _ = moss_core::heading::anchor::obsidian_heading_anchor(&heading);
     }
 
     #[test]

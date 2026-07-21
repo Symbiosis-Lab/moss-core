@@ -167,7 +167,7 @@ pub enum Block {
         level: u8,
         children: Vec<Inline>,
         /// Heading anchor id (slug). Computed by the parser via
-        /// [`crate::heading_anchor::obsidian_heading_anchor`].
+        /// [`crate::heading::anchor::obsidian_heading_anchor`].
         id: Option<String>,
     },
     /// A paragraph of inline content.
