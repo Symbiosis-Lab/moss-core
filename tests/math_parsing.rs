@@ -51,9 +51,32 @@ fn math_is_never_silently_dropped() {
 #[test]
 fn inline_math_renders_as_moss_math_code_span() {
     let html = render("$E = mc^2$", true);
+    // The span carries the author's SOURCE, delimiters included — P1 ships no
+    // typesetting engine, so dropping the `$` would silently eat two
+    // characters of prose (see `ast::math_text::math_inline`).
     assert!(
-        html.contains(r#"<code class="moss-math" data-moss-math="inline">E = mc^2</code>"#),
+        html.contains(r#"<code class="moss-math" data-moss-math="inline">$E = mc^2$</code>"#),
         "unexpected inline math markup: {html}"
+    );
+}
+
+/// The reason the delimiters are kept, stated as a test: a `$`-span that is
+/// really prose must survive byte-for-byte. `一个$5，两个$10` parses as math
+/// (a full-width comma is non-whitespace, so it closes the span) and math is
+/// on by default, so this is the common case, not the exotic one.
+#[test]
+fn a_false_positive_math_span_loses_no_characters() {
+    let html = render("一个$5，两个$10", true);
+    assert!(
+        html.contains("一个") && html.contains("$5，两个$") && html.contains("10"),
+        "currency prose lost characters to the math fallback: {html}"
+    );
+    let text: String = html
+        .replace(r#"<code class="moss-math" data-moss-math="inline">"#, "")
+        .replace("</code>", "");
+    assert!(
+        text.contains("一个$5，两个$10"),
+        "reader-visible text must equal the author's source: {text}"
     );
 }
 
@@ -124,7 +147,7 @@ fn math_source_is_html_escaped() {
         .nth(1)
         .and_then(|s| s.split("</code>").next())
         .unwrap_or_else(|| panic!("no math span in {html}"));
-    assert_eq!(span, "a &lt; b &amp; c");
+    assert_eq!(span, "$a &lt; b &amp; c$");
     // No raw `<`, and every `&` must open an entity (a bare `&` would mean
     // the escaper ran on `<` but not `&`, or ran twice on one and not the
     // other).
@@ -199,18 +222,21 @@ mod shortcode_bodies_inherit_the_callers_config {
     #[test]
     fn hero_overlay_typesets_math_like_surrounding_prose() {
         let html = rendered(":::hero\ntext $E=mc^2$ end\n:::\n", &math_on());
+        // The discriminator is the math span, not the absence of `$` — the
+        // P1 fallback deliberately keeps the delimiters, so "still literal"
+        // now means "no moss-math wrapper", which
+        // `math_off_leaves_shortcode_bodies_literal` covers from the far side.
         assert!(
-            html.contains(r#"<code class="moss-math" data-moss-math="inline">E=mc^2</code>"#),
+            html.contains(r#"<code class="moss-math" data-moss-math="inline">$E=mc^2$</code>"#),
             "hero overlay kept literal $…$ while prose became math: {html}"
         );
-        assert!(!html.contains("$E=mc^2$"), "raw delimiters leaked: {html}");
     }
 
     #[test]
     fn grid_cell_typesets_math_like_surrounding_prose() {
         let html = rendered(":::grid\nEnergy is $E=mc^2$ here\n|\nsecond cell\n:::\n", &math_on());
         assert!(
-            html.contains(r#"data-moss-math="inline">E=mc^2</code>"#),
+            html.contains(r#"data-moss-math="inline">$E=mc^2$</code>"#),
             "grid cell kept literal $…$: {html}"
         );
     }

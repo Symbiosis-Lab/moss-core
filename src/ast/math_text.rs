@@ -37,15 +37,37 @@ const PREFIX_INLINE: &str = r#"<code class="moss-math" data-moss-math="inline">"
 const PREFIX_DISPLAY: &str = r#"<code class="moss-math" data-moss-math="display">"#;
 const SUFFIX: &str = "</code>";
 
-/// Build the P1 math fallback node: the equation's own LaTeX source,
-/// HTML-escaped, in a marked `<code>` span.
+/// Build the P1 math fallback node: the equation's own markdown source —
+/// delimiters included — HTML-escaped, in a marked `<code>` span.
 ///
 /// The `data-moss-math` attribute carries display-vs-inline so a later
 /// phase's renderer can typeset from the AST without re-deriving it, and so
 /// the CSS can size display math differently without a second class.
+///
+/// **Why the `$` delimiters are kept.** P1 ships no typesetting engine, so
+/// this span is what the reader actually sees. Emitting the bare inner TeX
+/// would silently swallow two characters of the author's prose, which is the
+/// same content-loss P1 exists to prevent — just moved from "equation
+/// deleted" to "delimiters deleted". It is invisible for a real equation and
+/// destructive for a false positive:
+///
+/// ```text
+/// 一个$5，两个$10     bare TeX → 一个5，两个10      (prices corrupted)
+///                     source   → 一个$5，两个$10    (byte-identical)
+/// ```
+///
+/// pulldown's close rule fires on any non-whitespace byte, so unspaced CJK
+/// currency parses as math (`moss doctor --math` exists to surface exactly
+/// this), and `[site].math` defaults on — the false positive is the case to
+/// optimize for. Keeping the delimiters also makes this node agree with
+/// [`math_source`], so an equation has ONE spelling across the body, image
+/// alt text, heading slugs and meta descriptions instead of two.
+///
+/// P2/P3 replace this span with typeset SVG, at which point the delimiters
+/// disappear along with the fallback.
 pub(crate) fn math_inline(tex: &str, display: bool) -> Inline {
     let prefix = if display { PREFIX_DISPLAY } else { PREFIX_INLINE };
-    Inline::Other(format!("{prefix}{}{SUFFIX}", escape_text(tex)))
+    Inline::Other(format!("{prefix}{}{SUFFIX}", escape_text(&math_source(tex, display))))
 }
 
 /// Reconstruct an equation's markdown source — the TeX with its `$` / `$$`
@@ -71,23 +93,26 @@ pub fn math_source(tex: &str, display: bool) -> String {
 /// `math_source_round_trips_through_the_node` below — that test is what
 /// keeps this from drifting away from the builder three lines above it.
 pub(crate) fn math_source_from_other(html: &str) -> Option<String> {
-    let (prefix, display) = if html.starts_with(PREFIX_DISPLAY) {
-        (PREFIX_DISPLAY, true)
+    let prefix = if html.starts_with(PREFIX_DISPLAY) {
+        PREFIX_DISPLAY
     } else if html.starts_with(PREFIX_INLINE) {
-        (PREFIX_INLINE, false)
+        PREFIX_INLINE
     } else {
         return None;
     };
-    let inner = html
-        .strip_prefix(prefix)?
-        .strip_suffix(SUFFIX)?
-        // Only the three characters `escape_text` writes, unescaped in the
-        // order that makes `&amp;lt;` come back as the literal `&lt;`
-        // rather than as `<`.
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&");
-    Some(math_source(&inner, display))
+    // The node's payload is ALREADY the delimited source — `math_inline`
+    // builds it with `math_source` — so this only has to unescape. Re-adding
+    // the delimiters here would double them (`$$E=mc^2$$` for inline math).
+    Some(
+        html.strip_prefix(prefix)?
+            .strip_suffix(SUFFIX)?
+            // Only the three characters `escape_text` writes, unescaped in the
+            // order that makes `&amp;lt;` come back as the literal `&lt;`
+            // rather than as `<`.
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&"),
+    )
 }
 
 #[cfg(test)]
