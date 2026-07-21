@@ -3,13 +3,17 @@
 //! `assign_heading_id_suffixes`) so the returned slugs are byte-identical
 //! to the rendered `<hN id="...">` attributes — the keystone invariant.
 //!
+//! The plain-text flattening is [`super::text::inlines_to_text`] — shared
+//! with the event-stream walker the parser slugs from, so the label this
+//! returns and the `<hN id>` cannot describe the heading differently.
+//!
 //! v1 extracts TOP-LEVEL headings only (the common case). Headings nested
 //! inside callouts / blockquotes / lists are not offered for autocomplete;
 //! a recursive walk is a follow-up if needed.
 
-use crate::ast::math_text::math_source_from_other;
+use super::text::inlines_to_text;
 use crate::ast::parser::ParseConfig;
-use crate::ast::{parse_with_config, Block, Inline};
+use crate::ast::{parse_with_config, Block};
 
 /// A heading discovered in a document, in document order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,32 +24,6 @@ pub struct HeadingInfo {
     pub slug: String,
     /// Heading level 1..=6.
     pub level: u8,
-}
-
-/// Flatten an inline slice to its plain-text content (markup removed).
-fn inlines_to_text(inlines: &[Inline], out: &mut String) {
-    for inline in inlines {
-        match inline {
-            Inline::Text(t) => out.push_str(t),
-            Inline::Code(c) => out.push_str(c),
-            Inline::Emphasis(children) | Inline::Strong(children) => {
-                inlines_to_text(children, out)
-            }
-            Inline::Link { children, .. } => inlines_to_text(children, out),
-            Inline::Image { alt, .. } => out.push_str(alt),
-            Inline::LineBreak => out.push(' '),
-            // A math fallback node is raw HTML, but it is the only
-            // `Inline::Other` that carries author text. Recover its
-            // markdown source so `text` agrees with `slug` — the slug
-            // keeps `$…$` (see `ast::math_text`), so the label must too,
-            // or autocomplete shows a title the anchor does not match.
-            Inline::Other(html) => {
-                if let Some(src) = math_source_from_other(html) {
-                    out.push_str(&src);
-                }
-            }
-        }
-    }
 }
 
 /// Extract all top-level headings from `markdown` in document order, with

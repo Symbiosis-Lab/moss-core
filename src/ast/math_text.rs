@@ -23,7 +23,7 @@
 //!    RAW heading line; being a line scanner it cannot know where math
 //!    begins, so it always includes the `$` bytes. The render side has to
 //!    match it, or the graph resolves a link to a fragment the page lacks.
-//! 3. **`extract_headings`**, whose module doc calls byte-identity with the
+//! 3. **`heading::extract`**, whose module doc calls byte-identity with the
 //!    rendered `<hN id>` "the keystone invariant".
 //!
 //! Bare TeX would satisfy none of the three. Markup would be actively wrong
@@ -86,10 +86,10 @@ pub fn math_source(tex: &str, display: bool) -> String {
 /// payload, or `None` if the payload is some other raw-HTML passthrough.
 ///
 /// The inverse of [`math_inline`]. Plain-text walkers that see the AST
-/// rather than the event stream (`extract_headings::inlines_to_text`,
-/// `extract_hero::inlines_plain_text`) have no access to the original
-/// event, so recovering from the node is the only way for them to honor
-/// P1's never-silently-delete contract. Round-tripping is pinned by
+/// rather than the event stream (`heading::text::inlines_to_text`, the
+/// crate's one AST walker — `extract_hero` delegates to it) have no access
+/// to the original event, so recovering from the node is the only way to
+/// honor P1's never-silently-delete contract. Round-tripping is pinned by
 /// `math_source_round_trips_through_the_node` below — that test is what
 /// keeps this from drifting away from the builder three lines above it.
 pub(crate) fn math_source_from_other(html: &str) -> Option<String> {

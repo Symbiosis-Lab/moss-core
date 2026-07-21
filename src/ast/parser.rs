@@ -501,7 +501,7 @@ fn parse_block_with_tag(
             // (`<br>` etc.), images, and link href text are NOT included —
             // only Event::Text and Event::Code. The post-parse
             // `assign_heading_id_suffixes` pass disambiguates collisions.
-            let heading_text = collect_heading_text(events, start + 1, end);
+            let heading_text = crate::heading::text::events_to_text(events, start + 1, end);
             let base_slug = obsidian_heading_anchor(&heading_text);
             (
                 Some(Block::Heading {
@@ -1472,40 +1472,6 @@ fn flush_pending_paragraph(out: &mut Vec<Block>, pending_inlines: &mut Vec<Inlin
     if !pending_inlines.is_empty() {
         out.push(Block::Paragraph(std::mem::take(pending_inlines)));
     }
-}
-
-/// Collect the text content of a heading by walking events between
-/// `start..end` (exclusive of the matching `Event::End(TagEnd::Heading)`)
-/// and concatenating every `Event::Text` and `Event::Code` payload.
-///
-/// Mirrors production's `transform_events` heading-text collection at
-/// `src-tauri/src/build/markdown/pipeline.rs:1784-1795`. Inline HTML
-/// (`Event::InlineHtml` / `Event::Html`) is intentionally skipped so that
-/// e.g. `# FAREWELL,<br>AND ERASE` yields the slug for
-/// `FAREWELL,AND ERASE` (no `<br>` in the slug). Soft/hard breaks are
-/// skipped — production only captures Text + Code. Image alt text and
-/// link href text are NOT included; the events inside `Tag::Link` /
-/// `Tag::Image` are walked transparently and their `Event::Text`
-/// payloads (the link/image label) ARE captured, matching production.
-///
-/// Math is captured as its **markdown source** (`$…$` / `$$…$$`, via
-/// [`math_source`]) rather than as bare TeX. That is what makes turning
-/// `[site].math` on a non-breaking change for anchors: the slug for
-/// `# Euler $e^{i\pi}=-1$ identity` is byte-identical with math off and on,
-/// and matches the raw-line slug the wikilink graph computes in
-/// `build/scan/scan.rs`. See [`math_source`] for the full argument.
-fn collect_heading_text(events: &[Event<'_>], start: usize, end: usize) -> String {
-    let mut text = String::new();
-    for i in start..end {
-        match &events[i] {
-            Event::Text(t) => text.push_str(t),
-            Event::Code(c) => text.push_str(c),
-            Event::InlineMath(t) => text.push_str(&math_source(t, false)),
-            Event::DisplayMath(t) => text.push_str(&math_source(t, true)),
-            _ => {}
-        }
-    }
-    text
 }
 
 /// Post-parse pass: walk every heading in document order (recursively

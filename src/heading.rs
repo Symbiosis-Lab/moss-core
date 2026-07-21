@@ -31,6 +31,7 @@
 pub mod anchor;
 pub mod extract;
 pub mod state;
+pub mod text;
 
 pub use anchor::obsidian_heading_anchor;
 pub use extract::{extract_headings, extract_headings_with_config, HeadingInfo};
