@@ -23,10 +23,11 @@ use std::collections::HashMap;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::document::{BlockMeta, Document};
+use super::math_text::{math_inline, math_source};
 use super::node::{Block, CalloutKind, Fold, Inline};
-use super::shortcode_extract::{extract_shortcodes, parse_placeholder, ExtractedShortcode};
+use super::shortcode_extract::{extract_shortcodes_with_config, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
-use crate::heading_anchor::obsidian_heading_anchor;
+use crate::heading::anchor::obsidian_heading_anchor;
 
 /// Parser configuration flags.
 ///
@@ -77,6 +78,19 @@ pub struct ParseConfig {
     /// See `process_markdown_file` and docs/architecture/editor-preview-sync.md
     /// "Known defect — source-line coordinate-system mismatch".
     pub source_line_offset: usize,
+
+    /// When true, `$…$` / `$$…$$` parse as math ([`Options::ENABLE_MATH`])
+    /// and render as escaped LaTeX source in `<code class="moss-math">`.
+    /// When false (default), `$` is an ordinary character and math source
+    /// passes through as literal text.
+    ///
+    /// Default is `false` — unlike the other flags, this one changes what
+    /// the *characters* mean, so every in-crate `parse()` caller and every
+    /// committed snapshot fixture keeps today's behavior until a site opts
+    /// in. Production wires it from `site_config.math` (`[site].math`,
+    /// default on), which is where the "is `$5` currency or an unclosed
+    /// equation?" judgment belongs.
+    pub math: bool,
 }
 
 impl Default for ParseConfig {
@@ -88,8 +102,53 @@ impl Default for ParseConfig {
             // callers all assume figure promotion happens.
             implicit_figure: true,
             source_line_offset: 0,
+            // Off by default so the ~40 in-crate `parse()` callers and every
+            // committed snapshot fixture are untouched by math landing.
+            // Production opts in via `[site].math`.
+            math: false,
         }
     }
+}
+
+/// **The** pulldown-cmark option set moss parses markdown with.
+///
+/// Every parser construction site in the repo must call this rather than
+/// hand-assembling its own `Options` — moss previously had five independent
+/// `Options` blocks (typed AST, newsletter ×2, `llms_txt`, the markdown
+/// pipeline), and each one that drifted became a surface where the same
+/// document parsed differently depending on which output it was headed for.
+/// A site that legitimately needs a different set (the newsletter walker
+/// deliberately omits `ENABLE_FOOTNOTES`, because footnote backlinks are
+/// meaningless in an inbox) calls this and then removes the one option, so
+/// the divergence reads as an explicit delta at the call site instead of
+/// being invisibly re-hand-rolled.
+///
+/// `math` gates `ENABLE_MATH` (`$…$` / `$$…$$` → [`Event::InlineMath`] /
+/// [`Event::DisplayMath`]). It is a parameter rather than part of the base
+/// set because it changes the meaning of a character that appears in
+/// ordinary prose (`$5`), so it is the one option a site must opt into —
+/// production wires it from `[site].math` on `SiteConfig`.
+///
+/// **Enabling `math` obliges the caller's event walker to handle both math
+/// events.** pulldown emits them as leaf inline events; a walker that
+/// pattern-matches known events and ignores the rest will *silently delete*
+/// every equation in the document (measured: `Energy $E = mc^2$.` →
+/// `<p>Energy .</p>`). See `src-tauri/tests/math_wiring_invariant_test.rs`,
+/// which fails any site that turns math on without arms in the same walker.
+pub fn parser_options(math: bool) -> Options {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    // Phase 3 PR2: pulldown-cmark emits `LinkType::WikiLink` events for
+    // `[[…]]` / `![[…]]` natively. The typed-AST parser preserves them as
+    // `Inline::Link`/`Inline::Image` with `Url::Unresolved`; resolution
+    // happens in the later `visit_urls_mut` pass.
+    options.insert(Options::ENABLE_WIKILINKS);
+    if math {
+        options.insert(Options::ENABLE_MATH);
+    }
+    options
 }
 
 /// Parse markdown into a typed [`Document`] using the default config.
@@ -122,17 +181,9 @@ pub fn parse(markdown: &str) -> Document {
 /// of its first event; a [`LineLookup`] converts the offset to a 1-based
 /// line number stored in [`BlockMeta::source_line`].
 pub fn parse_with_config(markdown: &str, config: &ParseConfig) -> Document {
-    let extraction = extract_shortcodes(markdown);
+    let extraction = extract_shortcodes_with_config(markdown, config);
 
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    // Phase 3 PR2: pulldown-cmark emits `LinkType::WikiLink` events for
-    // `[[…]]` / `![[…]]` natively. The typed-AST parser preserves them as
-    // `Inline::Link`/`Inline::Image` with `Url::Unresolved`; resolution
-    // happens in the later `visit_urls_mut` pass.
-    options.insert(Options::ENABLE_WIKILINKS);
+    let options = parser_options(config.math);
 
     // Source-line tracking requires the `into_offset_iter` form of the
     // parser, which yields (Event, Range<usize>). When tracking is off,
@@ -400,6 +451,11 @@ fn parse_block(
     start: usize,
     line_ctx: Option<&LineCtx<'_>>,
 ) -> (Option<Block>, usize) {
+    // Block-level dispatch. pulldown always wraps loose inlines (math
+    // included) in Tag::Paragraph at top level, so no math event ever reaches
+    // this match; the paragraph's inlines are collected by the math-aware
+    // parse_inline. Pinned by `display_math_block_survives_on_its_own_lines`.
+    // allow:math-events-ignored — see above.
     match &events[start] {
         Event::Start(tag) => parse_block_with_tag(events, start, tag, line_ctx),
         Event::Text(_) | Event::Code(_) | Event::Html(_) | Event::SoftBreak | Event::HardBreak => {
@@ -445,7 +501,7 @@ fn parse_block_with_tag(
             // (`<br>` etc.), images, and link href text are NOT included —
             // only Event::Text and Event::Code. The post-parse
             // `assign_heading_id_suffixes` pass disambiguates collisions.
-            let heading_text = collect_heading_text(events, start + 1, end);
+            let heading_text = crate::heading::text::events_to_text(events, start + 1, end);
             let base_slug = obsidian_heading_anchor(&heading_text);
             (
                 Some(Block::Heading {
@@ -490,6 +546,9 @@ fn parse_block_with_tag(
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
+                    // allow:math-events-ignored — pulldown does not parse math
+                    // inside a code fence, so it emits no math event here;
+                    // ```\n$x^2$\n``` is byte-identical at math on and off.
                     Event::End(TagEnd::CodeBlock) => break,
                     Event::Text(t) => value.push_str(t),
                     _ => {}
@@ -548,6 +607,10 @@ fn parse_block_with_tag(
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
+                    // allow:math-events-ignored — structural walk that only
+                    // locates item boundaries; every item's content is parsed
+                    // by the math-aware collect_item_blocks. Pinned by
+                    // `math_survives_inside_list_items`.
                     Event::End(TagEnd::List(_)) => break,
                     Event::Start(Tag::Item) => {
                         if track_lines {
@@ -585,6 +648,10 @@ fn parse_block_with_tag(
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
+                    // allow:math-events-ignored — structural walk over table
+                    // section/row/cell boundaries; cell content is collected by
+                    // the math-aware collect_inlines_until. Pinned by
+                    // `math_survives_inside_a_table_cell`.
                     Event::End(TagEnd::Table) => break,
                     Event::Start(Tag::TableHead) => {
                         in_head = true;
@@ -649,6 +716,9 @@ fn parse_block_with_tag(
             let mut i = start + 1;
             while i < events.len() {
                 match &events[i] {
+                    // allow:math-events-ignored — a raw HTML block is passed
+                    // through verbatim; pulldown emits only Html/Text inside
+                    // one, never a math event.
                     Event::End(TagEnd::HtmlBlock) => break,
                     Event::Html(s) | Event::Text(s) => html.push_str(s),
                     _ => {}
@@ -877,6 +947,21 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
         Event::SoftBreak => (Some(Inline::Text("\n".to_string())), 1),
         Event::HardBreak => (Some(Inline::LineBreak), 1),
         Event::Html(s) | Event::InlineHtml(s) => (Some(Inline::Other(s.to_string())), 1),
+        // Math (ADR-030). Both are LEAF inline events carrying the raw TeX.
+        // These arms are load-bearing: without them the two catch-alls below
+        // return `(None, 1)` and every equation is silently deleted from the
+        // document (`Energy $E = mc^2$.` → `<p>Energy .</p>`).
+        //
+        // P1 has no typesetting engine, so math renders as its own escaped
+        // source — honest, never blank. `Inline::Other` is a RAW passthrough
+        // at render time (render.rs), which is exactly why the escaping has
+        // to happen HERE, at construction: the TeX is author input and is
+        // full of `<`, `>` and `&`. ADR-030 §4 records why this rides
+        // `Inline::Other` instead of a new `Inline::Math` variant (the enum
+        // is published, serialized and not `#[non_exhaustive]`, so a variant
+        // is a semver one-way door).
+        Event::InlineMath(tex) => (Some(math_inline(tex, false)), 1),
+        Event::DisplayMath(tex) => (Some(math_inline(tex, true)), 1),
         Event::Start(tag) => match tag {
             Tag::Emphasis => {
                 let (children, end) = collect_inlines_until(events, start + 1, |e| {
@@ -933,6 +1018,13 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                         Event::End(TagEnd::Image) => break,
                         Event::Text(t) => alt.push_str(t),
                         Event::Code(c) => alt.push_str(c),
+                        // `alt` is a plain-text attribute AND (via the
+                        // implicit-figure path) the visible `<figcaption>`,
+                        // so math is carried as its markdown source, not as
+                        // the `<code>` node. Dropping it deleted the
+                        // equation from both surfaces.
+                        Event::InlineMath(t) => alt.push_str(&math_source(t, false)),
+                        Event::DisplayMath(t) => alt.push_str(&math_source(t, true)),
                         _ => {}
                     }
                     i += 1;
@@ -1162,12 +1254,28 @@ fn detect_and_assemble_callout(
     // Coalesce the leading run of `Event::Text` into one logical
     // string. Stops at SoftBreak, HardBreak, any Start/End tag, or
     // any non-Text inline.
+    //
+    // Math events join the run as their markdown source. `Callout.title`
+    // is a `String`, so source text is the only shape it can hold — and
+    // breaking here instead would not merely drop the equation, it would
+    // TRUNCATE the title at the first `$` and spill the remainder into the
+    // callout body (`[!note] Energy $E=mc^2$ explained` → title "Energy ").
+    // If a later phase needs a typed title, this is the line that has to
+    // become `Vec<Inline>`.
     let mut leading = String::new();
     let mut i = start + 1;
     while let Some(event) = events.get(i) {
         match event {
             Event::Text(t) => {
                 leading.push_str(t);
+                i += 1;
+            }
+            Event::InlineMath(t) => {
+                leading.push_str(&math_source(t, false));
+                i += 1;
+            }
+            Event::DisplayMath(t) => {
+                leading.push_str(&math_source(t, true));
                 i += 1;
             }
             _ => break,
@@ -1198,6 +1306,12 @@ fn detect_and_assemble_callout(
     //       paragraph. The author can use a separator paragraph for
     //       clarity if they want clean title isolation.
     let mut body_blocks: Vec<Block> = Vec::new();
+    // This match chooses WHERE the callout body starts; it does not collect
+    // content. A math event directly after the marker falls into the `_` arm,
+    // which starts the body at `i` and hands it to the math-aware
+    // collect_inlines_until. Pinned by
+    // `callout_title_is_not_truncated_at_the_first_dollar`.
+    // allow:math-events-ignored — see above.
     let body_paragraph_start: Option<usize> = match events.get(i) {
         Some(Event::SoftBreak) | Some(Event::HardBreak) => {
             // Skip the break; collect remaining inlines for the body
@@ -1334,7 +1448,14 @@ fn parse_inline_event(events: &[Event<'_>], i: usize) -> Option<(Option<Inline>,
         | Event::Html(_)
         | Event::InlineHtml(_)
         | Event::SoftBreak
-        | Event::HardBreak => Some(parse_inline(events, i)),
+        | Event::HardBreak
+        // Math events are inline leaves. This whitelist is the ONLY way they
+        // reach `parse_inline` from `collect_item_blocks` (its sole caller),
+        // so omitting them deletes math in LIST ITEMS while paragraph math
+        // still looks fine — a wiring failure a mechanism test cannot see.
+        // Table cells/blockquotes take other routes (tests/math_parsing.rs).
+        | Event::InlineMath(_)
+        | Event::DisplayMath(_) => Some(parse_inline(events, i)),
         Event::Start(tag) => match tag {
             Tag::Emphasis | Tag::Strong | Tag::Link { .. } | Tag::Image { .. } => {
                 Some(parse_inline(events, i))
@@ -1351,31 +1472,6 @@ fn flush_pending_paragraph(out: &mut Vec<Block>, pending_inlines: &mut Vec<Inlin
     if !pending_inlines.is_empty() {
         out.push(Block::Paragraph(std::mem::take(pending_inlines)));
     }
-}
-
-/// Collect the text content of a heading by walking events between
-/// `start..end` (exclusive of the matching `Event::End(TagEnd::Heading)`)
-/// and concatenating every `Event::Text` and `Event::Code` payload.
-///
-/// Mirrors production's `transform_events` heading-text collection at
-/// `src-tauri/src/build/markdown/pipeline.rs:1784-1795`. Inline HTML
-/// (`Event::InlineHtml` / `Event::Html`) is intentionally skipped so that
-/// e.g. `# FAREWELL,<br>AND ERASE` yields the slug for
-/// `FAREWELL,AND ERASE` (no `<br>` in the slug). Soft/hard breaks are
-/// skipped — production only captures Text + Code. Image alt text and
-/// link href text are NOT included; the events inside `Tag::Link` /
-/// `Tag::Image` are walked transparently and their `Event::Text`
-/// payloads (the link/image label) ARE captured, matching production.
-fn collect_heading_text(events: &[Event<'_>], start: usize, end: usize) -> String {
-    let mut text = String::new();
-    for i in start..end {
-        match &events[i] {
-            Event::Text(t) => text.push_str(t),
-            Event::Code(c) => text.push_str(c),
-            _ => {}
-        }
-    }
-    text
 }
 
 /// Post-parse pass: walk every heading in document order (recursively
@@ -2649,6 +2745,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         // Expected blocks: H1, P, H2, P (4 blocks).
@@ -2672,6 +2769,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 7,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(
@@ -2698,6 +2796,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         // Blocks: H1 (line 1), Shortcode grid (line 3), H2 "After" (line 13).
@@ -2720,6 +2819,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 2);
@@ -2741,6 +2841,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 1);
@@ -2795,6 +2896,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 1);
@@ -2915,6 +3017,7 @@ mod tests {
             emit_source_lines: true,
             implicit_figure: true,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config(md, &config);
         assert_eq!(doc.blocks.len(), 2);
@@ -2948,6 +3051,7 @@ mod tests {
             emit_source_lines: false,
             implicit_figure: false,
             source_line_offset: 0,
+            math: false,
         };
         let doc = parse_with_config("![alt](photo.jpg)\n", &config);
         assert_eq!(doc.blocks.len(), 1);

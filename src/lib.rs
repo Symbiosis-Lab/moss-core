@@ -24,7 +24,7 @@
 //!   embeds (`[[...]]`) become ordinary markdown links; [`content_graph`] does the
 //!   Obsidian-style fuzzy path matching underneath.
 //! - **Utilities** — small stateless helpers the editor and build share:
-//!   [`slug`], [`date`], [`sort`], [`home`], [`page_kind`], and `extract_headings`.
+//!   [`slug`], [`date`], [`sort`], [`home`], [`page_kind`], and [`heading`].
 //!
 //! Plus [`contract`]: the design surface (W3C design tokens + the `moss-*` HTML
 //! class table) that theme authors and codegen depend on.
@@ -43,7 +43,7 @@
 //! ```
 //!
 //! From there: [`ast`] for the body tree, [`resolve`] to flatten wikilinks,
-//! [`validation`] to lint frontmatter, and `extract_headings` for anchors.
+//! [`validation`] to lint frontmatter, and [`heading`] for anchors.
 //!
 //! # Guarantees
 //!
@@ -84,16 +84,14 @@ pub mod content_graph;
 pub mod contract;
 pub mod csv_table;
 pub mod date;
-pub mod extract_headings;
-pub use extract_headings::{extract_headings, HeadingInfo};
 pub mod home;
 pub mod frontmatter;
 pub mod frontmatter_union;
 pub mod frontmatter_typed;
 pub mod heading;
+pub use heading::{extract_headings, HeadingInfo};
 pub mod link_candidates;
 pub mod link_completions;
-pub mod heading_anchor;
 pub mod media;
 pub mod page_kind;
 pub use page_kind::PageKind;

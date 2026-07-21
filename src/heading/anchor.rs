@@ -16,7 +16,7 @@ const STRIPPED: &[char] = &['#', '^', '|', '[', ']', '\\'];
 /// Generate a heading anchor matching Obsidian's behavior.
 ///
 /// ```
-/// use moss_core::heading_anchor::obsidian_heading_anchor;
+/// use moss_core::heading::anchor::obsidian_heading_anchor;
 /// assert_eq!(obsidian_heading_anchor("Getting Started"), "getting-started");
 /// assert_eq!(obsidian_heading_anchor("Step 1: Install"), "step-1:-install");
 /// assert_eq!(obsidian_heading_anchor("中文标题"), "中文标题");

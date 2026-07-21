@@ -258,7 +258,7 @@ pub fn split_dest_url(dest_url: &str) -> SplitDestUrl<'_> {
 /// `crate::ast::resolve_urls::slug_wikilink_suffix`, which this function
 /// mirrors. Keep the two in sync; the resolve_urls tests are the real guards.
 fn build_anchor(section: Option<&str>) -> String {
-    use crate::heading_anchor::obsidian_heading_anchor;
+    use crate::heading::anchor::obsidian_heading_anchor;
     match section {
         None => String::new(),
         Some("") => String::new(),

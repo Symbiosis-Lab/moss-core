@@ -2066,6 +2066,30 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "1",
         description: "Chrome-free pause/play toggle button for ambient loop videos. Injected by ambient-video.ts. Keyboard-focusable; `aria-label` toggles between \"Pause video\" and \"Play video\". Visible on hover/focus of `.moss-ambient-video` and always visible when `[data-paused]`. Satisfies WCAG 2.2.2 Level A (Pause, Stop, Hide).",
     },
+    // -------------------------------------------------------------------
+    // LaTeX math (ADR-030). P1 emits the escaped source in a marked
+    // `<code>`; P2 replaces the element's *contents* with a typeset
+    // `<svg>` while keeping the class and `data-moss-math` stable, so a
+    // theme selector written against P1 keeps working across the upgrade.
+    // -------------------------------------------------------------------
+    ComponentEntry {
+        class: "moss-math",
+        kind: "standalone",
+        parent: "",
+        data_attrs: &[
+            DataAttr {
+                name: "data-moss-math",
+                values: &["inline", "display"],
+                default: "inline",
+                description: "Which delimiter produced the equation: `inline` for `$…$`, `display` for `$$…$$`. Carries the distinction to CSS and to the typesetter so neither has to re-derive it from context — a theme can select on it today to centre display math; moss ships no math stylesheet of its own yet, so both variants currently inherit plain `<code>` styling.",
+            },
+        ],
+        example_html: r#"<code class="moss-math" data-moss-math="inline">$E = mc^2$</code>"#,
+        example_markdown: "Energy $E = mc^2$.",
+        status: Status::Emerging,
+        since: "1",
+        description: "A LaTeX equation. In P1 the element holds the author's own markdown source — `$` / `$$` delimiters included — HTML-escaped: an honest fallback that never shows a blank where an equation was written, and never deletes the delimiters of prose that merely looked like math. Requires `[site].math` (default on).",
+    },
 ];
 
 /// Implementation classes that are emitted by moss for internal functionality

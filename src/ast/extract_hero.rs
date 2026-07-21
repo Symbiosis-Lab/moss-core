@@ -174,22 +174,16 @@ fn first_paragraph_plain_text(blocks: &[Block]) -> String {
 }
 
 /// Concatenate inline text/code/link-children content into a flat string.
+///
+/// Delegates to [`crate::heading::text::inlines_to_text`] — the crate's one
+/// inline→plain-text policy. This function used to be a byte-identical copy
+/// of that walker in a second file, and the copy is what made the P1 math
+/// fix a two-site edit: the `Inline::Other` math-recovery arm had to be
+/// hand-mirrored here, or the homepage-hero rung of the description chain
+/// shipped a `<meta name="description">` with a hole where the equation was.
 fn inlines_plain_text(inlines: &[Inline]) -> String {
     let mut out = String::new();
-    for inline in inlines {
-        match inline {
-            Inline::Text(t) => out.push_str(t),
-            Inline::Code(c) => out.push_str(c),
-            Inline::Link { children, .. }
-            | Inline::Emphasis(children)
-            | Inline::Strong(children) => {
-                out.push_str(&inlines_plain_text(children));
-            }
-            Inline::LineBreak => out.push(' '),
-            Inline::Image { alt, .. } => out.push_str(alt),
-            Inline::Other(_) => {}
-        }
-    }
+    crate::heading::text::inlines_to_text(inlines, &mut out);
     out
 }
 
