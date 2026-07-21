@@ -579,7 +579,19 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
             out.push_str("</code>");
         }
         Inline::LineBreak => out.push_str("<br />\n"),
-        Inline::Other(html) => out.push_str(html),
+        Inline::Other(html) => {
+            // A math node (ADR-030) is an `Inline::Other` carrying the P1
+            // escaped-source `<code class="moss-math">` payload. Route it
+            // through `render_math` so a typesetting hook (src-tauri's
+            // `PipelineHooks`) can replace it with an SVG; the default hook
+            // re-emits `html` verbatim, so non-pipeline renders are byte-
+            // identical to P1. Any non-math `Inline::Other` falls straight
+            // through to a raw push.
+            match super::math_text::math_node_parts(html) {
+                Some((tex, display)) => hooks.render_math(out, &tex, display, html),
+                None => out.push_str(html),
+            }
+        }
     }
 }
 

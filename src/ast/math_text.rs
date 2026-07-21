@@ -115,9 +115,55 @@ pub(crate) fn math_source_from_other(html: &str) -> Option<String> {
     )
 }
 
+/// Decode a math [`Inline::Other`] node into `(inner_tex, display)` — the raw
+/// LaTeX the author typed (delimiters stripped, unescaped) and whether it was
+/// `$$…$$` (display) or `$…$` (inline), or `None` for any non-math passthrough.
+///
+/// This is what lets the renderer route a math node through
+/// [`RenderHooks::render_math`](crate::ast::RenderHooks::render_math) without a
+/// dedicated `Inline::Math` AST variant (ADR-030 D3): the P1 node already
+/// carries the source verbatim, so P2's typesetter recovers the exact bytes the
+/// engine needs. Round-tripping `math_inline` → this is pinned by
+/// `node_parts_round_trips` below.
+pub(crate) fn math_node_parts(html: &str) -> Option<(String, bool)> {
+    let source = math_source_from_other(html)?;
+    // `math_source_from_other` returns the *delimited* source ($tex$ / $$tex$$);
+    // `math_source_from_other` already told prefix-vs-display via the same
+    // prefix check, so recover `display` the same way and strip the matching
+    // delimiter off both ends. `$$` before `$` so display is not mis-read.
+    let display = html.starts_with(PREFIX_DISPLAY);
+    let delim = if display { "$$" } else { "$" };
+    let inner = source
+        .strip_prefix(delim)
+        .and_then(|s| s.strip_suffix(delim))?;
+    Some((inner.to_string(), display))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_parts_round_trips() {
+        for tex in ["E=mc^2", "a < b", "S = \\{x : x > 0\\}", "\\frac{a}{b}"] {
+            for display in [false, true] {
+                let Inline::Other(html) = math_inline(tex, display) else {
+                    panic!("math_inline must build an Inline::Other");
+                };
+                assert_eq!(
+                    math_node_parts(&html),
+                    Some((tex.to_string(), display)),
+                    "round-trip failed for {tex:?} display={display}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn node_parts_rejects_non_math() {
+        assert_eq!(math_node_parts("<div>hi</div>"), None);
+        assert_eq!(math_node_parts("<code>plain</code>"), None);
+    }
 
     #[test]
     fn source_restores_delimiters() {

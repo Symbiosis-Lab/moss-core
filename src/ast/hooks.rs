@@ -144,6 +144,26 @@ pub trait RenderHooks {
         self.render_image(out, src, alt, title);
     }
 
+    /// Emit a math equation (ADR-030). `tex` is the raw LaTeX the author typed
+    /// (delimiters stripped, unescaped); `display` distinguishes `$$…$$` from
+    /// `$…$`; `fallback_html` is the P1 escaped-source `<code class="moss-math">`
+    /// node the parser already built — the honest, never-blank rendering of the
+    /// source itself.
+    ///
+    /// **Default impl (this crate, the editor, tests): emit `fallback_html`
+    /// verbatim.** moss-core ships no typesetting engine, and this keeps every
+    /// non-pipeline render byte-identical to P1. src-tauri's `PipelineHooks`
+    /// overrides this to typeset `tex` to an inline `<svg>` via RaTeX, falling
+    /// back to `fallback_html` on any guard/engine/validation refusal — so the
+    /// two impls are genuinely different (SVG vs source), which is why this is a
+    /// hook and not a fixed AST rendering (the three-question gate; ADR-030
+    /// §3.2). The renderer routes `Inline::Other` math nodes here; a non-math
+    /// `Inline::Other` never reaches this method.
+    fn render_math(&self, out: &mut String, tex: &str, display: bool, fallback_html: &str) {
+        let _ = (tex, display);
+        out.push_str(fallback_html);
+    }
+
     /// Optional [`AssetSnapshot`] for the gallery synth path.
     ///
     /// Phase 2E v5 PR3 (2026-05-26): when the impl returns
