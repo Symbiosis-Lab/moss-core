@@ -4,8 +4,13 @@
 //! slightly suboptimal (never broken) fetches; overrides are a future
 //! contract extension, not built now (YAGNI).
 //!
-//! Layout facts these encode (verify against site.css when touching):
+//! Layout facts these encode (verify against contract/tokens.json
+//! (definition) and site.css (overrides) when touching):
 //! - content column: `--moss-content-width` = calc(42 * 1.125rem) = 47.25rem
+//!   at the DEFAULT reading scale — the reader font-scale control shifts
+//!   `--moss-reading-size`, and `content_width: wide` pages use
+//!   calc(50 × reading-size). A scaled or wide page therefore gets slightly
+//!   suboptimal (never broken) fetches, same framing as theme overrides above.
 //! - nav/content breakpoint: 48rem (see .claude/CLAUDE.md § "Navigation
 //!   Responsive Breakpoints")
 //! - `.moss-grid` runs 1–4 columns via data-columns within the content/wide column
@@ -31,10 +36,30 @@ mod tests {
     #[test]
     fn sizes_strings_are_wellformed() {
         // Every constant must be non-empty and contain no double quotes
-        // (they are interpolated into sizes="…").
+        // (they are interpolated into sizes="…"). The HTML spec additionally
+        // requires the LAST comma-segment to be unconditional (no media
+        // condition — a bare length), and every media condition's
+        // parentheses to balance.
         for s in [SIZES_FULL_BLEED, SIZES_BODY, SIZES_CARD, SIZES_GALLERY] {
             assert!(!s.is_empty());
             assert!(!s.contains('"'));
+            let last = s.rsplit(',').next().unwrap();
+            assert!(
+                !last.contains('('),
+                "last sizes entry must be an unconditional length: {s}"
+            );
+            let mut depth: i32 = 0;
+            for c in s.chars() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        assert!(depth >= 0, "unbalanced parentheses: {s}");
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(depth, 0, "unbalanced parentheses: {s}");
         }
     }
 }
