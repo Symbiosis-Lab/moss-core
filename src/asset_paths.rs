@@ -140,12 +140,27 @@ pub const DEPLOY_MAX_EDGE: u32 = 2400;
 /// See docs/plans/2026-07-22-responsive-image-variants-design.md.
 pub const LADDER: [u32; 2] = [800, 1600];
 
-/// Width the deployed base variant actually has (source width, capped).
-pub fn deployed_width(natural_width: u32) -> u32 {
-    natural_width.min(DEPLOY_MAX_EDGE)
+/// Width the deployed base variant actually has after the encoder's
+/// aspect-preserving longest-EDGE resize (`img.resize(max_edge, max_edge,
+/// Lanczos3)` in build/media/image.rs). When the longest edge exceeds
+/// [`DEPLOY_MAX_EDGE`], BOTH dimensions shrink by the same ratio — for
+/// portraits the deployed width is therefore SMALLER than `min(w, 2400)`:
+/// a 3024×4032 portrait deploys at 1800×2400, so its base width is 1800.
+///
+/// Integer math (u64 multiply, truncating divide, floor at 1) mirrors the
+/// image crate's `resize_dimensions` as closely as practical. srcset width
+/// descriptors are browser HINTS: ±1px rounding drift vs the encoder's
+/// float `.round()` is acceptable — a Task-5 cross-check test against real
+/// encode output pins gross agreement.
+pub fn deployed_width(natural_w: u32, natural_h: u32) -> u32 {
+    let long_edge = natural_w.max(natural_h);
+    if long_edge <= DEPLOY_MAX_EDGE {
+        return natural_w;
+    }
+    ((natural_w as u64 * DEPLOY_MAX_EDGE as u64 / long_edge as u64) as u32).max(1)
 }
 
-/// Which ladder rungs exist for a source of `natural_width` px.
+/// Which ladder rungs exist for a source of `natural_w`×`natural_h` px.
 ///
 /// DETERMINISTIC-AGREEMENT CONTRACT: the registration loop (blocking.rs),
 /// the encode worker (build/media/image.rs), and the synthesizer
@@ -155,14 +170,30 @@ pub fn deployed_width(natural_width: u32) -> u32 {
 /// outcomes, cache state) — that is the parallel-oracle bug class deleted
 /// 2026-05-20 (see build/media/image.rs:297-310).
 ///
-/// Rungs are strictly below the deployed base width so the base descriptor
-/// never duplicates a rung. Animated sources get no ladder (animation-
-/// preserving multi-size re-encode is out of scope).
-pub fn ladder_rungs(natural_width: u32, is_animated: bool) -> &'static [u32] {
+/// Rungs are strictly below the deployed base WIDTH (post-resize, see
+/// [`deployed_width`] — portrait sources have a smaller base width than
+/// `min(w, DEPLOY_MAX_EDGE)`) so the base descriptor never duplicates a
+/// rung and no rung is ever wider than the base. Animated sources get no
+/// ladder (animation-preserving multi-size re-encode is out of scope).
+///
+/// APNG: an animated PNG passes `is_raster_original` like any png, and the
+/// BASE webp encode already FLATTENS it to a still today (`should_skip` in
+/// build/media/image.rs sniffs animation only for gif/webp). Rungs run
+/// through the same encode path and inherit the same flattening —
+/// consistent by construction, no 404 risk. png/jpg/jpeg callers hardcode
+/// `is_animated = false` on ALL THREE sides until the scan-derived flag is
+/// threaded for webp sources (Phase B).
+///
+/// WARNING: any future pipeline-side skip that is NOT expressible as an
+/// input to this function — e.g. copying the Y1 sized-raster APNG
+/// verbatim-keep guard (build/media/image.rs ~line 830) onto rung encodes —
+/// would create emitted-but-never-encoded rungs, i.e. the non-recoverable
+/// chosen-`<source>` 404 (ADR-013). Task 5 must NOT copy that guard.
+pub fn ladder_rungs(natural_w: u32, natural_h: u32, is_animated: bool) -> &'static [u32] {
     if is_animated {
         return &[];
     }
-    let base = deployed_width(natural_width);
+    let base = deployed_width(natural_w, natural_h);
     let n = LADDER.iter().take_while(|&&w| w < base).count();
     &LADDER[..n]
 }
@@ -418,31 +449,58 @@ mod tests {
     }
 
     #[test]
-    fn ladder_rungs_below_natural_width_only() {
-        assert_eq!(ladder_rungs(2000, false), &[800, 1600][..]);
-        assert_eq!(ladder_rungs(1601, false), &[800, 1600][..]);
-        assert_eq!(ladder_rungs(1600, false), &[800][..]);   // strict: no upscale, no dup of base
-        assert_eq!(ladder_rungs(801, false), &[800][..]);
-        assert_eq!(ladder_rungs(800, false), &[] as &[u32]);
-        assert_eq!(ladder_rungs(0, false), &[] as &[u32]);
+    fn ladder_rungs_below_deployed_base_only() {
+        assert_eq!(ladder_rungs(2000, 1200, false), &[800, 1600][..]);
+        assert_eq!(ladder_rungs(1601, 900, false), &[800, 1600][..]);
+        // strict: no upscale, no dup of base
+        assert_eq!(ladder_rungs(1600, 900, false), &[800][..]);
+        assert_eq!(ladder_rungs(801, 600, false), &[800][..]);
+        assert_eq!(ladder_rungs(800, 600, false), &[] as &[u32]);
+        assert_eq!(ladder_rungs(0, 0, false), &[] as &[u32]);
     }
 
     #[test]
     fn ladder_rungs_capped_width_never_duplicates_base() {
-        // 4000px source deploys at DEPLOY_MAX_EDGE (2400); rungs must stay below the cap.
-        assert_eq!(ladder_rungs(4000, false), &[800, 1600][..]);
-        assert_eq!(ladder_rungs(2400, false), &[800, 1600][..]);
+        // 4000px-wide landscape deploys at DEPLOY_MAX_EDGE (2400) wide;
+        // rungs must stay below the cap.
+        assert_eq!(ladder_rungs(4000, 3000, false), &[800, 1600][..]);
+        assert_eq!(ladder_rungs(2400, 1600, false), &[800, 1600][..]);
+        // Square at exactly the cap: base 2400, both rungs below it.
+        assert_eq!(ladder_rungs(2400, 2400, false), &[800, 1600][..]);
+    }
+
+    #[test]
+    fn ladder_rungs_portrait_uses_post_resize_width() {
+        // 3024×4032 portrait: the encoder shrinks the longest EDGE to 2400,
+        // so the deployed base is 1800 wide — both rungs still below it.
+        assert_eq!(ladder_rungs(3024, 4032, false), &[800, 1600][..]);
+        // Extreme portrait 1179×8000: base width 353 — NO rung is below it,
+        // so the ladder must be empty (a w800 rung would be WIDER than the
+        // base: ladder inversion).
+        assert_eq!(ladder_rungs(1179, 8000, false), &[] as &[u32]);
+        // 1200×3600: base width exactly 800 — strict `<` excludes the 800 rung.
+        assert_eq!(ladder_rungs(1200, 3600, false), &[] as &[u32]);
     }
 
     #[test]
     fn ladder_rungs_animated_is_empty() {
-        assert_eq!(ladder_rungs(2000, true), &[] as &[u32]);
+        assert_eq!(ladder_rungs(2000, 1200, true), &[] as &[u32]);
     }
 
     #[test]
-    fn deployed_width_caps_at_max_edge() {
-        assert_eq!(deployed_width(4000), 2400);
-        assert_eq!(deployed_width(2000), 2000);
+    fn deployed_width_caps_longest_edge() {
+        // Landscape: width IS the longest edge — capped directly.
+        assert_eq!(deployed_width(4000, 3000), 2400);
+        assert_eq!(deployed_width(2000, 1200), 2000);
+        // Portrait: HEIGHT is the longest edge; width shrinks by the same
+        // aspect-preserving ratio the encoder applies.
+        assert_eq!(deployed_width(3024, 4032), 1800);
+        assert_eq!(deployed_width(1179, 8000), 353);
+        assert_eq!(deployed_width(1200, 3600), 800);
+        // Square at the cap: untouched.
+        assert_eq!(deployed_width(2400, 2400), 2400);
+        // Degenerate sliver never collapses to 0.
+        assert_eq!(deployed_width(1, 100_000), 1);
     }
 
     #[test]

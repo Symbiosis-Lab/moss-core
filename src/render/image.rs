@@ -399,14 +399,20 @@ pub fn synthesize_image_html(
     //
     // The context also decides the `sizes=` value for the srcset ladder
     // (responsive-image-variants Task 3): full-bleed surfaces (hero,
-    // `data-width="wide|page|screen|full"` figures) span the viewport;
-    // cards/gallery thumbs occupy grid cells; everything else renders in
-    // the content column. Only emitted when the ladder is non-empty — see
+    // `data-width="screen|full"` figures) span the viewport; cards/gallery
+    // thumbs occupy grid cells; everything else renders in the content
+    // column. Only emitted when the ladder is non-empty — see
     // synthesize_inner.
+    //
+    // wide/page intentionally map to SIZES_BODY: today's site.css has NO
+    // width rule for data-width (ADR-021 follow-up), so wide/page figures
+    // render at the content column and 100vw would over-fetch. When ADR-021
+    // gives data-width real widths, update this mapping (blurry-risk
+    // otherwise). Same note in contract/sizes.rs.
     let sizes_value: &str = match &context {
         ImageContext::Hero => ctx_sizes::SIZES_FULL_BLEED,
         ImageContext::MarkdownStandalone { width: Some(w), .. }
-            if matches!(*w, "wide" | "page" | "screen" | "full") =>
+            if matches!(*w, "screen" | "full") =>
         {
             ctx_sizes::SIZES_FULL_BLEED
         }
@@ -600,35 +606,53 @@ fn synthesize_inner(
         let srcset_path = to_webp(src);
         // Ladder: rung existence is decided by ladder_rungs() from the SAME
         // scan-derived dimensions the pipeline registers/encodes from —
-        // deterministic agreement, see asset_paths::ladder_rungs docs.
-        // Unknown dims (snapshot miss → None) emit the legacy single-URL
-        // shape. `is_animated=false` is correct for png/jpg/jpeg (animated
-        // GIF/WebP never pass is_raster_original; a later phase threads the
-        // real flag for webp sources).
-        let natural_w = lookup_dims(assets, src).map(|(w, _)| w);
-        let rungs = natural_w.map(|w| ladder_rungs(w, false)).unwrap_or(&[]);
-        if rungs.is_empty() {
-            format!(
+        // deterministic agreement, see asset_paths::ladder_rungs docs. BOTH
+        // dims matter: the encoder resizes the longest EDGE, so a portrait's
+        // deployed base width is smaller than min(w, cap) and its rung set
+        // shrinks accordingly. Unknown dims (snapshot miss → None) emit the
+        // legacy single-URL shape.
+        //
+        // `is_animated=false` is hardcoded on all three sides for png/jpg/
+        // jpeg (animated GIF/WebP never pass is_raster_original; Phase B
+        // threads the real flag for webp sources). APNG is fine: the BASE
+        // webp encode already flattens it (should_skip sniffs only gif/webp
+        // animation) and rung encodes inherit the same flattening — but any
+        // future pipeline-side rung skip NOT expressible as a ladder_rungs
+        // input (e.g. the Y1 sized-raster APNG verbatim-keep guard at
+        // build/media/image.rs ~830) would create emitted-but-never-encoded
+        // rungs → non-recoverable <picture> 404 (ADR-013). Task 5 must NOT
+        // copy that guard.
+        //
+        // `ladder` is Some only when rungs exist; the base descriptor is the
+        // DEPLOYED width (post-resize, longest edge capped) — never the raw
+        // natural width.
+        let ladder = lookup_dims(assets, src).and_then(|(w, h)| {
+            let rungs = ladder_rungs(w, h, false);
+            if rungs.is_empty() {
+                None
+            } else {
+                Some((rungs, deployed_width(w, h)))
+            }
+        });
+        match ladder {
+            None => format!(
                 r#"<picture><source srcset="{}" type="image/webp">{}</picture>"#,
                 html_escape(&srcset_path),
                 img_tag,
-            )
-        } else {
-            // rungs non-empty implies natural_w is Some; the descriptor for
-            // the base variant is its DEPLOYED width (source width capped at
-            // DEPLOY_MAX_EDGE), never the raw natural width.
-            let base_w = deployed_width(natural_w.unwrap_or(0));
-            let mut parts: Vec<String> = rungs
-                .iter()
-                .map(|w| format!("{} {}w", to_webp_rung(src, *w), w))
-                .collect();
-            parts.push(format!("{} {}w", srcset_path, base_w));
-            format!(
-                r#"<picture><source srcset="{}" type="image/webp" sizes="{}">{}</picture>"#,
-                html_escape(&parts.join(", ")),
-                html_escape(sizes_value),
-                img_tag,
-            )
+            ),
+            Some((rungs, base_w)) => {
+                let mut parts: Vec<String> = rungs
+                    .iter()
+                    .map(|w| format!("{} {}w", to_webp_rung(src, *w), w))
+                    .collect();
+                parts.push(format!("{} {}w", srcset_path, base_w));
+                format!(
+                    r#"<picture><source srcset="{}" type="image/webp" sizes="{}">{}</picture>"#,
+                    html_escape(&parts.join(", ")),
+                    html_escape(sizes_value),
+                    img_tag,
+                )
+            }
         }
     } else {
         img_tag
@@ -1868,6 +1892,85 @@ mod tests {
             html.contains(r#"<source srcset="photo.webp" type="image/webp">"#),
             "got: {html}"
         );
+        assert!(!html.contains("sizes="), "got: {html}");
+    }
+
+    #[test]
+    fn portrait_below_first_rung_keeps_legacy_shape() {
+        // 1200×3600 portrait: the encoder caps the longest EDGE, so the
+        // deployed base is only 800 wide — no rung below it (strict `<`),
+        // legacy single-URL shape.
+        let assets = snapshot_dims("photo.jpg", 1200, 3600);
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(r#"<source srcset="photo.webp" type="image/webp">"#),
+            "got: {html}"
+        );
+        assert!(!html.contains("sizes="), "got: {html}");
+    }
+
+    #[test]
+    fn portrait_base_descriptor_uses_post_resize_width() {
+        // 3024×4032 portrait deploys at 1800×2400 — the base descriptor
+        // must be the POST-RESIZE width (1800w), never min(w, 2400).
+        let assets = snapshot_dims("photo.jpg", 3024, 4032);
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(
+                r#"srcset="photo.w800.webp 800w, photo.w1600.webp 1600w, photo.webp 1800w""#
+            ),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn folder_card_cover_uses_card_sizes() {
+        let assets = snapshot_dims("cover.jpg", 2000, 1200);
+        let html = synthesize_image_html(
+            "cover.jpg",
+            "",
+            &assets,
+            ImageContext::FolderCardCover,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(r#"sizes="(min-width: 48rem) 24rem, 100vw""#),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn percent_encoded_src_gets_encoded_rung_urls() {
+        // Body/wikilink srcs arrive percent-encoded while snapshot keys are
+        // the RAW source path: the dims probe decodes (BUG 6.2), but the
+        // emitted rung URLs stay in the src's encoded URL space — same
+        // derivation rule as the base to_webp(src).
+        let assets = snapshot_dims("a b/photo.jpg", 2000, 1200);
+        let html = synthesize_image_html(
+            "a%20b/photo.jpg",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(
+                r#"srcset="a%20b/photo.w800.webp 800w, a%20b/photo.w1600.webp 1600w, a%20b/photo.webp 2000w""#
+            ),
+            "got: {html}"
+        );
     }
 
     #[test]
@@ -1884,11 +1987,12 @@ mod tests {
     }
 
     #[test]
-    fn markdown_standalone_width_wide_uses_full_bleed_sizes() {
-        // `data-width="wide"` figures span the viewport (bounded by CSS),
-        // so they carry SIZES_FULL_BLEED, not the content-column sizes.
-        // Mirrors markdown_standalone_width_screen_emits_data_width_on_figure
-        // but with ladder-triggering dims.
+    fn markdown_standalone_width_wide_uses_body_sizes() {
+        // Task-3 review decision: wide/page map to SIZES_BODY, NOT full
+        // bleed — today's site.css has no width rule for data-width
+        // (ADR-021 follow-up), so a wide figure renders at the content
+        // column and 100vw would over-fetch. When ADR-021 lands, this
+        // mapping (and test) flips to SIZES_FULL_BLEED.
         let s = snapshot_dims("photo.jpg", 2000, 1200);
         let extras = empty_extras();
         let html = synthesize_image_html(
@@ -1906,6 +2010,37 @@ mod tests {
         );
         assert!(
             html.starts_with(r#"<figure class="moss-image" data-width="wide">"#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(r#"sizes="(min-width: 48rem) 47.25rem, 100vw""#),
+            "wide maps to SIZES_BODY until ADR-021; got: {html}"
+        );
+    }
+
+    #[test]
+    fn markdown_standalone_width_screen_uses_full_bleed_sizes() {
+        // `screen` (and its alias `full`) DOES have a real full-bleed CSS
+        // rule, so it carries SIZES_FULL_BLEED. Mirrors
+        // markdown_standalone_width_screen_emits_data_width_on_figure but
+        // with ladder-triggering dims.
+        let s = snapshot_dims("photo.jpg", 2000, 1200);
+        let extras = empty_extras();
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "",
+            &s,
+            ImageContext::MarkdownStandalone {
+                caption: None,
+                width: Some("screen"),
+                align: None,
+                class_names: &[],
+                extra_attrs: &extras,
+            },
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.starts_with(r#"<figure class="moss-image" data-width="screen">"#),
             "got: {html}"
         );
         assert!(html.contains(r#"sizes="100vw""#), "got: {html}");

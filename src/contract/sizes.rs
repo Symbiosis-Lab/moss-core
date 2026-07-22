@@ -15,8 +15,14 @@
 //!   Responsive Breakpoints")
 //! - `.moss-grid` runs 1–4 columns via data-columns within the content/wide column
 
-/// Hero images and `data-width="wide|page|screen|full"` figures: span the viewport
+/// Hero images and `data-width="screen|full"` figures: span the viewport
 /// (bounded by the 2400px deploy cap).
+///
+/// wide/page intentionally map to [`SIZES_BODY`] instead (Task-3 review
+/// decision): today's site.css has NO width rule for `data-width`
+/// (ADR-021 follow-up), so wide/page figures render at the content column
+/// and `100vw` would over-fetch. When ADR-021 gives `data-width` real
+/// widths, update the mapping in render/image.rs (blurry-risk otherwise).
 pub const SIZES_FULL_BLEED: &str = "100vw";
 
 /// Default body figures/inline images: viewport-wide on small screens, the
