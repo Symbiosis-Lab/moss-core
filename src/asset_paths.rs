@@ -162,11 +162,24 @@ pub fn deployed_width(natural_w: u32, natural_h: u32) -> u32 {
 
 /// Which ladder rungs exist for a source of `natural_w`×`natural_h` px.
 ///
-/// DETERMINISTIC-AGREEMENT CONTRACT: the registration loop (blocking.rs),
-/// the encode worker (build/media/image.rs), and the synthesizer
-/// (render/image.rs) all call this with the same scan-derived inputs. A rung
-/// is emitted in HTML iff it is registered iff it is encoded. Never add an
-/// input here that one of the three sides cannot supply (e.g. encode
+/// DETERMINISTIC-AGREEMENT CONTRACT — the consuming-site census (keep this
+/// list current; every site derives ladder membership from the same
+/// scan-derived inputs):
+///
+/// 1. **emission** — the synthesizer (`render/image.rs::synthesize_inner`)
+///    decides which rung srcset candidates appear in HTML;
+/// 2. **registration** — blocking.rs's rung loop promises each rung URL via
+///    `set_source_passthrough` + `set_pending`;
+/// 3. **encode** — `encode_rungs` (build/media/image.rs) derives the same
+///    ladder from oriented dims on the full-encode and warm-cache paths;
+/// 4. **dispatch/sweep/Err-arm retraction** — the worker success/failure
+///    arms' `registered_rungs` reconstruction (build/media/image.rs)
+///    resolves or retracts every promise registration made;
+/// 5. **fingerprint-skip heal** — the unchanged-fingerprint pass
+///    (build/media/image.rs) rematerializes each rung it recomputes here.
+///
+/// A rung is emitted in HTML iff it is registered iff it is encoded. Never
+/// add an input here that one of these sites cannot supply (e.g. encode
 /// outcomes, cache state) — that is the parallel-oracle bug class deleted
 /// 2026-05-20 (see build/media/image.rs:297-310).
 ///
@@ -181,8 +194,8 @@ pub fn deployed_width(natural_w: u32, natural_h: u32) -> u32 {
 /// build/media/image.rs sniffs animation only for gif/webp). Rungs run
 /// through the same encode path and inherit the same flattening —
 /// consistent by construction, no 404 risk. png/jpg/jpeg callers hardcode
-/// `is_animated = false` on ALL THREE sides until the scan-derived flag is
-/// threaded for webp sources (Phase B).
+/// `is_animated = false` at EVERY census site above until the scan-derived
+/// flag is threaded for webp sources (Phase B).
 ///
 /// WARNING: any future pipeline-side skip that is NOT expressible as an
 /// input to this function — e.g. copying the Y1 sized-raster APNG
