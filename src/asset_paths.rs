@@ -130,6 +130,57 @@ pub fn to_webp(source: &str) -> String {
     format!("{source}.webp")
 }
 
+/// Max edge (px) of any deployed raster. Single source of truth — the encode
+/// pipeline's `ImageCompressionConfig::default()` reads this constant, and the
+/// srcset base-width descriptor caps at it. 2400 covers retina displays.
+pub const DEPLOY_MAX_EDGE: u32 = 2400;
+
+/// The responsive ladder: rung widths generated below the deployed base.
+/// See docs/plans/2026-07-22-responsive-image-variants-design.md.
+pub const LADDER: [u32; 2] = [800, 1600];
+
+/// Width the deployed base variant actually has (source width, capped).
+pub fn deployed_width(natural_width: u32) -> u32 {
+    natural_width.min(DEPLOY_MAX_EDGE)
+}
+
+/// Which ladder rungs exist for a source of `natural_width` px.
+///
+/// DETERMINISTIC-AGREEMENT CONTRACT: the registration loop (blocking.rs),
+/// the encode worker (build/media/image.rs), and the synthesizer
+/// (render/image.rs) all call this with the same scan-derived inputs. A rung
+/// is emitted in HTML iff it is registered iff it is encoded. Never add an
+/// input here that one of the three sides cannot supply (e.g. encode
+/// outcomes, cache state) — that is the parallel-oracle bug class deleted
+/// 2026-05-20 (see build/media/image.rs:297-310).
+///
+/// Rungs are strictly below the deployed base width so the base descriptor
+/// never duplicates a rung. Animated sources get no ladder (animation-
+/// preserving multi-size re-encode is out of scope).
+pub fn ladder_rungs(natural_width: u32, is_animated: bool) -> &'static [u32] {
+    if is_animated {
+        return &[];
+    }
+    let base = deployed_width(natural_width);
+    let n = LADDER.iter().take_while(|&&w| w < base).count();
+    &LADDER[..n]
+}
+
+/// Rung variant URL: `photo.jpg` + 800 → `photo.w800.webp`.
+/// Same derivation style as [`to_webp`]; preserves directory prefix.
+///
+/// # Examples
+/// ```
+/// # use moss_core::asset_paths::to_webp_rung;
+/// assert_eq!(to_webp_rung("photo.jpg", 800), "photo.w800.webp");
+/// assert_eq!(to_webp_rung("../photo.PNG", 1600), "../photo.w1600.webp");
+/// ```
+pub fn to_webp_rung(source: &str, width: u32) -> String {
+    let webp = to_webp(source);
+    let stem = webp.strip_suffix(".webp").unwrap_or(&webp);
+    format!("{stem}.w{width}.webp")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,5 +407,42 @@ mod tests {
     fn test_to_webp_unknown_extension_fallback() {
         // Unknown extensions fall back to appending .webp (matches to_thumb's defensive style).
         assert_eq!(to_webp("file.gif"), "file.gif.webp");
+    }
+
+    // ── ladder tests ───────────────────────────────────────────────
+
+    #[test]
+    fn ladder_rungs_below_natural_width_only() {
+        assert_eq!(ladder_rungs(2000, false), &[800, 1600][..]);
+        assert_eq!(ladder_rungs(1601, false), &[800, 1600][..]);
+        assert_eq!(ladder_rungs(1600, false), &[800][..]);   // strict: no upscale, no dup of base
+        assert_eq!(ladder_rungs(801, false), &[800][..]);
+        assert_eq!(ladder_rungs(800, false), &[] as &[u32]);
+        assert_eq!(ladder_rungs(0, false), &[] as &[u32]);
+    }
+
+    #[test]
+    fn ladder_rungs_capped_width_never_duplicates_base() {
+        // 4000px source deploys at DEPLOY_MAX_EDGE (2400); rungs must stay below the cap.
+        assert_eq!(ladder_rungs(4000, false), &[800, 1600][..]);
+        assert_eq!(ladder_rungs(2400, false), &[800, 1600][..]);
+    }
+
+    #[test]
+    fn ladder_rungs_animated_is_empty() {
+        assert_eq!(ladder_rungs(2000, true), &[] as &[u32]);
+    }
+
+    #[test]
+    fn deployed_width_caps_at_max_edge() {
+        assert_eq!(deployed_width(4000), 2400);
+        assert_eq!(deployed_width(2000), 2000);
+    }
+
+    #[test]
+    fn to_webp_rung_inserts_width_suffix() {
+        assert_eq!(to_webp_rung("photo.jpg", 800), "photo.w800.webp");
+        assert_eq!(to_webp_rung("a/b/photo.PNG", 1600), "a/b/photo.w1600.webp");
+        assert_eq!(to_webp_rung("photo.webp", 800), "photo.w800.webp");
     }
 }
