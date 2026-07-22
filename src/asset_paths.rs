@@ -136,6 +136,7 @@ pub fn to_webp(source: &str) -> String {
 pub const DEPLOY_MAX_EDGE: u32 = 2400;
 
 /// The responsive ladder: rung widths generated below the deployed base.
+/// Must be strictly ascending — the `take_while` in [`ladder_rungs`] depends on it.
 /// See docs/plans/2026-07-22-responsive-image-variants-design.md.
 pub const LADDER: [u32; 2] = [800, 1600];
 
@@ -412,6 +413,11 @@ mod tests {
     // ── ladder tests ───────────────────────────────────────────────
 
     #[test]
+    fn ladder_is_strictly_ascending() {
+        assert!(LADDER.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
     fn ladder_rungs_below_natural_width_only() {
         assert_eq!(ladder_rungs(2000, false), &[800, 1600][..]);
         assert_eq!(ladder_rungs(1601, false), &[800, 1600][..]);
@@ -444,5 +450,11 @@ mod tests {
         assert_eq!(to_webp_rung("photo.jpg", 800), "photo.w800.webp");
         assert_eq!(to_webp_rung("a/b/photo.PNG", 1600), "a/b/photo.w1600.webp");
         assert_eq!(to_webp_rung("photo.webp", 800), "photo.w800.webp");
+    }
+
+    #[test]
+    fn to_webp_rung_unknown_extension_fallback() {
+        // Unknown extensions inherit to_webp's defensive-append behavior.
+        assert_eq!(to_webp_rung("file.gif", 800), "file.gif.w800.webp");
     }
 }
