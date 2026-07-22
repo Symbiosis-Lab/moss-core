@@ -281,9 +281,13 @@ mod plain_text_collectors_keep_math {
         ParseConfig { math: true, ..Default::default() }
     }
 
-    /// `alt` is an HTML attribute AND (via the implicit-figure path) the
-    /// visible `<figcaption>`, so the equation must come back as source
-    /// text — markup here would leak a tag into `alt=`.
+    /// `alt` is an HTML attribute, so the equation must come back as source
+    /// text — markup here would leak a tag into `alt=`. The `<figcaption>`
+    /// is a different surface (option B, 2026-07): it is the alt CONTENT
+    /// rendered as inline markdown, so the caption carries the typed math
+    /// node (routed through `render_math` for typesetting), never the
+    /// flattened source. Both directions asserted so neither surface can
+    /// silently adopt the other's shape.
     #[test]
     fn image_alt_and_caption_keep_the_equation() {
         let doc = parse_with_config("![before $E=mc^2$ after](a.png)\n", &math_on());
@@ -297,7 +301,18 @@ mod plain_text_collectors_keep_math {
         assert!(!alt.contains('<'), "alt must stay plain text, got {alt:?}");
 
         let caption = caption.as_ref().expect("implicit figure must have a caption");
-        assert_eq!(caption, &vec![Inline::Text("before $E=mc^2$ after".into())]);
+        assert!(
+            caption
+                .iter()
+                .any(|i| matches!(i, Inline::Other(html) if html.contains("data-moss-math"))),
+            "caption must carry the typed math node, got {caption:?}"
+        );
+        assert!(
+            !caption
+                .iter()
+                .any(|i| matches!(i, Inline::Text(t) if t.contains("$E=mc^2$"))),
+            "caption must not carry the flattened math source, got {caption:?}"
+        );
     }
 
     /// Not a deletion but a shape change: the title truncated at the first

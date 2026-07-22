@@ -531,7 +531,7 @@ fn parse_block_with_tag(
             // for the analogous shape decision at the inline image hook
             // level: inline images use `MarkdownInline` (no figure wrap);
             // only the standalone figure case here uses the figure wrap.
-            let block = match try_promote_to_figure(children) {
+            let block = match try_promote_to_figure(children, events, start) {
                 Ok(figure) => figure,
                 Err(original_inlines) => Block::Paragraph(original_inlines),
             };
@@ -750,15 +750,23 @@ fn parse_block_with_tag(
 /// input — verified via the parity probe's `other` category on 刘果 CJK
 /// fixtures (image-only paragraphs with empty alt).
 ///
-/// On qualification, returns `Ok(Block::Figure { image, caption })` with
-/// caption defaulting to the image's alt text (parsed as a single
-/// [`Inline::Text`] so the renderer's figcaption emission can escape it
-/// uniformly with other inline content).
+/// On qualification, returns `Ok(Block::Figure { image, caption })`. For a
+/// standard-markdown image the caption renders the alt as INLINE MARKDOWN
+/// (option B, matching Pandoc's implicit-figure model): `*em*`, links,
+/// `` `code` `` and typeset math survive, built from the image's parsed
+/// inline children (`events`/`para_start` re-parse the alt event span). The
+/// `alt=` attribute stays the flat plain-text source. A plain-text alt (no
+/// inline markup) keeps the flat single-[`Inline::Text`] caption, byte-
+/// identical to before, so only captions that actually carry markup change.
 ///
 /// On disqualification, returns `Err(original_inlines)` so the caller
 /// can fall back to constructing the standard `Block::Paragraph` without
 /// re-walking events.
-fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
+fn try_promote_to_figure(
+    inlines: Vec<Inline>,
+    events: &[Event<'_>],
+    para_start: usize,
+) -> Result<Block, Vec<Inline>> {
     let mut image_count = 0;
     for inline in &inlines {
         match inline {
@@ -891,12 +899,23 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
         *alt = new_alt;
     }
 
-    // Caption defaults to the remaining alt text; empty alt yields None so no
-    // empty <figcaption> is emitted.
+    // Caption. Empty alt yields None so no empty <figcaption> is emitted.
+    // Otherwise, for a standard-markdown image, render the alt as inline
+    // markdown (option B) — `*em*`, links, `` `code` ``, typeset math — built
+    // from the image's parsed inline children. A wikilink image keeps its
+    // flat pothole-derived caption (its alias is a literal string, not
+    // markdown), and a plain-text alt keeps the flat single-Text caption so
+    // the byte shape is unchanged for the common case.
     let caption = if alt_text.is_empty() {
         None
     } else {
-        Some(vec![Inline::Text(alt_text)])
+        Some(build_caption_inlines(
+            &image,
+            events,
+            para_start,
+            alt_text,
+            figure_width.is_some(),
+        ))
     };
 
     Ok(Block::Figure {
@@ -907,6 +926,111 @@ fn try_promote_to_figure(inlines: Vec<Inline>) -> Result<Block, Vec<Inline>> {
         class_names: Vec::new(),
         img_style: None,
     })
+}
+
+/// Build the implicit-figure caption inlines for the promoted image.
+///
+/// Option B (matching Pandoc's implicit-figure model): a standard-markdown
+/// image's caption is the alt CONTENT parsed as inline markdown — the typed
+/// `Emphasis` / `Link` / `Code` / math nodes from the image's own event
+/// span — so the renderer's hook-aware inline path (`render_inlines`)
+/// emits `<em>`, `<a>`, and typeset math in the `<figcaption>`. The
+/// `alt=` attribute (the `Inline::Image.alt` string) is untouched: it stays
+/// the flat plain-text source (math as `$…$`) for assistive tech and
+/// blocked-image fallback.
+///
+/// Falls back to the flat single-`Inline::Text` caption (byte-identical to
+/// the pre-option-B shape) when:
+/// - the image is a wikilink embed — its pothole alias is a literal
+///   caption string by grammar, not markdown; and
+/// - a width token was split out of the alt (`![cap|50%](p)`) — the raw
+///   event span still contains the `|50%` text, so re-parsing it would
+///   leak the width token into the caption.
+fn build_caption_inlines(
+    image: &Inline,
+    events: &[Event<'_>],
+    para_start: usize,
+    alt_text: String,
+    has_width: bool,
+) -> Vec<Inline> {
+    let is_wikilink = matches!(
+        image,
+        Inline::Image {
+            is_wikilink: true,
+            ..
+        }
+    );
+    if is_wikilink || has_width {
+        return vec![Inline::Text(alt_text)];
+    }
+
+    // Locate the image's own event span inside the paragraph:
+    // Start(Tag::Image) … End(TagEnd::Image). The promotion invariant
+    // guarantees exactly one image among the paragraph's inlines; scanning
+    // for the FIRST Start(Tag::Image) and stopping at the FIRST
+    // End(TagEnd::Image) matches the alt-flattening loop in `parse_inline`
+    // (Tag::Image arm), so both surfaces agree on the span.
+    let mut img_children_start: Option<usize> = None;
+    let mut i = para_start + 1;
+    while i < events.len() {
+        // This arm set only LOCATES the image span (routes on event kind:
+        // where Start(Image) is); it builds no output. The alt payload, math
+        // included, is collected right below by the math-aware
+        // collect_inlines_until/parse_inline, pinned by
+        // implicit_figure_caption_carries_link_and_math_nodes.
+        // allow:math-events-ignored — span locator, payload survives below.
+        match &events[i] {
+            Event::Start(Tag::Image { .. }) => {
+                img_children_start = Some(i + 1);
+                break;
+            }
+            Event::End(TagEnd::Paragraph) => break,
+            _ => {}
+        }
+        i += 1;
+    }
+    let Some(children_start) = img_children_start else {
+        // Defensive: no image span found (should be unreachable given the
+        // promotion invariant) — keep the flat caption rather than guess.
+        return vec![Inline::Text(alt_text)];
+    };
+
+    // Re-parse the alt event span through the SAME inline machinery as body
+    // text, so `*em*` → Inline::Emphasis, `[l](/x)` → Inline::Link, and
+    // `$x^2$` → the math Inline::Other node (which the renderer routes
+    // through PipelineHooks::render_math for typesetting).
+    let (mut caption, _end) = collect_inlines_until(events, children_start, |e| {
+        matches!(e, Event::End(TagEnd::Image))
+    });
+
+    // A plain-text alt (every child is bare Text) keeps the flat trimmed
+    // single-Text caption — byte-identical to the pre-option-B shape, so
+    // only captions that actually carry markup change output.
+    if caption.iter().all(|c| matches!(c, Inline::Text(_))) {
+        return vec![Inline::Text(alt_text)];
+    }
+
+    // Trim the caption edges the way the flat path's `.trim()` did: leading
+    // whitespace off the first Text node, trailing off the last, dropping
+    // nodes that become empty.
+    if let Some(Inline::Text(first)) = caption.first_mut() {
+        *first = first.trim_start().to_string();
+        if first.is_empty() {
+            caption.remove(0);
+        }
+    }
+    if let Some(Inline::Text(last)) = caption.last_mut() {
+        *last = last.trim_end().to_string();
+        if last.is_empty() {
+            caption.pop();
+        }
+    }
+    if caption.is_empty() {
+        // Defensive: markup collapsed to nothing — fall back to the flat
+        // alt so we never emit an empty <figcaption>.
+        return vec![Inline::Text(alt_text)];
+    }
+    caption
 }
 
 /// Collect a contiguous run of inline events into `Vec<Inline>`. Stops
@@ -3061,6 +3185,133 @@ mod tests {
             }
             other => panic!("expected Paragraph with image, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Implicit-figure caption renders inline markdown (option B)
+    //
+    // The implicit-figure caption is the image's alt content parsed as
+    // inline markdown — `*em*`, links, `` `code` `` and typeset math — while
+    // the `alt=` attribute keeps the flat plain-text source (math verbatim).
+    // Matches Pandoc's implicit-figure model. See
+    // docs/plans/2026-07-05-target-architecture and the caption fix design.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn implicit_figure_caption_preserves_inline_markup() {
+        // `![before *em* after](img.png)` → caption holds a typed
+        // `Inline::Emphasis`, NOT a single flattened `Inline::Text`. The
+        // image's `alt` stays the flat plain-text source (markers stripped).
+        let block = first_block("![before *em* after](img.png)\n");
+        match block {
+            Block::Figure { caption, image, .. } => {
+                let cap = caption.expect("caption must be present");
+                assert!(
+                    cap.iter().any(|i| matches!(i, Inline::Emphasis(_))),
+                    "caption must carry a typed Emphasis node, got {cap:?}"
+                );
+                // The em markers must not survive as a flattened Text run.
+                assert!(
+                    !cap.iter().any(|i| matches!(i, Inline::Text(t) if t.contains('*'))),
+                    "caption must not contain raw `*` markers, got {cap:?}"
+                );
+                match image {
+                    Inline::Image { alt, .. } => {
+                        assert_eq!(
+                            alt, "before em after",
+                            "alt attribute must stay flat plain-text source"
+                        );
+                    }
+                    other => panic!("expected Image, got {other:?}"),
+                }
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn implicit_figure_caption_carries_link_and_math_nodes() {
+        // `![a [link](/x) and $x^2$ end](img.png)` (math on) → caption holds
+        // a typed `Inline::Link` AND a math `Inline::Other` node so the
+        // renderer's link + math hooks fire; the flat `alt` keeps the link
+        // label and the math as its `$…$` source.
+        let config = ParseConfig {
+            emit_source_lines: false,
+            implicit_figure: true,
+            source_line_offset: 0,
+            math: true,
+        };
+        let doc = parse_with_config("![a [link](/x) and $x^2$ end](img.png)\n", &config);
+        match doc.blocks.into_iter().next().expect("one block") {
+            Block::Figure { caption, image, .. } => {
+                let cap = caption.expect("caption must be present");
+                assert!(
+                    cap.iter().any(|i| matches!(i, Inline::Link { .. })),
+                    "caption must carry a typed Link node, got {cap:?}"
+                );
+                assert!(
+                    cap.iter().any(|i| matches!(
+                        i,
+                        Inline::Other(html) if super::super::math_text::math_node_parts(html).is_some()
+                    )),
+                    "caption must carry a typed math node, got {cap:?}"
+                );
+                match image {
+                    Inline::Image { alt, .. } => {
+                        assert_eq!(
+                            alt, "a link and $x^2$ end",
+                            "alt must stay flat: link label inlined, math as source"
+                        );
+                    }
+                    other => panic!("expected Image, got {other:?}"),
+                }
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn implicit_figure_caption_only_math_is_a_math_node() {
+        // `![$E=mc^2$](img.png)` (math on) → caption is a single math
+        // `Inline::Other` node (so it typesets), alt is the `$…$` source.
+        let config = ParseConfig {
+            emit_source_lines: false,
+            implicit_figure: true,
+            source_line_offset: 0,
+            math: true,
+        };
+        let doc = parse_with_config("![$E=mc^2$](img.png)\n", &config);
+        match doc.blocks.into_iter().next().expect("one block") {
+            Block::Figure { caption, image, .. } => {
+                let cap = caption.expect("caption must be present");
+                assert!(
+                    cap.iter().any(|i| matches!(
+                        i,
+                        Inline::Other(html) if super::super::math_text::math_node_parts(html).is_some()
+                    )),
+                    "math-only caption must carry a math node, got {cap:?}"
+                );
+                match image {
+                    Inline::Image { alt, .. } => {
+                        assert_eq!(alt, "$E=mc^2$", "alt must be the math source verbatim");
+                    }
+                    other => panic!("expected Image, got {other:?}"),
+                }
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn implicit_figure_empty_alt_still_yields_no_caption() {
+        // Regression guard: an empty-alt image is not promoted (no figure,
+        // hence no figcaption) — the rich-caption change must not regress it.
+        let doc = parse("![](img.png)\n");
+        assert!(
+            !matches!(doc.blocks.first(), Some(Block::Figure { .. })),
+            "empty-alt image must not promote to a figure: {:?}",
+            doc.blocks
+        );
     }
 
     // -----------------------------------------------------------------
