@@ -2020,10 +2020,13 @@ mod tests {
 
     #[test]
     fn markdown_standalone_width_screen_uses_full_bleed_sizes() {
-        // `screen` (and its alias `full`) DOES have a real full-bleed CSS
-        // rule, so it carries SIZES_FULL_BLEED. Mirrors
-        // markdown_standalone_width_screen_emits_data_width_on_figure but
-        // with ladder-triggering dims.
+        // Honest framing: today's site.css has NO data-width width rule for
+        // ANY value (site.css:2346-2348 — ADR-021 follow-up), so
+        // screen/full → 100vw is a forward-compat plan-owner call, not a
+        // reflection of current CSS. Over-fetch is the safe direction for
+        // an intended-full-bleed figure (never blurry, at worst wasted
+        // bytes). Mirrors markdown_standalone_width_screen_emits_data_width
+        // _on_figure but with ladder-triggering dims.
         let s = snapshot_dims("photo.jpg", 2000, 1200);
         let extras = empty_extras();
         let html = synthesize_image_html(
