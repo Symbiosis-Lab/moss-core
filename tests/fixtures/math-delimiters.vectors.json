@@ -3,6 +3,7 @@
   "rules_as_measured": [
     "An opening `$` must NOT be followed by whitespace. `$ x $` is not math.",
     "A closing `$` must be IMMEDIATELY preceded by a non-whitespace byte. This is the whole story behind the currency cases: `$5 and $10` is safe ONLY because the second `$` follows a space. Put any punctuation between two prices and it closes — `$5-$10`, `$5/$10`, `$9.99 ($8.99…)` are all math. The safety is a habit of English typography, not a property of ASCII or of currency.",
+    "The FIRST unescaped `$` after an opener is the ONLY closer candidate. If it is invalid (inline: preceded by whitespace; display: not a `$$` pair), the whole opener FAILS — the scan does not continue to a later `$`. Measured: `$a $b$ c$` → inline `b` (not `a $b`); `$$a$b$$` → inline `a` (not display `a$b`); `$$ $ $$` → no math. A failed `$$` opener is retried one position later, which is how `$$x$` yields inline `x` and `$$$a$$` yields display `a`. Escaped `\\$` is skipped and is never a candidate.",
     "The test is on bytes, and it is not ASCII-aware: a CJK comma is non-whitespace, so `一个$5，两个$10` closes and becomes math. This is the real-world false-positive risk for moss's Chinese-language authors.",
     "Code spans and fenced code are lexed before math and never yield math events.",
     "A backslash-escaped `\\$` never opens or closes."
@@ -142,6 +143,41 @@
         }
       ],
       "note": "Multi-line display math keeps its newlines in the TeX payload."
+    },
+    {
+      "input": "$a $b$ c$",
+      "expect_math_spans": [
+        {
+          "mode": "inline",
+          "tex": "b"
+        }
+      ],
+      "note": "First-candidate-decides, inline: the opener at position 0 sees its first `$` candidate preceded by a space and FAILS ENTIRELY — the scan does not continue to the later valid `$`. The second `$` then opens and closes as `b`. A continue-past-invalid-closers scan would wrongly yield `a $b`."
+    },
+    {
+      "input": "$$a$b$$",
+      "expect_math_spans": [
+        {
+          "mode": "inline",
+          "tex": "a"
+        }
+      ],
+      "note": "First-candidate-decides, display: the `$$` opener's first `$` candidate is a lone `$` (not a `$$` pair), so the display opener FAILS — it does not scan on to the closing `$$`. The retry at the second `$` opens inline math closed by that lone `$`, yielding inline `a`. A continue-scan would wrongly yield display `a$b`."
+    },
+    {
+      "input": "$$ $ $$",
+      "expect_math_spans": [],
+      "note": "Same display rule with nothing to salvage: the lone `$` kills the display opener; every retry position either opens on whitespace or finds no closer. No math at all — a continue-scan would wrongly yield display ` $ `."
+    },
+    {
+      "input": "$$$a$$",
+      "expect_math_spans": [
+        {
+          "mode": "display",
+          "tex": "a"
+        }
+      ],
+      "note": "A `$` run of three: the opener at position 0 fails on its immediate lone-`$` candidate, and the RETRY at position 1 forms `$$a$$` — display `a`, not `$a`. Pins the retry-at-pos+1 fallback for `$` runs longer than two."
     },
     {
       "input": "$a < b & c$",
