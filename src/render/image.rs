@@ -92,8 +92,9 @@
 //! `add_image_placeholder_attributes` provides additive attrs only for
 //! these bare-img paths.
 
-use crate::asset_paths::to_webp;
+use crate::asset_paths::{deployed_width, ladder_rungs, to_webp, to_webp_rung};
 use crate::asset_snapshot::{AssetSnapshot, FALLBACK_HEIGHT, FALLBACK_WIDTH};
+use crate::contract::sizes as ctx_sizes;
 // Same XML-safe escaping used everywhere else in moss for attribute values.
 use crate::media::html_escape;
 use std::collections::BTreeMap;
@@ -395,7 +396,25 @@ pub fn synthesize_image_html(
     // every non-favicon context. The wrapping `<figure class="moss-image">`
     // and optional `<figcaption>` are the only context-dependent
     // structure. Compute the inner first, then wrap if requested.
-    let inner = synthesize_inner(src, alt, assets, options);
+    //
+    // The context also decides the `sizes=` value for the srcset ladder
+    // (responsive-image-variants Task 3): full-bleed surfaces (hero,
+    // `data-width="wide|page|screen|full"` figures) span the viewport;
+    // cards/gallery thumbs occupy grid cells; everything else renders in
+    // the content column. Only emitted when the ladder is non-empty — see
+    // synthesize_inner.
+    let sizes_value: &str = match &context {
+        ImageContext::Hero => ctx_sizes::SIZES_FULL_BLEED,
+        ImageContext::MarkdownStandalone { width: Some(w), .. }
+            if matches!(*w, "wide" | "page" | "screen" | "full") =>
+        {
+            ctx_sizes::SIZES_FULL_BLEED
+        }
+        ImageContext::FolderCardCover | ImageContext::LinkPreview => ctx_sizes::SIZES_CARD,
+        ImageContext::GalleryThumb => ctx_sizes::SIZES_GALLERY,
+        _ => ctx_sizes::SIZES_BODY,
+    };
+    let inner = synthesize_inner(src, alt, assets, options, sizes_value);
 
     match context {
         ImageContext::MarkdownStandalone {
@@ -533,11 +552,17 @@ pub(super) fn wrap_in_figure_full(
 
 /// Synthesize the inner `<img>` (or `<picture><img></picture>`) without
 /// the standalone-figure wrapper. Shared by every non-favicon context.
+///
+/// `sizes_value` is the context-resolved `sizes=` attribute value
+/// (`contract::sizes`); it is only emitted when the source is wide enough
+/// to have ladder rungs — narrow/unknown-dims sources keep the legacy
+/// single-URL `<source>` byte shape.
 fn synthesize_inner(
     src: &str,
     alt: &str,
     assets: &AssetSnapshot,
     options: &ImageRenderOptions<'_>,
+    sizes_value: &str,
 ) -> String {
     let img_tag = render_img_tag(src, alt, assets, options);
 
@@ -573,11 +598,38 @@ fn synthesize_inner(
         // the AssetRegistry's registered key (blocking.rs's set_pending loop
         // uses the same to_webp(mapped) derivation).
         let srcset_path = to_webp(src);
-        format!(
-            r#"<picture><source srcset="{}" type="image/webp">{}</picture>"#,
-            html_escape(&srcset_path),
-            img_tag,
-        )
+        // Ladder: rung existence is decided by ladder_rungs() from the SAME
+        // scan-derived dimensions the pipeline registers/encodes from —
+        // deterministic agreement, see asset_paths::ladder_rungs docs.
+        // Unknown dims (snapshot miss → None) emit the legacy single-URL
+        // shape. `is_animated=false` is correct for png/jpg/jpeg (animated
+        // GIF/WebP never pass is_raster_original; a later phase threads the
+        // real flag for webp sources).
+        let natural_w = lookup_dims(assets, src).map(|(w, _)| w);
+        let rungs = natural_w.map(|w| ladder_rungs(w, false)).unwrap_or(&[]);
+        if rungs.is_empty() {
+            format!(
+                r#"<picture><source srcset="{}" type="image/webp">{}</picture>"#,
+                html_escape(&srcset_path),
+                img_tag,
+            )
+        } else {
+            // rungs non-empty implies natural_w is Some; the descriptor for
+            // the base variant is its DEPLOYED width (source width capped at
+            // DEPLOY_MAX_EDGE), never the raw natural width.
+            let base_w = deployed_width(natural_w.unwrap_or(0));
+            let mut parts: Vec<String> = rungs
+                .iter()
+                .map(|w| format!("{} {}w", to_webp_rung(src, *w), w))
+                .collect();
+            parts.push(format!("{} {}w", srcset_path, base_w));
+            format!(
+                r#"<picture><source srcset="{}" type="image/webp" sizes="{}">{}</picture>"#,
+                html_escape(&parts.join(", ")),
+                html_escape(sizes_value),
+                img_tag,
+            )
+        }
     } else {
         img_tag
     }
@@ -1646,7 +1698,14 @@ mod tests {
             &p,
         );
         assert!(out.contains("<picture"), "{out}");
-        assert!(out.contains(r#"srcset="photo.webp""#), "{out}");
+        // 1200px-wide fixture → ladder rung at 800 + capped base descriptor,
+        // with the gallery grid-cell sizes (Task 3, responsive-image-variants).
+        assert!(
+            out.contains(
+                r#"srcset="photo.w800.webp 800w, photo.webp 1200w" type="image/webp" sizes="(min-width: 48rem) 33vw, 100vw""#
+            ),
+            "{out}"
+        );
         assert!(out.contains(r#"loading="lazy""#), "{out}");
         assert!(out.contains(r#"width="1200""#), "{out}");
         assert!(out.contains(r#"height="800""#), "{out}");
@@ -1735,6 +1794,141 @@ mod tests {
         // No <picture>, no <source>, no class, no loading, no LQIP, no
         // width/height attrs. Exact byte shape with empty alt.
         assert_eq!(out, r#"<img src="cover.jpg" alt="" />"#, "got: {}", out);
+    }
+
+    // --- srcset ladder + sizes (responsive-image-variants Task 3) ---------
+    //
+    // Sources wider than the first ladder rung (800px) gain width
+    // descriptors for each rung below the deployed base plus the base
+    // itself (capped at DEPLOY_MAX_EDGE), and a per-context sizes=
+    // attribute from contract::sizes. Sources at/below the first rung —
+    // and unknown-dims sources — keep the legacy single-URL shape
+    // byte-identical (no descriptors, no sizes).
+
+    #[test]
+    fn ladder_srcset_emitted_for_wide_raster() {
+        let assets = snapshot_dims("photo.jpg", 2000, 1200);
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "alt",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(
+                r#"<source srcset="photo.w800.webp 800w, photo.w1600.webp 1600w, photo.webp 2000w" type="image/webp" sizes="(min-width: 48rem) 47.25rem, 100vw">"#
+            ),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn base_descriptor_caps_at_deploy_max_edge() {
+        let assets = snapshot_dims("photo.jpg", 4000, 3000);
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(html.contains("photo.webp 2400w"), "got: {html}");
+    }
+
+    #[test]
+    fn no_ladder_below_first_rung_keeps_legacy_shape() {
+        let assets = snapshot_dims("photo.jpg", 800, 600);
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        // Byte-identical to today's single-URL source: no descriptors, no sizes.
+        assert!(
+            html.contains(r#"<source srcset="photo.webp" type="image/webp">"#),
+            "got: {html}"
+        );
+        assert!(!html.contains("sizes="), "got: {html}");
+    }
+
+    #[test]
+    fn unknown_dims_keep_legacy_shape() {
+        // Empty snapshot → fallback 800×600 → no rungs → legacy single-URL shape.
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "",
+            &AssetSnapshot::new(),
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(r#"<source srcset="photo.webp" type="image/webp">"#),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn hero_context_uses_full_bleed_sizes() {
+        let assets = snapshot_dims("hero.jpg", 2400, 985);
+        let html = synthesize_image_html(
+            "hero.jpg",
+            "",
+            &assets,
+            ImageContext::Hero,
+            &ImageRenderOptions::default(),
+        );
+        assert!(html.contains(r#"sizes="100vw""#), "got: {html}");
+    }
+
+    #[test]
+    fn markdown_standalone_width_wide_uses_full_bleed_sizes() {
+        // `data-width="wide"` figures span the viewport (bounded by CSS),
+        // so they carry SIZES_FULL_BLEED, not the content-column sizes.
+        // Mirrors markdown_standalone_width_screen_emits_data_width_on_figure
+        // but with ladder-triggering dims.
+        let s = snapshot_dims("photo.jpg", 2000, 1200);
+        let extras = empty_extras();
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "",
+            &s,
+            ImageContext::MarkdownStandalone {
+                caption: None,
+                width: Some("wide"),
+                align: None,
+                class_names: &[],
+                extra_attrs: &extras,
+            },
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.starts_with(r#"<figure class="moss-image" data-width="wide">"#),
+            "got: {html}"
+        );
+        assert!(html.contains(r#"sizes="100vw""#), "got: {html}");
+    }
+
+    #[test]
+    fn email_body_output_unchanged_by_ladder() {
+        let assets = snapshot_dims("photo.jpg", 2000, 1200);
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "a",
+            &assets,
+            ImageContext::EmailBody {
+                width: Some(2000),
+                height: Some(1200),
+            },
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            !html.contains("srcset"),
+            "email must never carry srcset: {html}"
+        );
+        assert!(!html.contains("<picture"), "got: {html}");
     }
 
     #[test]
