@@ -130,28 +130,65 @@ pub fn to_webp(source: &str) -> String {
     format!("{source}.webp")
 }
 
-/// The raster source extensions that participate in the responsive ladder
-/// AND get a `<picture><source>` webp variant. Single source of truth for the
-/// Phase-A gate replicated across the emission/registration/encode census
-/// sites — see [`ladder_rungs`]' census doc. Phase B (Task 12) flips webp's
-/// participation by editing ONLY this predicate.
+/// The raster source extensions that participate in the responsive ladder.
+/// Single source of truth for the ladder-membership gate replicated across the
+/// emission/registration/encode census sites — see [`ladder_rungs`]' census
+/// doc. Phase B (Task 12) lifted webp's participation by editing ONLY this
+/// predicate: the five pipeline sites (registration, `rungs_gated`,
+/// `registered_rungs`, fingerprint-skip heal, `encode_rungs`) all derive rung
+/// membership from here, so adding webp here made them include webp in lockstep.
+///
+/// NOTE ON `<picture>` vs `<img srcset>`: ladder membership is NOT the same as
+/// "emits a `<picture><source>` webp CONVERSION". png/jpg/jpeg are re-encoded to
+/// a differently-named `.webp` and emit `<picture><source srcset=X.webp>`; a
+/// webp SOURCE is already webp, so [`to_webp`]`(src) == src` and it emits the
+/// ladder directly on `<img srcset>` (no `<picture>` — a `<source>` identical to
+/// the `<img>` is pointless). Callers that need the CONVERSION-only subset
+/// (e.g. `should_skip`'s AlreadySmall carve-out, which must keep small webp
+/// eligible to skip re-encode) combine this with [`is_webp_source_ext`]:
+/// `is_ladder_source_ext(ext) && !is_webp_source_ext(ext)`.
 ///
 /// Case-insensitive; `ext` is the extension WITHOUT the leading dot
-/// ("png", "JPG", "jpeg"). Emission derives the gate from a full path via
-/// `render/image.rs::is_raster_original`; the pipeline sites pass the
-/// scan-derived `item.ext` / a `source_file.extension()` string. Keeping all
-/// six on this one predicate makes Task 12's webp lift a one-line change here
-/// instead of six hand-synced `matches!` arms.
+/// ("png", "JPG", "jpeg", "webp"). Emission derives the gate from a full path
+/// via `render/image.rs::is_raster_original` / `is_webp_source`; the pipeline
+/// sites pass the scan-derived `item.ext` / a `source_file.extension()` string.
 ///
 /// # Examples
 /// ```
 /// # use moss_core::asset_paths::is_ladder_source_ext;
 /// assert!(is_ladder_source_ext("png"));
 /// assert!(is_ladder_source_ext("JPG"));
-/// assert!(!is_ladder_source_ext("webp")); // joins in Phase B (Task 12)
+/// assert!(is_ladder_source_ext("webp")); // joined the ladder in Phase B (Task 12)
 /// ```
 pub fn is_ladder_source_ext(ext: &str) -> bool {
-    matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg")
+    matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp")
+}
+
+/// True when `ext` is a WebP source extension (`webp`, case-insensitive).
+///
+/// A webp SOURCE is already webp: it does NOT get a differently-named
+/// `<picture><source>` webp conversion — instead it carries the responsive
+/// ladder directly on `<img srcset>` (Phase B, Task 12). Two callers need this
+/// distinction that [`is_ladder_source_ext`] (which now unions webp in) can no
+/// longer make alone:
+/// - emission (`render/image.rs::synthesize_inner`) routes webp to the
+///   `<img srcset>` branch instead of the `<picture>` branch;
+/// - `should_skip`'s AlreadySmall carve-out excludes webp from the
+///   "must-convert, never-skip" set so a small rung-free webp can still skip
+///   the wasteful webp→webp re-encode.
+///
+/// `ext` is the extension WITHOUT the leading dot.
+///
+/// # Examples
+/// ```
+/// # use moss_core::asset_paths::is_webp_source_ext;
+/// assert!(is_webp_source_ext("webp"));
+/// assert!(is_webp_source_ext("WEBP"));
+/// assert!(!is_webp_source_ext("png"));
+/// assert!(!is_webp_source_ext("jpg"));
+/// ```
+pub fn is_webp_source_ext(ext: &str) -> bool {
+    ext.eq_ignore_ascii_case("webp")
 }
 
 /// Max edge (px) of any deployed raster. Single source of truth — the encode
@@ -217,9 +254,25 @@ pub fn deployed_width(natural_w: u32, natural_h: u32) -> u32 {
 /// BASE webp encode already FLATTENS it to a still today (`should_skip` in
 /// build/media/image.rs sniffs animation only for gif/webp). Rungs run
 /// through the same encode path and inherit the same flattening —
-/// consistent by construction, no 404 risk. png/jpg/jpeg callers hardcode
-/// `is_animated = false` at EVERY census site above until the scan-derived
-/// flag is threaded for webp sources (Phase B).
+/// consistent by construction, no 404 risk.
+///
+/// ANIMATED-FLAG AGREEMENT (Phase B, Task 12). Only ONE of the five sites
+/// passes a non-`false` flag: **emission** passes the scan-derived
+/// `assets.is_animated(src)` for webp sources (an animated webp → empty
+/// ladder → bare `<img>`, no srcset). The four pipeline sites (registration,
+/// `rungs_gated`/`ladder_len`, `registered_rungs`, fingerprint-heal, plus
+/// `encode_rungs`) keep the `false` literal, and that literal is PROVABLY
+/// correct — not an assumption: an animated webp returns
+/// `SkipReason::AnimatedWebp` in `should_skip`, so `collect_images_for_
+/// conversion` drops it BEFORE it can become an `ImageConversionItem`. Every
+/// webp that reaches the pipeline is therefore non-animated, and `false`
+/// equals its real flag. Because scan's `sniff_is_animated` and `should_skip`
+/// both call the SAME `is_animated_webp`, the emission verdict and the
+/// pipeline's inclusion verdict never disagree: an animated webp is
+/// simultaneously flagged in the snapshot (emission → no rungs) AND filtered
+/// from the item list (pipeline → no rungs). Both sides produce zero rungs.
+/// png/jpg/jpeg are never animated through this path (animated gif/webp are
+/// not in the conversion set) and keep `false` everywhere too.
 ///
 /// WARNING: any future pipeline-side skip that is NOT expressible as an
 /// input to this function — e.g. copying the Y1 sized-raster APNG
@@ -481,17 +534,34 @@ mod tests {
     // ── is_ladder_source_ext tests ─────────────────────────────────
 
     #[test]
-    fn is_ladder_source_ext_accepts_png_jpg_jpeg_case_insensitively() {
-        for ext in ["png", "PNG", "jpg", "JPG", "jpeg", "JPEG", "Jpg", "jPeG"] {
+    fn is_ladder_source_ext_accepts_png_jpg_jpeg_webp_case_insensitively() {
+        // Phase B (Task 12) added webp/WEBP: a webp SOURCE now participates in
+        // the responsive ladder (emitted on `<img srcset>`, not `<picture>`).
+        for ext in [
+            "png", "PNG", "jpg", "JPG", "jpeg", "JPEG", "Jpg", "jPeG", "webp", "WEBP", "WebP",
+        ] {
             assert!(is_ladder_source_ext(ext), "{ext} must be a ladder source");
         }
     }
 
     #[test]
-    fn is_ladder_source_ext_rejects_non_phase_a_formats() {
-        // webp flips to true in Phase B (Task 12); the rest never join.
-        for ext in ["webp", "WEBP", "gif", "svg", "avif", "heic", "bmp", "tiff", ""] {
+    fn is_ladder_source_ext_rejects_non_ladder_formats() {
+        // webp joined in Phase B (asserted above); these never join.
+        for ext in ["gif", "svg", "avif", "heic", "bmp", "tiff", ""] {
             assert!(!is_ladder_source_ext(ext), "{ext} must NOT be a ladder source");
+        }
+    }
+
+    #[test]
+    fn is_webp_source_ext_matches_only_webp() {
+        // The conversion-vs-webp split: webp is a ladder source that is NOT a
+        // `<picture>` conversion (it emits `<img srcset>` and can skip a small
+        // re-encode). png/jpg/jpeg are ladder sources that ARE conversions.
+        for ext in ["webp", "WEBP", "WebP"] {
+            assert!(is_webp_source_ext(ext), "{ext} must be a webp source");
+        }
+        for ext in ["png", "PNG", "jpg", "jpeg", "gif", "svg", ""] {
+            assert!(!is_webp_source_ext(ext), "{ext} must NOT be a webp source");
         }
     }
 

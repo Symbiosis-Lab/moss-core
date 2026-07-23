@@ -92,7 +92,9 @@
 //! `add_image_placeholder_attributes` provides additive attrs only for
 //! these bare-img paths.
 
-use crate::asset_paths::{deployed_width, is_ladder_source_ext, ladder_rungs, to_webp, to_webp_rung};
+use crate::asset_paths::{
+    deployed_width, is_ladder_source_ext, is_webp_source_ext, ladder_rungs, to_webp, to_webp_rung,
+};
 use crate::asset_snapshot::{AssetSnapshot, FALLBACK_HEIGHT, FALLBACK_WIDTH};
 use crate::contract::sizes as ctx_sizes;
 // Same XML-safe escaping used everywhere else in moss for attribute values.
@@ -570,7 +572,49 @@ fn synthesize_inner(
     options: &ImageRenderOptions<'_>,
     sizes_value: &str,
 ) -> String {
-    let img_tag = render_img_tag(src, alt, assets, options);
+    // Phase B (Task 12): a webp SOURCE is already webp — to_webp(src) == src, so
+    // a `<picture><source srcset=to_webp(src)>` would emit a `<source>` byte-
+    // identical to the inner `<img>` (pointless). Instead, emit the responsive
+    // ladder DIRECTLY on the `<img>` via `srcset`+`sizes`. This branch MUST run
+    // BEFORE `is_raster_original` — which now also matches webp (webp joined
+    // `is_ladder_source_ext` in Phase B) — so webp never falls into the
+    // `<picture>` conversion path below.
+    //
+    // Animated webp gets NO ladder: `assets.is_animated(src)` (scan-derived,
+    // Task 9/10) → `ladder_rungs(..)` returns empty → the base `<img>` is
+    // byte-identical to today's bare webp emission. Small webp (deployed base
+    // ≤ first rung → empty ladder) is likewise byte-identical. Only a wide,
+    // non-animated webp gains `srcset`/`sizes`. This is the ONLY census site
+    // that passes a non-`false` animated flag; the pipeline sites keep `false`
+    // because `should_skip` pre-filters animated webp (see
+    // `asset_paths::ladder_rungs` census doc, ANIMATED-FLAG AGREEMENT).
+    if is_webp_source(src) {
+        let ladder = lookup_dims(assets, src).and_then(|(w, h)| {
+            let rungs = ladder_rungs(w, h, lookup_animated(assets, src));
+            if rungs.is_empty() {
+                None
+            } else {
+                Some((rungs, deployed_width(w, h)))
+            }
+        });
+        return match ladder {
+            None => render_img_tag(src, alt, assets, options, None),
+            Some((rungs, base_w)) => {
+                // Rungs use to_webp_rung(src, w); the base descriptor is `src`
+                // itself (already webp) at its DEPLOYED width (post-resize,
+                // longest-edge capped) — the served base webp is that size.
+                let mut parts: Vec<String> = rungs
+                    .iter()
+                    .map(|w| format!("{} {}w", to_webp_rung(src, *w), w))
+                    .collect();
+                parts.push(format!("{} {}w", src, base_w));
+                let srcset = parts.join(", ");
+                render_img_tag(src, alt, assets, options, Some((&srcset, sizes_value)))
+            }
+        };
+    }
+
+    let img_tag = render_img_tag(src, alt, assets, options, None);
 
     // For raster originals, always emit <picture><source srcset=X.webp>.
     // This markup is MODE-INDEPENDENT — the on-disk HTML is identical in
@@ -660,11 +704,16 @@ fn synthesize_inner(
 }
 
 /// Returns true when `src` is a raster original that always gets a webp
-/// variant from moss's image pipeline. EMISSION side of the shared Phase-A
+/// variant from moss's image pipeline. EMISSION side of the shared ladder
 /// gate: extracts `src`'s extension and delegates membership to
 /// [`is_ladder_source_ext`] — the ONE predicate the pipeline census sites
-/// (registration/encode/sweep/heal/skip) also consume, so Task 12's webp lift
-/// is a single edit there. Today png/jpg/jpeg only (predicate's doc says why).
+/// (registration/encode/sweep/heal) also consume.
+///
+/// After Phase B (Task 12) this also matches webp, so `synthesize_inner`
+/// checks [`is_webp_source`] FIRST and routes webp to the `<img srcset>`
+/// branch — a webp reaching THIS predicate's `<picture>` branch would emit a
+/// useless `<source>` identical to the inner `<img>`. Reaching here therefore
+/// means png/jpg/jpeg in practice (the webp branch already returned).
 ///
 /// Note: this check is extension-only. `collect_images_for_conversion` applies
 /// additional content-based filters (e.g. `SkipReason::NotAnImage` for files
@@ -677,6 +726,16 @@ fn synthesize_inner(
 fn is_raster_original(src: &str) -> bool {
     src.rsplit_once('.')
         .is_some_and(|(_, ext)| is_ladder_source_ext(ext))
+}
+
+/// Returns true when `src` is a webp SOURCE (extension `.webp`, case-
+/// insensitive). EMISSION side of the webp-vs-conversion split: a webp source
+/// carries the responsive ladder directly on `<img srcset>` (no `<picture>`),
+/// so `synthesize_inner` tests this before [`is_raster_original`]. Delegates
+/// to [`is_webp_source_ext`] — the single extension gate in `asset_paths`.
+fn is_webp_source(src: &str) -> bool {
+    src.rsplit_once('.')
+        .is_some_and(|(_, ext)| is_webp_source_ext(ext))
 }
 
 /// Try several path normalizations against `AssetSnapshot.dimensions` so the
@@ -694,6 +753,18 @@ fn is_raster_original(src: &str) -> bool {
 /// supplies the fallback (800×600 for dims, no style for LQIP / color).
 fn lookup_dims(assets: &AssetSnapshot, src: &str) -> Option<(u32, u32)> {
     probe_paths(src, |p| assets.dims(&p))
+}
+
+/// Whether `src` is a scan-flagged animated source. Probes the SAME path
+/// normalizations as [`lookup_dims`] against `AssetSnapshot.animated` (keyed
+/// identically to `dimensions`, both populated per-source in
+/// `build_asset_snapshot`), so a webp found for dims is found for animation
+/// too. Missing everywhere → `false` (test/fragment-render paths with an empty
+/// snapshot treat sources as non-animated). Only the webp ladder branch
+/// consults this — png/jpg/jpeg are never animated through the `<picture>`
+/// path (see `asset_paths::ladder_rungs` census doc).
+fn lookup_animated(assets: &AssetSnapshot, src: &str) -> bool {
+    probe_paths(src, |p| assets.animated.get(&p).copied()).unwrap_or(false)
 }
 
 fn lookup_lqip<'a>(assets: &'a AssetSnapshot, src: &str) -> Option<&'a str> {
@@ -783,11 +854,19 @@ fn hex_val(b: u8) -> Option<u8> {
 /// `synthesize_image_html` — exposed as `pub(crate)` only for snapshot tests
 /// that want to assert against the bare img output without the optional
 /// `<picture>` wrapper.
+///
+/// `srcset_sizes` is `Some((srcset, sizes))` ONLY for the Phase-B webp ladder
+/// (Task 12), which carries the responsive candidates on the `<img>` itself
+/// rather than a `<source>`. When `Some`, ` srcset="…" sizes="…"` is emitted
+/// immediately after `src=` (both values HTML-escaped, matching the
+/// `<picture>` path's escaping). When `None` — every other caller and every
+/// non-laddered webp — the output is BYTE-IDENTICAL to the pre-Task-12 shape.
 pub(crate) fn render_img_tag(
     src: &str,
     alt: &str,
     assets: &AssetSnapshot,
     options: &ImageRenderOptions<'_>,
+    srcset_sizes: Option<(&str, &str)>,
 ) -> String {
     // AssetSnapshot's `dims` is keyed by PathBuf; the src arrives as the
     // resolved URL the upstream renderer baked (potentially absolute, e.g.
@@ -845,6 +924,18 @@ pub(crate) fn render_img_tag(
         .map(|s| format!(" {}", s))
         .unwrap_or_default();
 
+    // Phase B webp ladder (Task 12): responsive candidates ride the `<img>`
+    // itself. Emitted right after `src=` and before `width=`. Empty for every
+    // other caller, keeping the byte shape identical to the pre-Task-12 tag.
+    let srcset_attr = match srcset_sizes {
+        Some((srcset, sizes)) => format!(
+            r#" srcset="{}" sizes="{}""#,
+            html_escape(srcset),
+            html_escape(sizes),
+        ),
+        None => String::new(),
+    };
+
     // `data-placeholder-src` removed 2026-05-20: the iframe-bridge handler
     // now matches by URL substring against `src` / `srcset` (see
     // frontend/bridge/iframe-bridge.ts, moss-asset-ready branch). The
@@ -857,9 +948,10 @@ pub(crate) fn render_img_tag(
     // nextjs.org/docs/app/api-reference/components/image). Shows a blurred
     // preview instantly while the actual bytes are being decoded.
     format!(
-        r#"<img{class_attr} src="{src_esc}" width="{w}" height="{h}"{loading}{fetch}{style} alt="{alt}"{extra} />"#,
+        r#"<img{class_attr} src="{src_esc}"{srcset} width="{w}" height="{h}"{loading}{fetch}{style} alt="{alt}"{extra} />"#,
         class_attr = class_attr,
         src_esc = html_escape(src),
+        srcset = srcset_attr,
         w = width,
         h = height,
         loading = loading_attr,
@@ -2165,5 +2257,239 @@ mod tests {
             },
         );
         assert_eq!(pr2, legacy, "byte shape divergence: pr2={} legacy={}", pr2, legacy);
+    }
+
+    // --- Phase B: webp SOURCE responsive ladder (Task 12) -----------------
+    //
+    // A webp source is already webp (to_webp(src) == src), so the ladder rides
+    // the `<img>` directly via `srcset`+`sizes` — NO `<picture>` wrap (a
+    // `<source>` identical to the img would be pointless). A wide, non-animated
+    // webp gains the ladder; small / animated / unknown-dims webp stays
+    // byte-identical to the pre-Task-12 bare `<img>`. The `sizes=` value is the
+    // SAME per-context mapping png/jpg/jpeg use.
+
+    /// Build a snapshot carrying dims AND an explicit animated flag for the
+    /// source path — the animated map is keyed like `dimensions`.
+    fn snapshot_dims_animated(path: &str, w: u32, h: u32, animated: bool) -> AssetSnapshot {
+        let mut s = snapshot_dims(path, w, h);
+        s.animated.insert(PathBuf::from(path), animated);
+        s
+    }
+
+    #[test]
+    fn webp_source_wide_emits_img_srcset_no_picture() {
+        // The yinlab.io case: a non-animated 1866×1866 webp original. Exact
+        // byte shape — srcset on the <img>, no <picture>, base descriptor is
+        // `photo.webp` itself at the deployed width (1866, under the cap).
+        let assets = snapshot_dims("photo.webp", 1866, 1866);
+        let html = synthesize_image_html(
+            "photo.webp",
+            "alt",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert_eq!(
+            html,
+            r#"<img src="photo.webp" srcset="photo.w800.webp 800w, photo.w1600.webp 1600w, photo.webp 1866w" sizes="(min-width: 48rem) 47.25rem, 100vw" width="1866" height="1866" loading="lazy" alt="alt" />"#
+        );
+        assert!(!html.contains("<picture"), "webp source must NOT be wrapped in <picture>: {html}");
+    }
+
+    #[test]
+    fn webp_source_small_is_byte_identical_bare_img() {
+        // 600×400: deployed_width == 600, no rung < 600 → empty ladder →
+        // byte-identical to today's bare <img> for a small webp (no srcset,
+        // no <picture>, no sizes).
+        let assets = snapshot_dims("photo.webp", 600, 400);
+        let html = synthesize_image_html(
+            "photo.webp",
+            "alt",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert_eq!(
+            html,
+            r#"<img src="photo.webp" width="600" height="400" loading="lazy" alt="alt" />"#
+        );
+    }
+
+    #[test]
+    fn webp_source_animated_is_byte_identical_bare_img() {
+        // A 1866×1866 webp FLAGGED animated in the snapshot (Task 9/10 scan)
+        // gets NO ladder — animation-preserving multi-size re-encode is out of
+        // scope, and the pipeline's should_skip drops animated webp, so
+        // emitting rungs would 404. Byte-identical to the bare <img>, despite
+        // dims that would otherwise ladder.
+        let assets = snapshot_dims_animated("loop.webp", 1866, 1866, true);
+        let html = synthesize_image_html(
+            "loop.webp",
+            "alt",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert_eq!(
+            html,
+            r#"<img src="loop.webp" width="1866" height="1866" loading="lazy" alt="alt" />"#
+        );
+        assert!(!html.contains("srcset"), "animated webp must not carry srcset: {html}");
+    }
+
+    #[test]
+    fn webp_source_explicit_non_animated_flag_ladders() {
+        // Symmetry with the animated test: an explicit `false` in the snapshot
+        // (present-false key) ladders exactly like a missing key.
+        let assets = snapshot_dims_animated("photo.webp", 2000, 1200, false);
+        let html = synthesize_image_html(
+            "photo.webp",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(
+                r#"srcset="photo.w800.webp 800w, photo.w1600.webp 1600w, photo.webp 2000w""#
+            ),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn webp_source_card_context_uses_card_sizes() {
+        let assets = snapshot_dims("cover.webp", 2000, 1200);
+        let html = synthesize_image_html(
+            "cover.webp",
+            "",
+            &assets,
+            ImageContext::FolderCardCover,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(
+                r#"srcset="cover.w800.webp 800w, cover.w1600.webp 1600w, cover.webp 2000w" sizes="(min-width: 48rem) 24rem, 100vw""#
+            ),
+            "got: {html}"
+        );
+        assert!(!html.contains("<picture"), "got: {html}");
+    }
+
+    #[test]
+    fn webp_source_gallery_context_uses_gallery_sizes() {
+        let assets = snapshot_dims("g.webp", 2000, 1200);
+        let html = synthesize_image_html(
+            "g.webp",
+            "",
+            &assets,
+            ImageContext::GalleryThumb,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(r#"sizes="(min-width: 48rem) 33vw, 100vw""#),
+            "got: {html}"
+        );
+        assert!(!html.contains("<picture"), "got: {html}");
+    }
+
+    #[test]
+    fn webp_source_hero_context_uses_full_bleed_sizes() {
+        let assets = snapshot_dims("hero.webp", 2400, 985);
+        let html = synthesize_image_html(
+            "hero.webp",
+            "",
+            &assets,
+            ImageContext::Hero,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(
+                r#"srcset="hero.w800.webp 800w, hero.w1600.webp 1600w, hero.webp 2400w" sizes="100vw""#
+            ),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn webp_source_portrait_base_descriptor_uses_post_resize_width() {
+        // 3024×4032 portrait deploys at 1800×2400 — the base descriptor must be
+        // the POST-RESIZE width (1800w), and width/height attrs stay natural
+        // (aspect ratio hint), exactly like the png/jpg portrait picture path.
+        let assets = snapshot_dims("photo.webp", 3024, 4032);
+        let html = synthesize_image_html(
+            "photo.webp",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(
+            html.contains(
+                r#"srcset="photo.w800.webp 800w, photo.w1600.webp 1600w, photo.webp 1800w""#
+            ),
+            "got: {html}"
+        );
+        assert!(html.contains(r#"width="3024" height="4032""#), "got: {html}");
+    }
+
+    #[test]
+    fn webp_source_unknown_dims_is_bare_img() {
+        // Empty snapshot → dims miss → no ladder → bare <img> (fallback dims,
+        // no srcset, no <picture>). Matches the test/fragment-render path.
+        let html = synthesize_image_html(
+            "photo.webp",
+            "",
+            &AssetSnapshot::new(),
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(!html.contains("srcset"), "got: {html}");
+        assert!(!html.contains("<picture"), "got: {html}");
+        assert!(html.starts_with(r#"<img src="photo.webp""#), "got: {html}");
+    }
+
+    #[test]
+    fn webp_source_uppercase_ext_ladders_and_uses_src_case() {
+        // is_webp_source is case-insensitive; the emitted rung/base URLs derive
+        // from `src` (to_webp_rung lowercases only the extension it appends).
+        let assets = snapshot_dims("photo.WEBP", 2000, 1200);
+        let html = synthesize_image_html(
+            "photo.WEBP",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(!html.contains("<picture"), "uppercase .WEBP must ladder as <img srcset>: {html}");
+        assert!(
+            html.contains(r#"srcset="photo.w800.webp 800w, photo.w1600.webp 1600w, photo.WEBP 2000w""#),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn webp_source_lqip_style_survives_on_laddered_img() {
+        // The LQIP inline style is emitted on the webp <img> exactly as it is
+        // for the png/jpg inner <img> — the srcset addition doesn't suppress it.
+        let assets = snapshot_with(
+            "photo.webp",
+            Some((2000, 1200)),
+            None,
+            Some("data:image/jpeg;base64,abc"),
+            false,
+        );
+        let html = synthesize_image_html(
+            "photo.webp",
+            "",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(html.contains(r#"srcset="photo.w800.webp 800w"#), "got: {html}");
+        assert!(
+            html.contains(r#"style="background-image:url(data:image/jpeg;base64,abc);background-size:cover""#),
+            "LQIP must survive on the laddered webp <img>: {html}"
+        );
     }
 }
