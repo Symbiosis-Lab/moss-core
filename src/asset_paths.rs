@@ -244,6 +244,23 @@ pub fn deployed_width(natural_w: u32, natural_h: u32) -> u32 {
 /// outcomes, cache state) — that is the parallel-oracle bug class deleted
 /// 2026-05-20 (see build/media/image.rs:297-310).
 ///
+/// EXIF-ORIENTATION CAVEAT (canonical; the pipeline sites back-reference here).
+/// The "same scan-derived dims on every site" premise holds EXCEPT for an
+/// EXIF-oriented (orientation 5-8, i.e. a 90°/270° rotation) png or webp. Scan
+/// feeds emission/registration/sweep/heal `w`×`h` from
+/// `extract_image_dimensions`, whose orientation read (`get_exif_orientation`,
+/// scan.rs) is JPEG-GATED — for png/webp it returns the UNswapped header dims.
+/// Encode's `decode_oriented`→`read_exif_orientation` is NOT gated: it swaps
+/// dims for ANY container. So for an EXIF-rotated png/webp the encode's ladder
+/// is computed from SWAPPED dims and can DIFFER from emission's (a
+/// non-superset, not merely extra files): emission/registration can promise a
+/// rung the encode never produces → registered-and-emitted-but-unencoded →
+/// publish-404 (preview degrades to the placeholder via the unresolved-promise
+/// sweep). This is rare (needs an EXIF-rotated png/webp), pre-existing for png,
+/// and inherited by webp in Phase B. CODE FIX is deferred to a follow-up
+/// (Task 14) — the fix direction is to ungate scan's orientation swap so scan
+/// dims match `decode_oriented`; do NOT "fix" it by narrowing the encode side.
+///
 /// Rungs are strictly below the deployed base WIDTH (post-resize, see
 /// [`deployed_width`] — portrait sources have a smaller base width than
 /// `min(w, DEPLOY_MAX_EDGE)`) so the base descriptor never duplicates a

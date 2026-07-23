@@ -581,34 +581,17 @@ fn synthesize_inner(
     // `<picture>` conversion path below.
     //
     // Animated webp gets NO ladder: `assets.is_animated(src)` (scan-derived,
-    // Task 9/10) → `ladder_rungs(..)` returns empty → the base `<img>` is
-    // byte-identical to today's bare webp emission. Small webp (deployed base
-    // ≤ first rung → empty ladder) is likewise byte-identical. Only a wide,
-    // non-animated webp gains `srcset`/`sizes`. This is the ONLY census site
-    // that passes a non-`false` animated flag; the pipeline sites keep `false`
-    // because `should_skip` pre-filters animated webp (see
-    // `asset_paths::ladder_rungs` census doc, ANIMATED-FLAG AGREEMENT).
+    // Task 9/10) → empty ladder → the base `<img>` is byte-identical to today's
+    // bare webp emission. Small / unknown-dims webp is likewise byte-identical.
+    // This is the ONLY census site that passes a non-`false` animated flag; the
+    // pipeline sites keep `false` (canonical rationale + the EXIF-orientation
+    // caveat live on `asset_paths::ladder_rungs`). base_url == src: the served
+    // base webp IS the source (`to_webp(src) == src`).
     if is_webp_source(src) {
-        let ladder = lookup_dims(assets, src).and_then(|(w, h)| {
-            let rungs = ladder_rungs(w, h, lookup_animated(assets, src));
-            if rungs.is_empty() {
-                None
-            } else {
-                Some((rungs, deployed_width(w, h)))
-            }
-        });
-        return match ladder {
+        return match resolve_ladder(assets, src, lookup_animated(assets, src)) {
             None => render_img_tag(src, alt, assets, options, None),
             Some((rungs, base_w)) => {
-                // Rungs use to_webp_rung(src, w); the base descriptor is `src`
-                // itself (already webp) at its DEPLOYED width (post-resize,
-                // longest-edge capped) — the served base webp is that size.
-                let mut parts: Vec<String> = rungs
-                    .iter()
-                    .map(|w| format!("{} {}w", to_webp_rung(src, *w), w))
-                    .collect();
-                parts.push(format!("{} {}w", src, base_w));
-                let srcset = parts.join(", ");
+                let srcset = build_srcset(src, src, rungs, base_w);
                 render_img_tag(src, alt, assets, options, Some((&srcset, sizes_value)))
             }
         };
@@ -644,55 +627,27 @@ fn synthesize_inner(
     if is_raster_original(src) {
         // to_webp(src) inherits the dir_overrides + relative-prefix already
         // applied to `src` by the upstream renderer. Swapping the extension
-        // on `src` is what keeps the synthesizer's emitted URL aligned with
-        // the AssetRegistry's registered key (blocking.rs's set_pending loop
-        // uses the same to_webp(mapped) derivation).
+        // on `src` keeps the emitted URL aligned with the AssetRegistry's
+        // registered key (blocking.rs's set_pending uses the same to_webp
+        // derivation). It is the `<picture>` base descriptor URL here.
         let srcset_path = to_webp(src);
-        // Ladder: rung existence is decided by ladder_rungs() from the SAME
-        // scan-derived dimensions the pipeline registers/encodes from —
-        // deterministic agreement, see asset_paths::ladder_rungs docs. BOTH
-        // dims matter: the encoder resizes the longest EDGE, so a portrait's
-        // deployed base width is smaller than min(w, cap) and its rung set
-        // shrinks accordingly. Unknown dims (snapshot miss → None) emit the
-        // legacy single-URL shape.
-        //
-        // `is_animated=false` is hardcoded on all three sides for png/jpg/
-        // jpeg (animated GIF/WebP never pass is_raster_original; Phase B
-        // threads the real flag for webp sources). APNG is fine: the BASE
-        // webp encode already flattens it (should_skip sniffs only gif/webp
-        // animation) and rung encodes inherit the same flattening — but any
-        // future pipeline-side rung skip NOT expressible as a ladder_rungs
-        // input (e.g. the Y1 sized-raster APNG verbatim-keep guard at
-        // build/media/image.rs ~830) would create emitted-but-never-encoded
-        // rungs → non-recoverable <picture> 404 (ADR-013). Task 5 must NOT
-        // copy that guard.
-        //
-        // `ladder` is Some only when rungs exist; the base descriptor is the
-        // DEPLOYED width (post-resize, longest edge capped) — never the raw
-        // natural width.
-        let ladder = lookup_dims(assets, src).and_then(|(w, h)| {
-            let rungs = ladder_rungs(w, h, false);
-            if rungs.is_empty() {
-                None
-            } else {
-                Some((rungs, deployed_width(w, h)))
-            }
-        });
-        match ladder {
+        // `false`: png/jpg/jpeg are never animated through this path (animated
+        // gif/webp never reach `is_raster_original`; APNG is flattened by the
+        // base+rung encodes alike). Canonical agreement rationale + the
+        // EXIF-orientation caveat: `asset_paths::ladder_rungs` census doc.
+        // `resolve_ladder` is `Some` only when rungs exist; unknown dims →
+        // `None` → the legacy single-URL `<source>` shape.
+        match resolve_ladder(assets, src, false) {
             None => format!(
                 r#"<picture><source srcset="{}" type="image/webp">{}</picture>"#,
                 html_escape(&srcset_path),
                 img_tag,
             ),
             Some((rungs, base_w)) => {
-                let mut parts: Vec<String> = rungs
-                    .iter()
-                    .map(|w| format!("{} {}w", to_webp_rung(src, *w), w))
-                    .collect();
-                parts.push(format!("{} {}w", srcset_path, base_w));
+                let srcset = build_srcset(src, &srcset_path, rungs, base_w);
                 format!(
                     r#"<picture><source srcset="{}" type="image/webp" sizes="{}">{}</picture>"#,
-                    html_escape(&parts.join(", ")),
+                    html_escape(&srcset),
                     html_escape(sizes_value),
                     img_tag,
                 )
@@ -765,6 +720,47 @@ fn lookup_dims(assets: &AssetSnapshot, src: &str) -> Option<(u32, u32)> {
 /// path (see `asset_paths::ladder_rungs` census doc).
 fn lookup_animated(assets: &AssetSnapshot, src: &str) -> bool {
     probe_paths(src, |p| assets.animated.get(&p).copied()).unwrap_or(false)
+}
+
+/// Resolve the responsive ladder for `src`: the rung widths (strictly below the
+/// deployed base) and the deployed base WIDTH — or `None` when dims are unknown
+/// (snapshot miss) or the ladder is empty (small/animated source). Shared by
+/// BOTH emission paths (webp `<img srcset>` and png/jpg `<picture><source>`) so
+/// the `lookup_dims → ladder_rungs → is_empty → deployed_width` derivation
+/// CANNOT drift between them — and it must agree with registration/encode,
+/// which call the identical `ladder_rungs`/`deployed_width` (see the
+/// deterministic-agreement contract on [`crate::asset_paths::ladder_rungs`],
+/// including its EXIF-orientation caveat).
+fn resolve_ladder(
+    assets: &AssetSnapshot,
+    src: &str,
+    is_animated: bool,
+) -> Option<(&'static [u32], u32)> {
+    lookup_dims(assets, src).and_then(|(w, h)| {
+        let rungs = ladder_rungs(w, h, is_animated);
+        if rungs.is_empty() {
+            None
+        } else {
+            Some((rungs, deployed_width(w, h)))
+        }
+    })
+}
+
+/// Assemble a `srcset` value: one `to_webp_rung(src, w) {w}w` candidate per
+/// rung, then the base descriptor `{base_url} {base_w}w`. Shared by BOTH
+/// emission paths so the rung-URL derivation and descriptor shape cannot drift
+/// between them (and must agree with what registration/encode name). The ONLY
+/// difference is `base_url`: a webp SOURCE passes `src` itself (the served base
+/// IS the source — `to_webp(src) == src`); a png/jpg/jpeg source passes
+/// `to_webp(src)` (the converted `<picture>` base). Rung URLs derive from `src`
+/// in both cases. Caller HTML-escapes the returned value.
+fn build_srcset(src: &str, base_url: &str, rungs: &[u32], base_w: u32) -> String {
+    let mut parts: Vec<String> = rungs
+        .iter()
+        .map(|w| format!("{} {}w", to_webp_rung(src, *w), w))
+        .collect();
+    parts.push(format!("{} {}w", base_url, base_w));
+    parts.join(", ")
 }
 
 fn lookup_lqip<'a>(assets: &'a AssetSnapshot, src: &str) -> Option<&'a str> {
@@ -2490,6 +2486,31 @@ mod tests {
         assert!(
             html.contains(r#"style="background-image:url(data:image/jpeg;base64,abc);background-size:cover""#),
             "LQIP must survive on the laddered webp <img>: {html}"
+        );
+    }
+
+    #[test]
+    fn webp_source_in_email_body_never_leaks_srcset() {
+        // EmailBody short-circuits BEFORE synthesize_inner, so even a >800px
+        // webp (which WOULD ladder in a page context) emits the flat, email-
+        // client-safe <img> — no srcset, no <picture>. Email clients support
+        // neither; the webp ladder must never leak into an email body.
+        let assets = snapshot_dims("photo.webp", 2000, 1200);
+        let html = synthesize_image_html(
+            "photo.webp",
+            "alt",
+            &assets,
+            ImageContext::EmailBody {
+                width: Some(2000),
+                height: Some(1200),
+            },
+            &ImageRenderOptions::default(),
+        );
+        assert!(!html.contains("srcset"), "email webp must never carry srcset: {html}");
+        assert!(!html.contains("<picture"), "email webp must never wrap in <picture>: {html}");
+        assert!(
+            html.contains(r#"style="display:block;max-width:100%;height:auto;""#),
+            "email <img> shape preserved: {html}"
         );
     }
 }
