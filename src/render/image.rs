@@ -759,10 +759,25 @@ fn resolve_ladder(
 fn build_srcset(src: &str, base_url: &str, rungs: &[u32], base_w: u32) -> String {
     let mut parts: Vec<String> = rungs
         .iter()
-        .map(|w| format!("{} {}w", to_webp_rung(src, *w), w))
+        .map(|w| format!("{} {}w", encode_srcset_url(&to_webp_rung(src, *w)), w))
         .collect();
-    parts.push(format!("{} {}w", base_url, base_w));
+    parts.push(format!("{} {}w", encode_srcset_url(base_url), base_w));
     parts.join(", ")
+}
+
+/// Percent-encode literal commas (`,` → `%2C`) in one `srcset` candidate URL.
+///
+/// `srcset` is a comma-delimited candidate list, so a literal comma inside a
+/// URL — which a comma-named source (`a,b.jpg`) produces, since
+/// `percent_encode_path_segments` keeps `,` literal by design — would mis-split
+/// the list in browsers AND in `html_post`'s `rewrite_srcset_candidates`.
+/// Comma is the ONLY char touched (`src` was already encoded upstream and never
+/// carries a `%2C`, so no double-encode); applied ONLY to `srcset` candidates —
+/// the base `<img src>` keeps its single, unambiguous literal comma. The
+/// deployed file has a literal comma on disk; a static server decodes `%2C` → `,`
+/// when resolving (verified for the preview server in `router.rs`'s `%2C` test).
+fn encode_srcset_url(url: &str) -> String {
+    url.replace(',', "%2C")
 }
 
 fn lookup_lqip<'a>(assets: &'a AssetSnapshot, src: &str) -> Option<&'a str> {
@@ -2060,6 +2075,76 @@ mod tests {
                 r#"srcset="a%20b/photo.w800.webp 800w, a%20b/photo.w1600.webp 1600w, a%20b/photo.webp 2000w""#
             ),
             "got: {html}"
+        );
+    }
+
+    // --- comma-in-filename srcset encoding (follow-up #4) -----------------
+    //
+    // srcset is a comma-separated candidate list. A source file whose NAME
+    // contains a comma (`a,b.jpg`) yields candidate URLs with literal commas
+    // (`percent_encode_path_segments` keeps `,` literal — see fuzzy_path.rs).
+    // In a LADDER srcset those literal commas mis-split the list (both in
+    // browsers and in the html_post `rewrite_srcset_candidates` splitter), so
+    // the synthesizer `%2C`-encodes commas in EACH candidate URL. The `<img
+    // src>` base attribute keeps its literal comma (a single unambiguous URL).
+    // A static file server decodes `%2C` → `,` when resolving, so the deployed
+    // file `a,b.w800.webp` (literal comma on disk) is found — verified against
+    // the preview server (tower-http ServeDir + urlencoding::decode) in
+    // preview/server/router.rs's `%2C` decode test.
+
+    #[test]
+    fn comma_named_raster_encodes_srcset_commas_but_not_base_src() {
+        // jpg `<picture>` path: every `<source srcset>` candidate URL has its
+        // comma encoded; the inner `<img src>` keeps the literal comma.
+        let assets = snapshot_dims("a,b.jpg", 2000, 1200);
+        let html = synthesize_image_html(
+            "a,b.jpg",
+            "cat",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert_eq!(
+            html,
+            r#"<picture><source srcset="a%2Cb.w800.webp 800w, a%2Cb.w1600.webp 1600w, a%2Cb.webp 2000w" type="image/webp" sizes="(min-width: 48rem) 47.25rem, 100vw"><img src="a,b.jpg" width="2000" height="1200" loading="lazy" alt="cat" /></picture>"#
+        );
+    }
+
+    #[test]
+    fn comma_named_webp_source_encodes_img_srcset_commas_but_not_base_src() {
+        // webp `<img srcset>` path: candidate URLs comma-encoded; the base
+        // `<img src>` keeps the literal comma.
+        let assets = snapshot_dims("a,b.webp", 2000, 1200);
+        let html = synthesize_image_html(
+            "a,b.webp",
+            "cat",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert_eq!(
+            html,
+            r#"<img src="a,b.webp" srcset="a%2Cb.w800.webp 800w, a%2Cb.w1600.webp 1600w, a%2Cb.webp 2000w" sizes="(min-width: 48rem) 47.25rem, 100vw" width="2000" height="1200" loading="lazy" alt="cat" />"#
+        );
+    }
+
+    #[test]
+    fn no_comma_filename_srcset_is_not_over_encoded() {
+        // Over-encoding guard: a comma-free filename must emit a byte-identical
+        // srcset with NO `%2C` anywhere — the comma encoding only ever touches
+        // real commas.
+        let assets = snapshot_dims("photo.jpg", 2000, 1200);
+        let html = synthesize_image_html(
+            "photo.jpg",
+            "cat",
+            &assets,
+            ImageContext::MarkdownInline,
+            &ImageRenderOptions::default(),
+        );
+        assert!(!html.contains("%2C"), "no comma to encode; got: {html}");
+        assert_eq!(
+            html,
+            r#"<picture><source srcset="photo.w800.webp 800w, photo.w1600.webp 1600w, photo.webp 2000w" type="image/webp" sizes="(min-width: 48rem) 47.25rem, 100vw"><img src="photo.jpg" width="2000" height="1200" loading="lazy" alt="cat" /></picture>"#
         );
     }
 
