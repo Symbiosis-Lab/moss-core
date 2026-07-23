@@ -53,6 +53,17 @@ pub struct AssetSnapshot {
     /// Dominant color hex (e.g. "#a0a0a0") for color-block fallback when
     /// LQIP isn't viable.
     pub dominant_color: HashMap<PathBuf, String>,
+
+    /// Whether the source is an animated image (multi-frame GIF or WebP with an
+    /// ANIM chunk). Keyed EXACTLY like `dimensions` — the source path as it
+    /// appears in markdown (with its own extension), NOT the stem-keyed
+    /// `variants` map. A missing key reads as `false` via [`is_animated`], so
+    /// only src-tauri's scanned media populate it. The synthesizer consults it
+    /// to suppress the responsive ladder for animated sources (which must never
+    /// be resized/re-encoded).
+    ///
+    /// [`is_animated`]: AssetSnapshot::is_animated
+    pub animated: HashMap<PathBuf, bool>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +83,18 @@ impl AssetSnapshot {
 
     pub fn lqip(&self, path: &PathBuf) -> Option<&str> {
         self.lqip.get(path).map(String::as_str)
+    }
+
+    /// True if the source asset is an animated image (multi-frame GIF or an
+    /// ANIM-chunk WebP). Missing key → `false`.
+    ///
+    /// `path` is the source path as it appears in markdown (with its own
+    /// extension) — keyed identically to [`dims`], so a caller can probe both
+    /// with the same key/normalization side by side.
+    ///
+    /// [`dims`]: AssetSnapshot::dims
+    pub fn is_animated(&self, path: &PathBuf) -> bool {
+        self.animated.get(path).copied().unwrap_or(false)
     }
 
     /// True if the source asset has a registered WebP variant.
@@ -142,6 +165,22 @@ mod tests {
         );
         assert!(s.has_webp_for_source(&"photo.jpg".into()));
         assert!(!s.has_avif_for_source(&"photo.jpg".into()));
+    }
+
+    #[test]
+    fn snapshot_is_animated_lookup() {
+        let mut s = AssetSnapshot::new();
+        // Animated is keyed like `dimensions`: the source path as it appears
+        // in markdown (with its own extension), NOT the stem-keyed variant key.
+        s.animated.insert("assets/loop.gif".into(), true);
+        s.animated.insert("assets/still.jpg".into(), false);
+
+        // Present-true.
+        assert!(s.is_animated(&"assets/loop.gif".into()));
+        // Present-false.
+        assert!(!s.is_animated(&"assets/still.jpg".into()));
+        // Missing key → false.
+        assert!(!s.is_animated(&"assets/unknown.png".into()));
     }
 
     #[test]
