@@ -674,10 +674,12 @@ fn synthesize_inner(
 /// additional content-based filters (e.g. `SkipReason::NotAnImage` for files
 /// whose magic bytes don't match the declared format). A file that passes
 /// `is_raster_original` here but is filtered by `NotAnImage` will NOT have
-/// `set_pending` called for it — the synthesizer will emit a `<picture>` but
-/// the registry will serve the LQIP placeholder until the build completes
-/// without a webp. In practice this only occurs for genuinely corrupt files
-/// (e.g. an HTML 404 page saved as .png) that are not referenced from content.
+/// `set_pending` called for it — the synthesizer still emits a `<picture>`, but
+/// its `<source>` webp URL is unregistered, so the preview server falls through
+/// to ServeDir and the variant 404s. It does NOT serve the LQIP placeholder —
+/// that path is reserved for `set_pending` (Pending) entries. Benign in
+/// practice: this only occurs for genuinely corrupt files (e.g. an HTML 404
+/// page saved as .png) that are not referenced from content.
 fn is_raster_original(src: &str) -> bool {
     src.rsplit_once('.')
         .is_some_and(|(_, ext)| is_ladder_source_ext(ext))
