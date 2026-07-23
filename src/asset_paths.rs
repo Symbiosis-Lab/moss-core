@@ -130,13 +130,33 @@ pub fn to_webp(source: &str) -> String {
     format!("{source}.webp")
 }
 
-/// The raster source extensions that participate in the responsive ladder.
-/// Single source of truth for the ladder-membership gate replicated across the
-/// emission/registration/encode census sites — see [`ladder_rungs`]' census
-/// doc. Phase B (Task 12) lifted webp's participation by editing ONLY this
-/// predicate: the five pipeline sites (registration, `rungs_gated`,
-/// `registered_rungs`, fingerprint-skip heal, `encode_rungs`) all derive rung
-/// membership from here, so adding webp here made them include webp in lockstep.
+/// The raster source extensions that participate in the responsive ladder
+/// (png/jpg/jpeg/webp). Single source of truth for the ladder-membership
+/// **GATE** — the "does this extension take part at all?" question, distinct
+/// from the "which rung WIDTHS exist?" question [`ladder_rungs`] answers (whose
+/// own doc enumerates the ladder-DERIVATION sites). Phase B (Task 12) lifted
+/// webp's participation by editing ONLY this predicate, so every gate site
+/// picked up webp in lockstep.
+///
+/// GATE SITES — the six `is_ladder_source_ext(` production callers
+/// (grep-verified 2026-07-23), each deciding png/jpg/jpeg/webp participation:
+/// 1. **emission** — `is_raster_original` (`render/image.rs`);
+/// 2. **registration** — the rung loop in `generate_blocking_content`
+///    (`build/render/blocking.rs`);
+/// 3. **encode dispatch** — `rungs_gated` in `convert_single_image`
+///    (`build/media/image.rs`);
+/// 4. **success/failure rung sweep** — `registered_rungs` in
+///    `run_image_conversion` (`build/media/image.rs`);
+/// 5. **fingerprint-skip heal** — `dispatch_image_conversions`
+///    (`build/media/image.rs`);
+/// 6. **`should_skip`'s AlreadySmall carve-out** — `raster_with_picture`
+///    (`build/media/image.rs`).
+///
+/// These six are the "six census sites" named in the design doc and
+/// MIGRATION-STATE. NOTE: `encode_rungs` is NOT a gate site — it is a
+/// [`ladder_rungs`] DERIVATION consumer (it computes the rung SET, it does not
+/// gate on extension). A maintainer adding a new participating format updates
+/// THIS list; one adding a rung-set derivation updates [`ladder_rungs`]' census.
 ///
 /// NOTE ON `<picture>` vs `<img srcset>`: ladder membership is NOT the same as
 /// "emits a `<picture><source>` webp CONVERSION". png/jpg/jpeg are re-encoded to
@@ -198,6 +218,10 @@ pub const DEPLOY_MAX_EDGE: u32 = 2400;
 
 /// The responsive ladder: rung widths generated below the deployed base.
 /// Must be strictly ascending — the `take_while` in [`ladder_rungs`] depends on it.
+/// This is the canonical ladder definition and part of the public `asset_paths`
+/// vocabulary (named in the moss-core CHANGELOG); consumers should prefer
+/// [`ladder_rungs`] / [`deployed_width`] over indexing `LADDER` directly, so
+/// ladder policy stays in one place.
 /// See docs/plans/2026-07-22-responsive-image-variants-design.md.
 pub const LADDER: [u32; 2] = [800, 1600];
 
@@ -223,21 +247,37 @@ pub fn deployed_width(natural_w: u32, natural_h: u32) -> u32 {
 
 /// Which ladder rungs exist for a source of `natural_w`×`natural_h` px.
 ///
-/// DETERMINISTIC-AGREEMENT CONTRACT — the consuming-site census (keep this
-/// list current; every site derives ladder membership from the same
-/// scan-derived inputs):
+/// DETERMINISTIC-AGREEMENT CONTRACT — the ladder-DERIVATION census: the
+/// `ladder_rungs(` production callers (grep-verified 2026-07-23). Keep this
+/// list current; every set-agreement site derives ladder membership from the
+/// same scan-derived inputs. These answer "which rung WIDTHS exist?"; the
+/// separate participation GATE ("does this extension take part at all?") is the
+/// six-site [`is_ladder_source_ext`] census — a site usually gates there first,
+/// then derives here, so most appear on both lists. The five set-agreement
+/// sites (all five must produce the identical rung SET):
 ///
-/// 1. **emission** — the synthesizer (`render/image.rs::synthesize_inner`)
-///    decides which rung srcset candidates appear in HTML;
+/// 1. **emission** — the synthesizer's `resolve_ladder`
+///    (`render/image.rs::synthesize_inner`) decides which rung srcset
+///    candidates appear in HTML;
 /// 2. **registration** — blocking.rs's rung loop promises each rung URL via
 ///    `set_source_passthrough` + `set_pending`;
-/// 3. **encode** — `encode_rungs` (build/media/image.rs) derives the same
-///    ladder from oriented dims on the full-encode and warm-cache paths;
+/// 3. **encode** — `encode_rungs` (build/media/rungs.rs, extracted from image.rs
+///    at Task 10.5) derives the same ladder from oriented dims on the
+///    full-encode and warm-cache paths; `convert_single_image`'s `ladder_len`
+///    (build/media/image.rs) reads the same call to keep the oriented original
+///    alive for the rung re-encode;
 /// 4. **dispatch/sweep/Err-arm retraction** — the worker success/failure
 ///    arms' `registered_rungs` reconstruction (build/media/image.rs)
 ///    resolves or retracts every promise registration made;
 /// 5. **fingerprint-skip heal** — the unchanged-fingerprint pass
-///    (build/media/image.rs) rematerializes each rung it recomputes here.
+///    (`dispatch_image_conversions`, build/media/image.rs) rematerializes each
+///    rung it recomputes here.
+///
+/// One further `ladder_rungs(` caller is NOT a set-agreement member:
+/// `should_skip`'s AlreadySmall carve-out (build/media/image.rs) consults only
+/// `ladder_rungs(..).is_empty()` — a "carries any rung?" boolean that keeps a
+/// small rung-bearing webp from skipping re-encode — so it never emits,
+/// registers, encodes, or sweeps a rung SET and cannot disagree on membership.
 ///
 /// A rung is emitted in HTML iff it is registered iff it is encoded. Never
 /// add an input here that one of these sites cannot supply (e.g. encode
