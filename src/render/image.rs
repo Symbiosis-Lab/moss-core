@@ -585,7 +585,7 @@ fn synthesize_inner(
     // bare webp emission. Small / unknown-dims webp is likewise byte-identical.
     // This is the ONLY census site that passes a non-`false` animated flag; the
     // pipeline sites keep `false` (canonical rationale + the EXIF-orientation
-    // caveat live on `asset_paths::ladder_rungs`). base_url == src: the served
+    // agreement live on `asset_paths::ladder_rungs`). base_url == src: the served
     // base webp IS the source (`to_webp(src) == src`).
     if is_webp_source(src) {
         return match resolve_ladder(assets, src, lookup_animated(assets, src)) {
@@ -634,7 +634,7 @@ fn synthesize_inner(
         // `false`: png/jpg/jpeg are never animated through this path (animated
         // gif/webp never reach `is_raster_original`; APNG is flattened by the
         // base+rung encodes alike). Canonical agreement rationale + the
-        // EXIF-orientation caveat: `asset_paths::ladder_rungs` census doc.
+        // EXIF-orientation agreement: `asset_paths::ladder_rungs` census doc.
         // `resolve_ladder` is `Some` only when rungs exist; unknown dims →
         // `None` → the legacy single-URL `<source>` shape.
         match resolve_ladder(assets, src, false) {
@@ -732,7 +732,7 @@ fn lookup_animated(assets: &AssetSnapshot, src: &str) -> bool {
 /// CANNOT drift between them — and it must agree with registration/encode,
 /// which call the identical `ladder_rungs`/`deployed_width` (see the
 /// deterministic-agreement contract on [`crate::asset_paths::ladder_rungs`],
-/// including its EXIF-orientation caveat).
+/// including its EXIF-orientation agreement).
 fn resolve_ladder(
     assets: &AssetSnapshot,
     src: &str,
