@@ -92,7 +92,7 @@
 //! `add_image_placeholder_attributes` provides additive attrs only for
 //! these bare-img paths.
 
-use crate::asset_paths::{deployed_width, ladder_rungs, to_webp, to_webp_rung};
+use crate::asset_paths::{deployed_width, is_ladder_source_ext, ladder_rungs, to_webp, to_webp_rung};
 use crate::asset_snapshot::{AssetSnapshot, FALLBACK_HEIGHT, FALLBACK_WIDTH};
 use crate::contract::sizes as ctx_sizes;
 // Same XML-safe escaping used everywhere else in moss for attribute values.
@@ -660,11 +660,11 @@ fn synthesize_inner(
 }
 
 /// Returns true when `src` is a raster original that always gets a webp
-/// variant from moss's image pipeline. Restricted to the three extensions
-/// (png, jpg, jpeg) that the synthesizer emits `<picture><source srcset>` for.
-/// Gif is excluded because animated GIFs skip webp encoding (image.rs §
-/// should_skip, `is_animated_gif`); SVG is excluded as a vector format; webp
-/// originals are excluded because the variant URL would equal the src URL.
+/// variant from moss's image pipeline. EMISSION side of the shared Phase-A
+/// gate: extracts `src`'s extension and delegates membership to
+/// [`is_ladder_source_ext`] — the ONE predicate the pipeline census sites
+/// (registration/encode/sweep/heal/skip) also consume, so Task 12's webp lift
+/// is a single edit there. Today png/jpg/jpeg only (predicate's doc says why).
 ///
 /// Note: this check is extension-only. `collect_images_for_conversion` applies
 /// additional content-based filters (e.g. `SkipReason::NotAnImage` for files
@@ -675,8 +675,8 @@ fn synthesize_inner(
 /// without a webp. In practice this only occurs for genuinely corrupt files
 /// (e.g. an HTML 404 page saved as .png) that are not referenced from content.
 fn is_raster_original(src: &str) -> bool {
-    let lower = src.to_ascii_lowercase();
-    lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")
+    src.rsplit_once('.')
+        .is_some_and(|(_, ext)| is_ladder_source_ext(ext))
 }
 
 /// Try several path normalizations against `AssetSnapshot.dimensions` so the

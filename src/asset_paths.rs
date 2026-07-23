@@ -130,6 +130,30 @@ pub fn to_webp(source: &str) -> String {
     format!("{source}.webp")
 }
 
+/// The raster source extensions that participate in the responsive ladder
+/// AND get a `<picture><source>` webp variant. Single source of truth for the
+/// Phase-A gate replicated across the emission/registration/encode census
+/// sites — see [`ladder_rungs`]' census doc. Phase B (Task 12) flips webp's
+/// participation by editing ONLY this predicate.
+///
+/// Case-insensitive; `ext` is the extension WITHOUT the leading dot
+/// ("png", "JPG", "jpeg"). Emission derives the gate from a full path via
+/// `render/image.rs::is_raster_original`; the pipeline sites pass the
+/// scan-derived `item.ext` / a `source_file.extension()` string. Keeping all
+/// six on this one predicate makes Task 12's webp lift a one-line change here
+/// instead of six hand-synced `matches!` arms.
+///
+/// # Examples
+/// ```
+/// # use moss_core::asset_paths::is_ladder_source_ext;
+/// assert!(is_ladder_source_ext("png"));
+/// assert!(is_ladder_source_ext("JPG"));
+/// assert!(!is_ladder_source_ext("webp")); // joins in Phase B (Task 12)
+/// ```
+pub fn is_ladder_source_ext(ext: &str) -> bool {
+    matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg")
+}
+
 /// Max edge (px) of any deployed raster. Single source of truth — the encode
 /// pipeline's `ImageCompressionConfig::default()` reads this constant, and the
 /// srcset base-width descriptor caps at it. 2400 covers retina displays.
@@ -452,6 +476,23 @@ mod tests {
     fn test_to_webp_unknown_extension_fallback() {
         // Unknown extensions fall back to appending .webp (matches to_thumb's defensive style).
         assert_eq!(to_webp("file.gif"), "file.gif.webp");
+    }
+
+    // ── is_ladder_source_ext tests ─────────────────────────────────
+
+    #[test]
+    fn is_ladder_source_ext_accepts_png_jpg_jpeg_case_insensitively() {
+        for ext in ["png", "PNG", "jpg", "JPG", "jpeg", "JPEG", "Jpg", "jPeG"] {
+            assert!(is_ladder_source_ext(ext), "{ext} must be a ladder source");
+        }
+    }
+
+    #[test]
+    fn is_ladder_source_ext_rejects_non_phase_a_formats() {
+        // webp flips to true in Phase B (Task 12); the rest never join.
+        for ext in ["webp", "WEBP", "gif", "svg", "avif", "heic", "bmp", "tiff", ""] {
+            assert!(!is_ladder_source_ext(ext), "{ext} must NOT be a ladder source");
+        }
     }
 
     // ── ladder tests ───────────────────────────────────────────────
