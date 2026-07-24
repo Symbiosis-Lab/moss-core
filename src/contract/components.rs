@@ -10,8 +10,8 @@
 //! 2. Add a `ComponentEntry` to [`COMPONENTS`] here.
 //! 3. Run `cargo test --test components_sync_test` from src-tauri/ — the
 //!    scanner test will fail if you forget.
-//! 4. Run `cargo run --bin generate-contract-docs --features dev-tools` to
-//!    refresh `docs/contract/reference.md`.
+//! 4. Run `cargo run --bin generate-artifacts --features dev-tools -- contract-docs` to
+//!    refresh `docs/reference/contract.md`.
 //!
 //! ## Why a const table, not a derive macro?
 //!
@@ -2105,7 +2105,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
 
 /// Implementation classes that are emitted by moss for internal functionality
 /// but must not appear in the public theme-facing contract (`moss describe` /
-/// `docs/contract/reference.md`). These classes ARE present in `COMPONENTS` for
+/// `docs/reference/contract.md`). These classes ARE present in `COMPONENTS` for
 /// the sync-test to validate their HTML class literals, but `is_public()` hides
 /// them from agents, themes, and `reference.md` generation.
 const INTERNAL_CLASSES: &[&str] = &[
@@ -2123,7 +2123,7 @@ impl ComponentEntry {
     ///
     /// Internal classes (e.g. all `moss-apply*`) stay in COMPONENTS so the
     /// sync-test can validate them, but they must not surface in `moss describe`
-    /// or `docs/contract/reference.md` — they are subject to change at any time.
+    /// or `docs/reference/contract.md` — they are subject to change at any time.
     pub fn is_public(&self) -> bool {
         self.status != Status::Retired && !INTERNAL_CLASSES.contains(&self.class)
     }

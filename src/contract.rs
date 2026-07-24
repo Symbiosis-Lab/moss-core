@@ -4,7 +4,7 @@
 //! - [`tokens`]: W3C Design Tokens (CSS variables, defaults, groups, descriptions)
 //! - [`components`]: emitter contract — class names, data attributes, examples
 //!
-//! Consumed by the codegen binary at `src-tauri/dev-bin/generate-contract-docs.rs`,
+//! Consumed by the codegen binary at `src-tauri/dev-bin/generate-artifacts.rs`,
 //! by `moss describe` (Phase 2), and by snapshot tests.
 
 pub mod tokens;

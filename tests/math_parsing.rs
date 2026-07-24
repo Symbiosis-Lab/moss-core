@@ -353,7 +353,7 @@ mod plain_text_collectors_keep_math {
 // ---------------------------------------------------------------------------
 
 /// The `.moss-math` component contract is what theme authors read, via
-/// `moss describe` and `docs/contract/reference.md`. Nothing compared its
+/// `moss describe` and `docs/reference/contract.md`. Nothing compared its
 /// declared `example_html` to a real render, so when the P1 fallback
 /// changed to keep the `$` delimiters, the contract kept advertising the
 /// old bare-TeX output and no test noticed. `components_sync_test` cannot
