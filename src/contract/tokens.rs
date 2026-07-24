@@ -287,43 +287,6 @@ pub fn format_dark_media_block(tokens: &Tokens) -> String {
     out
 }
 
-/// Emit deprecated-alias `:root` block.
-///
-/// Maps every v1.2 token name to its v1.3 renamed replacement so that
-/// author `.moss/theme/style.css` files that reference old names keep
-/// working for one release. Each alias is documented with a `/* deprecated */`
-/// comment. Remove this block after the next breaking-contract release.
-pub fn format_deprecated_aliases_block() -> String {
-    // (old-name, new-name) pairs — one alias per renamed token.
-    let aliases: &[(&str, &str)] = &[
-        // Font-size scale: --moss-font-* → --moss-size-*
-        ("--moss-font-2xs",     "var(--moss-size-2xs)"),
-        ("--moss-font-xs",      "var(--moss-size-xs)"),
-        ("--moss-font-sm",      "var(--moss-size-sm)"),
-        ("--moss-font-lg",      "var(--moss-size-lg)"),
-        ("--moss-font-xl",      "var(--moss-size-xl)"),
-        ("--moss-font-2xl",     "var(--moss-size-2xl)"),
-        ("--moss-font-3xl",     "var(--moss-size-3xl)"),
-        // Font weight: --moss-font-weight → --moss-font-weight-body
-        ("--moss-font-weight",  "var(--moss-font-weight-body)"),
-        // Accent hover: --moss-accent-hover → --moss-color-accent-hover
-        ("--moss-accent-hover", "var(--moss-color-accent-hover)"),
-        // Text secondary: --moss-text-secondary → --moss-color-text-secondary (distinct role, renamed not consolidated)
-        ("--moss-text-secondary", "var(--moss-color-text-secondary)"),
-    ];
-
-    let mut out = String::new();
-    out.push_str("/* Deprecated token aliases — v1.2 names forwarded to v1.3 renames.\n");
-    out.push_str("   Author .moss/theme/style.css files referencing these names continue to\n");
-    out.push_str("   resolve correctly for one release. Remove after next contract bump. */\n");
-    out.push_str(":root {\n");
-    for (old, new) in aliases {
-        out.push_str(&format!("  {}: {}; /* deprecated: use {} */\n", old, new, new.trim_start_matches("var(").trim_end_matches(')')));
-    }
-    out.push_str("}\n");
-    out
-}
-
 /// Look up the light value (and optionally the dark value) of a named token.
 ///
 /// Returns `(light_value, dark_value)`. `dark_value` is `None` for single-value
