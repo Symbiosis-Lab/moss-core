@@ -17,7 +17,7 @@
 //!   - A `:::hero` block at the top of the body owns the title slot —
 //!     no auto-injection regardless of title.
 //!
-//! See `docs/architecture/title-rendering.md`.
+//! See `docs/reference/title-rendering.md`.
 
 use crate::home;
 

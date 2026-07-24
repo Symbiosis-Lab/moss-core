@@ -149,7 +149,7 @@ pub fn resolve_content_with_handlers(
 /// snapshot (from `MediaDimensionLookup` + `AssetRegistry`) and prove the
 /// threading path before consumers depend on it.
 ///
-/// See `docs/plans/2026-05-25-phase0-asset-snapshot-and-translator.md`
+/// See `docs/archive/2026-05-25-phase0-asset-snapshot-and-translator.md`
 /// § Phase F for the thread-first / consume-later rationale.
 pub fn resolve_content_with_handlers_and_snapshot(
     source_path: &str,

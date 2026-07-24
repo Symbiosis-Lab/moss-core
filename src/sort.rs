@@ -4,7 +4,7 @@
 //!   - the build pipeline (scan pass, card renderer, series-nav)
 //!   - the editor form (to show "inferred: date" next to undeclared sort:)
 //!
-//! See docs/plans/2026-05-17-listing-sort-and-embeds-design.md.
+//! See docs/archive/2026-05-17-listing-sort-and-embeds-design.md.
 
 use serde::{Deserialize, Serialize};
 

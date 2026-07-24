@@ -8,7 +8,7 @@
 //! below is a guard against that, not a test of typesetting (there is no
 //! engine in P1 — math renders as escaped source in `<code class="moss-math">`).
 //!
-//! See docs/plans/2026-07-21-latex-math-design.md §4 (P1) and ADR-030.
+//! See docs/archive/2026-07-21-latex-math-design.md §4 (P1) and ADR-030.
 
 use moss_core::ast::{parse_with_config, render_document, DefaultHooks, ParseConfig};
 

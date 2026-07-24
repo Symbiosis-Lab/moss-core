@@ -22,7 +22,7 @@
 //!     final HTML
 //! ```
 //!
-//! Design principles (from `docs/architecture/typed-body-ast.md`):
+//! Design principles (from `docs/reference/typed-body-ast.md`):
 //!
 //! - The AST is data, not a hierarchy of objects. Pattern matching is the
 //!   visitor framework.

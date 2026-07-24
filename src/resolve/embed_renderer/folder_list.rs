@@ -3,7 +3,7 @@
 //! Pure-Rust path parsing + marker emission. The actual children
 //! lookup + sort + HTML render happens in src-tauri (which has I/O).
 //!
-//! See docs/plans/2026-05-17-listing-sort-and-embeds-design.md.
+//! See docs/archive/2026-05-17-listing-sort-and-embeds-design.md.
 
 use crate::resolve::embed_renderer::Sizing;
 use crate::sort::SortAxis;

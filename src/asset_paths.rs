@@ -222,7 +222,7 @@ pub const DEPLOY_MAX_EDGE: u32 = 2400;
 /// vocabulary (named in the moss-core CHANGELOG); consumers should prefer
 /// [`ladder_rungs`] / [`deployed_width`] over indexing `LADDER` directly, so
 /// ladder policy stays in one place.
-/// See docs/plans/2026-07-22-responsive-image-variants-design.md.
+/// See docs/archive/2026-07-22-responsive-image-variants-design.md.
 pub const LADDER: [u32; 2] = [800, 1600];
 
 /// Width the deployed base variant actually has after the encoder's

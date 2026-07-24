@@ -1228,7 +1228,7 @@ fn extract_with_state(
                     // preview scroll sync (the home page grid scrolled the preview
                     // to the bottom). Trailing blank lines after the sentinel HTML
                     // comment produce no pulldown-cmark events, so the AST is
-                    // unchanged. See docs/architecture/editor-preview-sync.md.
+                    // unchanged. See docs/reference/editor-preview-sync.md.
                     for _ in 0..(j - i) {
                         output.push('\n');
                     }

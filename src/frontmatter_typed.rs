@@ -662,7 +662,7 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                 "url" => frontmatter.url = Some(value.to_string()),
                 "cover" => frontmatter.cover = Some(value.to_string()),
                 // D1: children is boolean — "true" → Some(true), "false" → Some(false)
-                // D5: `list` alias removed (breaking change) — see docs/plans/2026-03-05-sidebar-redesign.md
+                // D5: `list` alias removed (breaking change) — see docs/archive/2026-03-05-sidebar-redesign.md
                 "children" => {
                     match value {
                         "true" | "" => frontmatter.children = Some(true),

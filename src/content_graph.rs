@@ -231,7 +231,7 @@ impl ContentGraph {
     /// `[t](x)`, image refs `![](x)`, embeds `![[x]]`, frontmatter refs —
     /// MUST resolve through this function. See the resolve pipeline in
     /// [`crate::resolve::resolve_content`] and the prose overview in
-    /// `moss/docs/link-resolution.md` for the per-syntax call sites.
+    /// `moss/docs/reference/link-resolution.md` for the per-syntax call sites.
     ///
     /// Downstream code (the compiler's URL-prettifier, for instance)
     /// receives already-resolved hrefs and MUST NOT reimplement any

@@ -297,7 +297,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Type-aware metadata slot (date for articles, count for folders, domain for links). Renders ABOVE the title in horizontal mode — filling the kicker position when the explicit `kicker` slot is unset, per `docs/design-system/preview-cards.md:22-30`. To the right of the title in vertical CJK mode (the horizontal kicker position transposed). Meta IS the visual kicker, with the same uppercase overline treatment.",
+        description: "Type-aware metadata slot (date for articles, count for folders, domain for links). Renders ABOVE the title in horizontal mode — filling the kicker position when the explicit `kicker` slot is unset, per `docs/reference/design/preview-cards.md:22-30`. To the right of the title in vertical CJK mode (the horizontal kicker position transposed). Meta IS the visual kicker, with the same uppercase overline treatment.",
     },
     ComponentEntry {
         class: "moss-card-kicker",
@@ -385,7 +385,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Trailing \"More →\" link on a truncated children listing (emitted when `children_limit` caps the embed); links to the folder's full index. Rendered as a sibling immediately after `.moss-cards-container`, so it sits outside the listing's flex `gap` and binds to the list via its own `margin-top` (see docs/architecture/ui-design/spacing.md).",
+        description: "Trailing \"More →\" link on a truncated children listing (emitted when `children_limit` caps the embed); links to the folder's full index. Rendered as a sibling immediately after `.moss-cards-container`, so it sits outside the listing's flex `gap` and binds to the list via its own `margin-top` (see docs/reference/design/spacing.md).",
     },
     ComponentEntry {
         class: "moss-card-grid",

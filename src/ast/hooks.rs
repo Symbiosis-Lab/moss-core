@@ -25,8 +25,8 @@
 //! universally regarded as Gatsby's mistake — lossy AST forces consumers
 //! into a plugin ecosystem they wouldn't need if the AST were faithful.
 //!
-//! See [docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md](../../../../docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md)
-//! for the full research synthesis and [typed-body-ast.md](../../../../docs/architecture/typed-body-ast.md)
+//! See [docs/archive/2026-05-27-typed-ast-cross-ssg-research.md](../../../../docs/archive/2026-05-27-typed-ast-cross-ssg-research.md)
+//! for the full research synthesis and [typed-body-ast.md](../../../../docs/reference/typed-body-ast.md)
 //! for the design intent + 7 principles.
 
 use super::node::Block;
@@ -75,7 +75,7 @@ pub trait RenderHooks {
     /// Every comparable AST-bearing SSG passes title to its render hook
     /// (Hugo's `linkContext.Title`, Markdoc, mdast's `Resource.title`,
     /// comrak, Pandoc) — see
-    /// [docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md](../../../../docs/architecture/typed-ast-cross-ssg-research-2026-05-27.md).
+    /// [docs/archive/2026-05-27-typed-ast-cross-ssg-research.md](../../../../docs/archive/2026-05-27-typed-ast-cross-ssg-research.md).
     fn render_link(
         &self,
         out: &mut String,

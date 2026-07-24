@@ -173,7 +173,7 @@ impl AlignSide {
 /// `color` is also moss-vocabulary — parsed into [`MediaAttrs::color`] for
 /// the build's cover-color ladder, never emitted as class or inline style.
 ///
-/// See `docs/architecture/unified-image-emission.md` Decision #10.
+/// See `docs/reference/unified-image-emission.md` Decision #10.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MediaAttrs {
     pub fit: Option<Fit>,

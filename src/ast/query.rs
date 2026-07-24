@@ -11,7 +11,7 @@
 //! retires those by walking the typed AST instead. Each `find_*` helper
 //! is the typed equivalent of one historical regex.
 //!
-//! See `docs/architecture/typed-body-ast.md` (principle: AST is data).
+//! See `docs/reference/typed-body-ast.md` (principle: AST is data).
 
 use super::document::Document;
 use super::node::{Block, Inline};

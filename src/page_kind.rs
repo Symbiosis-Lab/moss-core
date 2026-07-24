@@ -23,7 +23,7 @@
 //! A third `Asset` variant (synthetic per-image pages) existed until the
 //! image-as-page feature was removed in 2026-07; nothing produced it, so it
 //! was dropped rather than left as an unreachable state. See
-//! `moss/docs/page-kinds.md`.
+//! `moss/docs/reference/page-kinds.md`.
 
 use serde::{Deserialize, Serialize};
 

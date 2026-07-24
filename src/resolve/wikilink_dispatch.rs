@@ -1616,7 +1616,7 @@ mod tests {
 
     // --- Image display-attr dispatch (fit / position threading) ----------
     //
-    // The polish-pass plan (docs/plans/2026-05-27-polish-passes-followups.md
+    // The polish-pass plan (docs/archive/2026-05-27-polish-passes-followups.md
     // Item B) flagged that `![[hero.jpg|cover]]` and
     // `![[hero.jpg|fit=cover position=left]]` were silently dropping
     // fit/position. `ImageRenderer::render_to_markdown` builds `TitleParams`

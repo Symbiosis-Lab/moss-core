@@ -75,7 +75,7 @@ pub struct ParseConfig {
     /// frontmatter line count, so editor→preview scroll-sync maps to the wrong
     /// element (the home page's grid scrolled the preview to the bottom). Set
     /// to the number of lines the frontmatter consumes (0 when there is none).
-    /// See `process_markdown_file` and docs/architecture/editor-preview-sync.md
+    /// See `process_markdown_file` and docs/reference/editor-preview-sync.md
     /// "Known defect — source-line coordinate-system mismatch".
     pub source_line_offset: usize,
 

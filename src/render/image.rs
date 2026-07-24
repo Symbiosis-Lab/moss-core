@@ -1,7 +1,7 @@
 //! Image HTML synthesizer — the single entry point for emitting `<img>` /
 //! `<picture>` markup in moss output.
 //!
-//! See [`docs/architecture/structural-html-emission.md`](../../../../docs/architecture/structural-html-emission.md)
+//! See [`docs/reference/structural-html-emission.md`](../../../../docs/reference/structural-html-emission.md)
 //! for the architectural principle: structural HTML decisions are made at the
 //! typed-data layer (pulldown-cmark events, shortcode AST, typed component
 //! props), with all three call sites converging on the function in this
@@ -51,7 +51,7 @@
 //! synthesize_image_html(..., MarkdownStandalone { caption }))` emission.
 //! The `<figcaption>` becomes the synthesizer's responsibility, NOT
 //! `transform_events`. Captures the spec at
-//! `docs/architecture/structural-html-emission.md#output-shape`.
+//! `docs/reference/structural-html-emission.md#output-shape`.
 //!
 //! # Carve-outs: bare `<img>` emitters not routed through the synthesizer
 //!
@@ -623,7 +623,7 @@ fn synthesize_inner(
     // exists; emit the bare <img>.
     //
     // Pattern: explicit promise model. See
-    // docs/plans/2026-05-20-image-variant-honest-mirror.md (Layer 3).
+    // docs/archive/2026-05-20-image-variant-honest-mirror.md (Layer 3).
     if is_raster_original(src) {
         // to_webp(src) inherits the dir_overrides + relative-prefix already
         // applied to `src` by the upstream renderer. Swapping the extension
@@ -954,7 +954,7 @@ pub(crate) fn render_img_tag(
     // frontend/bridge/iframe-bridge.ts, moss-asset-ready branch). The
     // AssetRegistry's promise model + the preview server's URL-keyed lookup
     // make the attribute redundant. See
-    // docs/plans/2026-05-20-image-variant-honest-mirror.md (Layer 3).
+    // docs/archive/2026-05-20-image-variant-honest-mirror.md (Layer 3).
     //
     // Inline LQIP via `background-image: url(data:image/jpeg;base64,…)` is
     // kept — legitimate production technique (cf. Vercel `blurDataURL`,

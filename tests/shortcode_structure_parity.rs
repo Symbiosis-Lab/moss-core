@@ -9,7 +9,7 @@
 //! asserts the EDITOR parser (`collectShortcodeBlocks`) matches the SAME corpus.
 //! Two gates, one source of truth: the editor live-view parse cannot silently
 //! drift from the build (the `+++` divider / nested `::::buttons` rendering bugs)
-//! without turning one of these red. See docs/architecture/shortcode-grammar.md.
+//! without turning one of these red. See docs/reference/shortcode-grammar.md.
 
 use moss_core::ast::{parse, Block, Shortcode};
 use serde::Deserialize;
