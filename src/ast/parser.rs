@@ -3194,7 +3194,7 @@ mod tests {
     // inline markdown — `*em*`, links, `` `code` `` and typeset math — while
     // the `alt=` attribute keeps the flat plain-text source (math verbatim).
     // Matches Pandoc's implicit-figure model. See
-    // docs/plans/2026-07-05-target-architecture and the caption fix design.
+    // docs/reference/target and the caption fix design.
     // -----------------------------------------------------------------
 
     #[test]

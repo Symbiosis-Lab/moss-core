@@ -25,7 +25,7 @@
 //! shared step ([`text`]) a single function instead of a coincidence.
 //!
 //! Consolidation mandated by
-//! `docs/plans/2026-07-05-target-architecture/05-consolidation-map.md`
+//! `docs/reference/target/05-consolidation-map.md`
 //! (row 36 and the F10 tiny-file merge list).
 
 pub mod anchor;
