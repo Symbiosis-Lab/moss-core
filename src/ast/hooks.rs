@@ -607,8 +607,7 @@ pub trait RenderHooks {
     ///
     /// Source-line wiring added 2026-05-28 (Phase 4 cleanup): restores
     /// the preview-scroll paragraph-precision feature that PR7a's
-    /// `transform_events` deletion removed. See
-    /// `docs/plans/2026-05-28-phase4-source-lines.md` for the design.
+    /// `transform_events` deletion removed.
     fn render_heading(
         &self,
         out: &mut String,
