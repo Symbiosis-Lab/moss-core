@@ -145,6 +145,13 @@ pub fn parser_options(math: bool) -> Options {
     // `Inline::Link`/`Inline::Image` with `Url::Unresolved`; resolution
     // happens in the later `visit_urls_mut` pass.
     options.insert(Options::ENABLE_WIKILINKS);
+    // CJK-friendly emphasis: closes a `*`/`**` run whose delimiter sits between
+    // a CJK punctuation mark and a CJK ideograph (no ASCII space, as CJK prose
+    // never has one) — vanilla CommonMark flanking leaves it as a literal `**`.
+    // pulldown-cmark#1059, implementing the `tats-u/markdown-cjk-friendly`
+    // amendment to CommonMark 0.31.2; backward-compatible on every existing
+    // CommonMark example. Pinned by `tests/cjk_emphasis.rs`.
+    options.insert(Options::ENABLE_CJK_FRIENDLY_EMPHASIS);
     if math {
         options.insert(Options::ENABLE_MATH);
     }

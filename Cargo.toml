@@ -23,7 +23,11 @@ specta = { version = "=2.0.0-rc.20", features = ["derive"], optional = true }
 # Pulldown-cmark drives the body AST parser. Zero I/O, zero async,
 # zero-copy &str events — fits moss-core's "pure Rust" constraint.
 # Same version as src-tauri to avoid duplicate compilation.
-pulldown-cmark = { version = "0.13", default-features = false }
+# `std` is explicit because the CJK-friendly-emphasis build (pulldown master /
+# PR#1059) gates `HashMap` behind the `std` feature; a `-p moss-core`-only build
+# otherwise gets no default features and fails to compile. (In the full app build
+# src-tauri's default features already unify `std` in.)
+pulldown-cmark = { version = "0.13", default-features = false, features = ["std"] }
 
 [build-dependencies]
 serde_json = "1.0"
