@@ -441,6 +441,7 @@ mod tests {
                 children: vec![],
                 is_wikilink: false,
             }]]],
+            alignments: Vec::new(),
             header_source_line: None,
             row_source_lines: vec![],
         }]);

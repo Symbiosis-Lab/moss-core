@@ -24,7 +24,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::document::{BlockMeta, Document};
 use super::math_text::{math_inline, math_source};
-use super::node::{Block, CalloutKind, Fold, Inline};
+use super::node::{Block, CalloutKind, ColumnAlignment, Fold, Inline};
 use super::shortcode_extract::{extract_shortcodes_with_config, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
 use crate::heading::anchor::obsidian_heading_anchor;
@@ -643,7 +643,32 @@ fn parse_block_with_tag(
                 i - start + 1,
             )
         }
-        Tag::Table(_) => {
+        Tag::Table(column_alignments) => {
+            // GFM per-column alignment (`|:--|`, `|:-:|`, `|--:|`). Kept
+            // source-faithful in the AST; numeric auto-alignment for unaligned
+            // columns is resolved later, at render time.
+            //
+            // pulldown emits a full-width `Vec` of `Alignment::None` for a bare
+            // `|---|` table. Normalize that to an empty vec so an unaligned
+            // table carries no `alignments` — which keeps serialized ASTs
+            // byte-stable (via `skip_serializing_if`) and lets the renderer read
+            // "empty ⇒ every column auto-detects".
+            let alignments: Vec<ColumnAlignment> = if column_alignments
+                .iter()
+                .all(|a| matches!(a, pulldown_cmark::Alignment::None))
+            {
+                Vec::new()
+            } else {
+                column_alignments
+                    .iter()
+                    .map(|a| match a {
+                        pulldown_cmark::Alignment::None => ColumnAlignment::None,
+                        pulldown_cmark::Alignment::Left => ColumnAlignment::Left,
+                        pulldown_cmark::Alignment::Center => ColumnAlignment::Center,
+                        pulldown_cmark::Alignment::Right => ColumnAlignment::Right,
+                    })
+                    .collect()
+            };
             let mut header: Vec<Vec<Inline>> = Vec::new();
             let mut rows: Vec<Vec<Vec<Inline>>> = Vec::new();
             // Per-`<tr>` source-line tracking. `header_source_line` is the
@@ -715,6 +740,7 @@ fn parse_block_with_tag(
                 Some(Block::Table {
                     header,
                     rows,
+                    alignments,
                     header_source_line,
                     row_source_lines,
                 }),
@@ -3071,6 +3097,63 @@ mod tests {
             } => {
                 assert!(header_source_line.is_none());
                 assert!(row_source_lines.is_empty());
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_captures_gfm_column_alignment() {
+        // `|:--|:-:|--:|` → Left, Center, Right. moss previously discarded GFM
+        // alignment entirely; the renderer now honors it over numeric detection.
+        let md = "| L | C | R |\n|:--|:-:|--:|\n| a | b | c |\n";
+        let doc = parse(md);
+        assert_eq!(doc.blocks.len(), 1);
+        match &doc.blocks[0] {
+            Block::Table { alignments, .. } => {
+                assert_eq!(
+                    alignments,
+                    &vec![
+                        ColumnAlignment::Left,
+                        ColumnAlignment::Center,
+                        ColumnAlignment::Right,
+                    ]
+                );
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_unaligned_table_has_empty_alignments() {
+        // A bare `|---|` separator carries no author alignment. pulldown emits
+        // all-`None`; we normalize that to empty so the AST stays byte-stable.
+        let md = "| h1 | h2 |\n| --- | --- |\n| a | b |\n";
+        let doc = parse(md);
+        match &doc.blocks[0] {
+            Block::Table { alignments, .. } => {
+                assert!(alignments.is_empty(), "unaligned table → empty alignments");
+            }
+            other => panic!("expected Table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_partial_alignment_keeps_none_for_unmarked_columns() {
+        // Only the middle column is aligned; the vec is non-empty and the
+        // unmarked columns stay `None` (render auto-detects those).
+        let md = "| a | b | c |\n| --- | :-: | --- |\n| 1 | 2 | 3 |\n";
+        let doc = parse(md);
+        match &doc.blocks[0] {
+            Block::Table { alignments, .. } => {
+                assert_eq!(
+                    alignments,
+                    &vec![
+                        ColumnAlignment::None,
+                        ColumnAlignment::Center,
+                        ColumnAlignment::None,
+                    ]
+                );
             }
             other => panic!("expected Table, got {other:?}"),
         }

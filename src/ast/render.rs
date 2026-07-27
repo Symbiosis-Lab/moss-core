@@ -46,8 +46,117 @@
 
 use super::document::{BlockMeta, Document};
 use super::hooks::{escape_attr, escape_text, RenderHooks};
-use super::node::{Block, Fold, Inline};
+use super::node::{Block, ColumnAlignment, Fold, Inline};
 use super::url::Url;
+
+/// Resolved (post-detection) per-column alignment used only for table HTML
+/// emission. Distinct from [`ColumnAlignment`] (the source-faithful AST value):
+/// this folds in numeric auto-detection and never carries a `None`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CellAlign {
+    Left,
+    Center,
+    Right,
+}
+
+impl CellAlign {
+    /// `class="…"` attribute fragment (with a leading space) for a cell of this
+    /// alignment; empty for the default left alignment so unaligned tables emit
+    /// exactly `<td>`.
+    fn class_attr(self) -> &'static str {
+        match self {
+            CellAlign::Left => "",
+            CellAlign::Center => " class=\"moss-col-center\"",
+            CellAlign::Right => " class=\"moss-col-right\"",
+        }
+    }
+}
+
+/// Whether a single cell reads as a number for right-alignment: an optional
+/// sign and currency mark, an ASCII digit run (with `,`/`.` group/decimal
+/// separators), an optional percent, and an optional short unit tail (≤3
+/// non-digit chars, e.g. `天`, `人`, `%`). Deliberately conservative so
+/// CJK-mixed labels like `第1名` and ranges like `2020-2021` stay left.
+fn cell_reads_as_number(s: &str) -> bool {
+    let chars: Vec<char> = s.trim().chars().collect();
+    if chars.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    if matches!(chars.get(i), Some('+' | '-')) {
+        i += 1;
+    }
+    if matches!(chars.get(i), Some('¥' | '$' | '€' | '£')) {
+        i += 1;
+    }
+    let mut saw_digit = false;
+    while let Some(&c) = chars.get(i) {
+        if c.is_ascii_digit() {
+            saw_digit = true;
+            i += 1;
+        } else if c == ',' || c == '.' {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if !saw_digit {
+        return false;
+    }
+    if matches!(chars.get(i), Some('%' | '‰')) {
+        i += 1;
+    }
+    let tail: String = chars[i..].iter().collect();
+    let tail = tail.trim();
+    tail.is_empty() || (tail.chars().count() <= 3 && !tail.chars().any(|c| c.is_ascii_digit()))
+}
+
+/// Whether body-column `col` is numeric: ≥1 non-empty cell and ≥80% of the
+/// non-empty cells read as numbers. The header is intentionally excluded (a
+/// numeric header label like `2024` should not flip an otherwise-text column).
+fn column_reads_as_numeric(rows: &[Vec<Vec<Inline>>], col: usize) -> bool {
+    let mut non_empty = 0usize;
+    let mut numeric = 0usize;
+    for row in rows {
+        let Some(cell) = row.get(col) else { continue };
+        let mut text = String::new();
+        crate::heading::text::inlines_to_text(cell, &mut text);
+        if text.trim().is_empty() {
+            continue;
+        }
+        non_empty += 1;
+        if cell_reads_as_number(&text) {
+            numeric += 1;
+        }
+    }
+    non_empty > 0 && numeric * 5 >= non_empty * 4
+}
+
+/// Resolve effective per-column alignment. Author GFM alignment always wins;
+/// an unaligned column right-aligns iff its body reads as numeric. Length
+/// equals `header.len()`; cells beyond it fall back to left in emission.
+fn resolve_column_alignment(
+    header: &[Vec<Inline>],
+    rows: &[Vec<Vec<Inline>>],
+    alignments: &[ColumnAlignment],
+) -> Vec<CellAlign> {
+    (0..header.len())
+        .map(
+            |col| match alignments.get(col).copied().unwrap_or(ColumnAlignment::None) {
+                ColumnAlignment::Left => CellAlign::Left,
+                ColumnAlignment::Center => CellAlign::Center,
+                ColumnAlignment::Right => CellAlign::Right,
+                ColumnAlignment::None => {
+                    if column_reads_as_numeric(rows, col) {
+                        CellAlign::Right
+                    } else {
+                        CellAlign::Left
+                    }
+                }
+            },
+        )
+        .collect()
+}
 
 /// Render a [`Document`] to an HTML string using the given hooks.
 ///
@@ -261,6 +370,7 @@ fn render_block<H: RenderHooks + ?Sized>(
         Block::Table {
             header,
             rows,
+            alignments,
             header_source_line,
             row_source_lines,
         } => {
@@ -275,6 +385,16 @@ fn render_block<H: RenderHooks + ?Sized>(
                 row_source_lines.len(),
                 rows.len()
             );
+            // Per-column alignment: author GFM `|--:|` wins; otherwise numeric
+            // columns auto-right-align (so figure columns stop reading ragged).
+            let col_align = resolve_column_alignment(header, rows, alignments);
+            let cell_class = |col: usize| -> &'static str {
+                col_align.get(col).copied().map_or("", CellAlign::class_attr)
+            };
+            // Accessible horizontal-scroll wrapper: keeps the `<table>`
+            // semantically intact (unlike a `display:block` table), and
+            // `tabindex` makes an overflowing table keyboard-scrollable.
+            out.push_str("<div class=\"moss-table-scroll\" tabindex=\"0\">\n");
             out.push_str("<table");
             push_source_line_attr(out, meta.source_line);
             out.push_str(">\n<thead>\n<tr");
@@ -282,8 +402,10 @@ fn render_block<H: RenderHooks + ?Sized>(
             // when the parser tracked lines, omitted otherwise.
             push_source_line_attr(out, *header_source_line);
             out.push('>');
-            for cell in header {
-                out.push_str("<th>");
+            for (col, cell) in header.iter().enumerate() {
+                out.push_str("<th");
+                out.push_str(cell_class(col));
+                out.push('>');
                 render_inlines(hooks, out, cell);
                 out.push_str("</th>");
             }
@@ -295,8 +417,10 @@ fn render_block<H: RenderHooks + ?Sized>(
                     let row_line = row_source_lines.get(idx).copied().flatten();
                     push_source_line_attr(out, row_line);
                     out.push('>');
-                    for cell in row {
-                        out.push_str("<td>");
+                    for (col, cell) in row.iter().enumerate() {
+                        out.push_str("<td");
+                        out.push_str(cell_class(col));
+                        out.push('>');
                         render_inlines(hooks, out, cell);
                         out.push_str("</td>");
                     }
@@ -305,6 +429,7 @@ fn render_block<H: RenderHooks + ?Sized>(
                 out.push_str("</tbody>\n");
             }
             out.push_str("</table>\n");
+            out.push_str("</div>\n");
         }
         Block::BlockQuote(children) => {
             out.push_str("<blockquote");
@@ -922,13 +1047,136 @@ mod tests {
         let html = render(vec![Block::Table {
             header: vec![vec![Inline::Text("A".into())]],
             rows: vec![vec![vec![Inline::Text("1".into())]]],
+            alignments: Vec::new(),
             header_source_line: None,
             row_source_lines: vec![],
         }]);
+        // Accessible scroll wrapper around the (semantically intact) table.
+        assert!(html.contains("<div class=\"moss-table-scroll\" tabindex=\"0\">"));
         assert!(html.contains("<thead>"));
         assert!(html.contains("<tbody>"));
-        assert!(html.contains("<th>A</th>"));
-        assert!(html.contains("<td>1</td>"));
+        // Column "A"/"1" is all-numeric → auto right-aligned (header matches).
+        assert!(html.contains("<th class=\"moss-col-right\">A</th>"));
+        assert!(html.contains("<td class=\"moss-col-right\">1</td>"));
+    }
+
+    fn text_row(cells: &[&str]) -> Vec<Vec<Inline>> {
+        cells
+            .iter()
+            .map(|c| vec![Inline::Text((*c).into())])
+            .collect()
+    }
+
+    #[test]
+    fn table_auto_right_aligns_numeric_columns_only() {
+        // Real-shape row: text name, thousands-separated count, number+unit.
+        let html = render(vec![Block::Table {
+            header: text_row(&["播客名称", "订阅数", "更新间隔"]),
+            rows: vec![
+                text_row(&["天真不天真", "1,457,776", "17.1天"]),
+                text_row(&["凹凸电波", "1,317,696", "6.9天"]),
+            ],
+            alignments: Vec::new(),
+            header_source_line: None,
+            row_source_lines: vec![],
+        }]);
+        // Text column: no alignment class on header or body.
+        assert!(html.contains("<th>播客名称</th>"), "{html}");
+        assert!(html.contains("<td>天真不天真</td>"), "{html}");
+        // Numeric columns (plain and number+unit): header + cells right-aligned.
+        assert!(html.contains("<th class=\"moss-col-right\">订阅数</th>"), "{html}");
+        assert!(
+            html.contains("<td class=\"moss-col-right\">1,457,776</td>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<td class=\"moss-col-right\">17.1天</td>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn table_honors_gfm_alignment_over_numeric_detection() {
+        // Author explicitly LEFT-aligned a numeric column and CENTERed a text
+        // one; both overrides win over auto-detection.
+        let html = render(vec![Block::Table {
+            header: text_row(&["N", "M"]),
+            rows: vec![text_row(&["1", "x"])],
+            alignments: vec![ColumnAlignment::Left, ColumnAlignment::Center],
+            header_source_line: None,
+            row_source_lines: vec![],
+        }]);
+        assert!(html.contains("<td>1</td>"), "author Left must win: {html}");
+        assert!(
+            html.contains("<th class=\"moss-col-center\">M</th>"),
+            "{html}"
+        );
+        assert!(html.contains("<td class=\"moss-col-center\">x</td>"), "{html}");
+    }
+
+    #[test]
+    fn table_mixed_column_below_threshold_stays_left() {
+        // 2 of 5 cells numeric (40% < 80%) → column stays left, no right class.
+        let html = render(vec![Block::Table {
+            header: text_row(&["Col"]),
+            rows: vec![
+                text_row(&["第1名"]),
+                text_row(&["12"]),
+                text_row(&["abc"]),
+                text_row(&["34"]),
+                text_row(&["N/A"]),
+            ],
+            alignments: Vec::new(),
+            header_source_line: None,
+            row_source_lines: vec![],
+        }]);
+        assert!(html.contains("<td>12</td>"), "no right-align expected: {html}");
+        assert!(
+            !html.contains("moss-col-right"),
+            "sub-threshold column must stay left: {html}"
+        );
+    }
+
+    #[test]
+    fn table_always_wraps_in_scroll_container() {
+        let html = render(vec![Block::Table {
+            header: text_row(&["a", "b"]),
+            rows: vec![text_row(&["x", "y"])],
+            alignments: Vec::new(),
+            header_source_line: None,
+            row_source_lines: vec![],
+        }]);
+        assert!(html.contains("<div class=\"moss-table-scroll\" tabindex=\"0\">"));
+        assert!(html.trim_end().ends_with("</div>"));
+    }
+
+    #[test]
+    fn cell_reads_as_number_matrix() {
+        for s in [
+            "1",
+            "28",
+            "1,457,776",
+            "17.1天",
+            "7.1天",
+            "99%",
+            "¥1,200",
+            "-5",
+            "3.5k",
+            "1,200人",
+        ] {
+            assert!(cell_reads_as_number(s), "should read as number: {s:?}");
+        }
+        for s in [
+            "",
+            "第1名",
+            "2020-2021",
+            "治愈陪伴",
+            "GIADA迦达",
+            "N/A",
+            "abc",
+        ] {
+            assert!(!cell_reads_as_number(s), "should NOT read as number: {s:?}");
+        }
     }
 
     #[test]
@@ -1241,6 +1489,7 @@ mod tests {
             Block::Table {
                 header: vec![vec![Inline::Text("H".into())]],
                 rows: vec![vec![vec![Inline::Text("c".into())]]],
+                alignments: Vec::new(),
                 header_source_line: None,
                 row_source_lines: vec![],
             },
@@ -1363,6 +1612,7 @@ mod tests {
                 vec![vec![Inline::Text("2".into())]],
                 vec![vec![Inline::Text("3".into())]],
             ],
+            alignments: Vec::new(),
             header_source_line: Some(5),
             row_source_lines: vec![Some(7), Some(8), Some(9)],
         }];
@@ -1378,20 +1628,22 @@ mod tests {
         // Header row line — note the header tr is on the marker line
         // because pulldown-cmark anchors the head row to the line of the
         // `| h |` header markdown row.
+        // Column H/1/2/3 is all-numeric → cells carry moss-col-right; the
+        // per-`<tr>` source-line annotation is unaffected.
         assert!(
-            html.contains(r#"<tr data-source-line="5"><th>H</th>"#),
+            html.contains(r#"<tr data-source-line="5"><th class="moss-col-right">H</th>"#),
             "head tr missing: {html}"
         );
         assert!(
-            html.contains(r#"<tr data-source-line="7"><td>1</td>"#),
+            html.contains(r#"<tr data-source-line="7"><td class="moss-col-right">1</td>"#),
             "body tr 7 missing: {html}"
         );
         assert!(
-            html.contains(r#"<tr data-source-line="8"><td>2</td>"#),
+            html.contains(r#"<tr data-source-line="8"><td class="moss-col-right">2</td>"#),
             "body tr 8 missing: {html}"
         );
         assert!(
-            html.contains(r#"<tr data-source-line="9"><td>3</td>"#),
+            html.contains(r#"<tr data-source-line="9"><td class="moss-col-right">3</td>"#),
             "body tr 9 missing: {html}"
         );
     }
@@ -1402,6 +1654,7 @@ mod tests {
         let blocks = vec![Block::Table {
             header: vec![vec![Inline::Text("A".into())]],
             rows: vec![vec![vec![Inline::Text("1".into())]]],
+            alignments: Vec::new(),
             header_source_line: None,
             row_source_lines: vec![],
         }];
@@ -1414,8 +1667,9 @@ mod tests {
             "no annotation expected: {html}"
         );
         assert!(html.contains("<thead>"));
-        assert!(html.contains("<tr><th>A</th></tr>"));
-        assert!(html.contains("<tr><td>1</td></tr>"));
+        // Numeric column → right-aligned cells (annotation-free otherwise).
+        assert!(html.contains("<tr><th class=\"moss-col-right\">A</th></tr>"));
+        assert!(html.contains("<tr><td class=\"moss-col-right\">1</td></tr>"));
     }
 
     #[test]

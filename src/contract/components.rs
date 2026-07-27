@@ -2101,6 +2101,43 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "1",
         description: "Horizontal-scroll container the build path wraps around typeset display math (`svg.moss-math[data-moss-math=\"display\"]`). On a narrow viewport a wide equation scrolls inside this box at its natural size rather than shrinking to unreadability or pushing the page into horizontal overflow. Emitted only by P2's typeset path; the P1 `<code>` fallback is never wrapped. A display SVG left unwrapped still cannot overflow the page — it falls back to scaling down via `max-width: 100%`.",
     },
+    ComponentEntry {
+        class: "moss-table-scroll",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-table-scroll" tabindex="0">
+  <table>…</table>
+</div>"#,
+        example_markdown: "| Name | Subs |\n| --- | --- |\n| a | 1,200 |",
+        status: Status::Emerging,
+        since: "1",
+        description: "Horizontal-scroll wrapper the renderer emits around every Markdown table. Keeps the `<table>` semantically intact (unlike a `display:block` table, which breaks column layout and assistive-tech table semantics) while letting a wide table scroll inside its own box instead of pushing the page into horizontal overflow. `tabindex=\"0\"` makes an overflowing table keyboard-scrollable.",
+    },
+    ComponentEntry {
+        class: "moss-col-right",
+        kind: "instance",
+        parent: "moss-table-scroll",
+        data_attrs: &[],
+        example_html: r#"<th class="moss-col-right">订阅数</th>
+<td class="moss-col-right">1,457,776</td>"#,
+        example_markdown: "| Subs |\n| --: |\n| 1,457,776 |",
+        status: Status::Emerging,
+        since: "1",
+        description: "Right-aligned table cell (`<th>`/`<td>`). Applied to a whole column when the author right-aligned it in GFM (`|--:|`) or when the column auto-detects as numeric, so figures register on their trailing digits. Pairs with the table's `font-variant-numeric: tabular-nums`.",
+    },
+    ComponentEntry {
+        class: "moss-col-center",
+        kind: "instance",
+        parent: "moss-table-scroll",
+        data_attrs: &[],
+        example_html: r#"<th class="moss-col-center">Status</th>
+<td class="moss-col-center">✓</td>"#,
+        example_markdown: "| Status |\n| :-: |\n| ✓ |",
+        status: Status::Emerging,
+        since: "1",
+        description: "Center-aligned table cell (`<th>`/`<td>`). Applied to a whole column the author center-aligned in GFM (`|:-:|`).",
+    },
 ];
 
 /// Implementation classes that are emitted by moss for internal functionality

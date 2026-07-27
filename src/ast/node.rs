@@ -41,6 +41,22 @@ pub enum CalloutKind {
     Help,
 }
 
+/// Per-column table alignment declared in GFM source (`|:--|` left,
+/// `|:-:|` center, `|--:|` right; a bare `|---|` is [`ColumnAlignment::None`]).
+///
+/// This is **source-faithful**: it records only what the author wrote, so the
+/// editor and any AST consumer see the same alignment the source declares.
+/// Numeric auto-right-alignment (for columns the author left unaligned) is a
+/// render-time transform in `ast::render`, deliberately *not* stored here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnAlignment {
+    None,
+    Left,
+    Center,
+    Right,
+}
+
 impl CalloutKind {
     /// Canonicalize a raw callout name (case-insensitive) to a
     /// [`CalloutKind`]. Returns `None` if the name is not a recognized
@@ -247,6 +263,12 @@ pub enum Block {
     Table {
         header: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
+        /// Per-column GFM alignment, parallel to `header`. Empty (the common
+        /// case) means the author declared no alignment on any column.
+        /// `skip_serializing_if` keeps previously-serialized ASTs and snapshot
+        /// fixtures byte-stable when there is no alignment to record.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        alignments: Vec<ColumnAlignment>,
         #[serde(default)]
         header_source_line: Option<usize>,
         #[serde(default)]
@@ -497,6 +519,7 @@ mod tests {
                 vec![vec![text("1")], vec![text("2")]],
                 vec![vec![text("3")], vec![text("4")]],
             ],
+            alignments: Vec::new(),
             header_source_line: None,
             row_source_lines: vec![],
         };
