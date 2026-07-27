@@ -2112,7 +2112,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "| Name | Subs |\n| --- | --- |\n| a | 1,200 |",
         status: Status::Emerging,
         since: "1",
-        description: "Horizontal-scroll wrapper the renderer emits around every Markdown table. Keeps the `<table>` semantically intact (unlike a `display:block` table, which breaks column layout and assistive-tech table semantics) while letting a wide table scroll inside its own box instead of pushing the page into horizontal overflow. `tabindex=\"0\"` makes an overflowing table keyboard-scrollable.",
+        description: "Horizontal-scroll wrapper the renderer emits around every Markdown table and every CSV/TSV embed (`.moss-embed[data-type=\"table\"]`). Keeps the `<table>` semantically intact (unlike a `display:block` table, which breaks column layout and assistive-tech table semantics) while letting a wide table scroll inside its own box instead of pushing the page into horizontal overflow. `tabindex=\"0\"` makes an overflowing table keyboard-scrollable.",
     },
     ComponentEntry {
         class: "moss-col-right",

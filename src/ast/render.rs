@@ -1180,6 +1180,50 @@ mod tests {
     }
 
     #[test]
+    fn table_partial_gfm_alignment_auto_detects_unmarked_columns() {
+        // alignments = [None, Center, None]: col0 (numeric) auto-right-aligns,
+        // col1 honors the GFM center, col2 (text) stays left. Confirms
+        // per-column resolution mixes author intent and detection correctly.
+        let html = render(vec![Block::Table {
+            header: text_row(&["N", "C", "T"]),
+            rows: vec![text_row(&["1", "x", "aa"]), text_row(&["2", "y", "bb"])],
+            alignments: vec![
+                ColumnAlignment::None,
+                ColumnAlignment::Center,
+                ColumnAlignment::None,
+            ],
+            header_source_line: None,
+            row_source_lines: vec![],
+        }]);
+        assert!(
+            html.contains("<td class=\"moss-col-right\">1</td>"),
+            "col0 numeric → right: {html}"
+        );
+        assert!(
+            html.contains("<td class=\"moss-col-center\">x</td>"),
+            "col1 GFM center: {html}"
+        );
+        assert!(html.contains("<td>aa</td>"), "col2 text → left: {html}");
+    }
+
+    #[test]
+    fn table_header_only_no_body_is_valid() {
+        // No body rows: wrapper + thead, no tbody, no numeric detection, no panic.
+        let html = render(vec![Block::Table {
+            header: text_row(&["A", "B"]),
+            rows: vec![],
+            alignments: Vec::new(),
+            header_source_line: None,
+            row_source_lines: vec![],
+        }]);
+        assert!(html.contains("<div class=\"moss-table-scroll\" tabindex=\"0\">"));
+        assert!(html.contains("<thead>"));
+        assert!(!html.contains("<tbody>"), "no rows → no tbody: {html}");
+        assert!(!html.contains("moss-col-right"), "no body → no detection: {html}");
+        assert!(html.trim_end().ends_with("</div>"));
+    }
+
+    #[test]
     fn renders_other_block_passes_html_through() {
         let html = render(vec![Block::Other("<custom></custom>".into())]);
         assert_eq!(html, "<custom></custom>");

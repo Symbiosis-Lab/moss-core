@@ -21,9 +21,16 @@ pub struct CsvTableOptions {
 
 /// Render a CSV/TSV string as HTML. Caller supplies options; content is
 /// HTML-escaped before emission.
+///
+/// The table is wrapped in the same `.moss-table-scroll` container the
+/// Markdown-table renderer uses (`ast::render`). CSV/TSV embeds are the
+/// data-heavy path, so they get the identical accessible horizontal-scroll
+/// affordance (keyboard-focusable, no page overflow on a narrow viewport) and
+/// share the default table styling — one consistent look for every moss table.
 pub fn render(content: &str, options: &CsvTableOptions) -> String {
     let rows = parse_rows(content, options.separator);
-    build_table(&rows, options)
+    let table = build_table(&rows, options);
+    format!("<div class=\"moss-table-scroll\" tabindex=\"0\">{table}</div>")
 }
 
 fn parse_rows(content: &str, sep: char) -> Vec<Vec<String>> {
@@ -191,8 +198,26 @@ mod tests {
     #[test]
     fn test_csv_empty() {
         let out = render("", &opts_default());
-        assert!(out.starts_with("<table"), "got: {}", out);
-        assert!(out.ends_with("</table>"), "got: {}", out);
+        // Wrapped in the shared scroll container; the table is still emitted.
+        assert!(
+            out.starts_with("<div class=\"moss-table-scroll\" tabindex=\"0\">"),
+            "got: {}",
+            out
+        );
+        assert!(out.contains("<table"), "got: {}", out);
+        assert!(out.ends_with("</table></div>"), "got: {}", out);
+    }
+
+    #[test]
+    fn test_csv_wrapped_in_scroll_container() {
+        let out = render("name,age\nAlice,30\n", &opts_default());
+        assert!(
+            out.starts_with("<div class=\"moss-table-scroll\" tabindex=\"0\">"),
+            "CSV embed must share the scroll wrapper: {out}"
+        );
+        assert!(out.ends_with("</div>"), "got: {}", out);
+        // Table + its class survive inside the wrapper.
+        assert!(out.contains("class=\"moss-embed\" data-type=\"table\""), "{out}");
     }
 
     #[test]
