@@ -620,6 +620,7 @@ fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, b
                 } else {
                     Some(Url::unresolved(path.trim().to_string()))
                 },
+                extra_images: Vec::new(),
                 attrs: attrs_str.to_string(),
                 classes,
                 overlay,
@@ -645,6 +646,7 @@ fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, b
                 } else {
                     Some(Url::unresolved(path.trim().to_string()))
                 },
+                extra_images: Vec::new(),
                 attrs: attrs_str.to_string(),
                 classes,
                 overlay,
@@ -656,23 +658,45 @@ fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, b
         );
     }
 
-    // Priority 3: body-image fallback. Scan first non-empty line.
+    // Priority 3: body-image fallback. Every CONSECUTIVE leading media
+    // line is a background slide (2026-07-27 multi-image hero) — the
+    // first is the primary image, the rest `extra_images`; blank lines
+    // between media lines don't end the run. The first non-media,
+    // non-empty line starts the overlay.
     let mut overlay_lines: Vec<&str> = Vec::new();
     let mut image_path: Option<String> = None;
     let mut image_attrs = String::new();
-    let mut found_image = false;
+    let mut extra_images: Vec<Url> = Vec::new();
+    let mut in_media_run = true;
     let mut used_priority_3 = false;
     for line in body.lines() {
-        if !found_image && !line.trim().is_empty() {
-            if let Some((path, attrs_str)) = parse_hero_media_line(line) {
-                image_path = Some(path);
-                image_attrs = attrs_str;
-                found_image = true;
-                used_priority_3 = true;
+        if in_media_run {
+            if line.trim().is_empty() {
                 continue;
             }
-            // First non-empty line wasn't a media reference — keep it as overlay.
-            found_image = true;
+            if let Some((path, attrs_str)) = parse_hero_media_line(line) {
+                // A bare filename containing whitespace on a CONTINUATION
+                // line is almost certainly prose that happens to end in a
+                // media extension ("Photo: alpine-meadow.jpg") — treat it
+                // as overlay rather than silently eating a caption. The
+                // first line keeps the historical bare-filename grammar.
+                let bare = !line.trim_start().starts_with("![");
+                if image_path.is_some() && bare && path.contains(char::is_whitespace) {
+                    in_media_run = false;
+                } else if image_path.is_none() {
+                    image_path = Some(path);
+                    // Frame-level media attrs (object-fit/position) come
+                    // from the primary slide and apply to every slide.
+                    image_attrs = attrs_str;
+                    used_priority_3 = true;
+                    continue;
+                } else {
+                    extra_images.push(Url::unresolved(path));
+                    continue;
+                }
+            }
+            // First non-media, non-empty line — overlay starts here.
+            in_media_run = false;
         }
         overlay_lines.push(line);
     }
@@ -681,6 +705,7 @@ fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, b
     (
         HeroShortcode {
             image: image_path.map(Url::unresolved),
+            extra_images,
             attrs: image_attrs,
             classes,
             overlay,
@@ -2789,6 +2814,78 @@ mod tests {
         let md = ":::hero {image=photo.jpg}\n# Title\n:::\n";
         match first_extracted(md) {
             Shortcode::Hero(h) => assert!(h.width.is_none(), "got {:?}", h.width),
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_consecutive_leading_media_lines_become_slides() {
+        // Multi-image hero: first media line = primary, the rest =
+        // extra_images; blank lines between media lines don't end the run;
+        // the first non-media line starts the overlay.
+        let md = ":::hero\n![[a.jpg]]\n\n![[b.jpg]]\n![](c.png)\n# Michael\nDates line\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert_eq!(args.image, Some(Url::unresolved("a.jpg".to_string())));
+                assert_eq!(
+                    args.extra_images,
+                    vec![
+                        Url::unresolved("b.jpg".to_string()),
+                        Url::unresolved("c.png".to_string())
+                    ]
+                );
+                assert!(args.overlay_text.contains("# Michael"), "{}", args.overlay_text);
+                assert!(!args.overlay_text.contains("b.jpg"), "{}", args.overlay_text);
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_prose_ending_in_media_extension_stays_overlay() {
+        // "Photo: alpine-meadow.jpg" is prose, not a slide — a bare path
+        // with whitespace on a continuation line ends the media run.
+        let md = ":::hero\n![[a.jpg]]\nPhoto: alpine-meadow.jpg\nMore text\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert!(args.extra_images.is_empty(), "{:?}", args.extra_images);
+                assert!(
+                    args.overlay_text.contains("Photo: alpine-meadow.jpg"),
+                    "{}",
+                    args.overlay_text
+                );
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_media_after_overlay_text_stays_overlay_content() {
+        // A media line AFTER prose is overlay content, exactly as before —
+        // only the leading run becomes slides.
+        let md = ":::hero\n![[a.jpg]]\n# Title\n![[inline.jpg]]\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert!(args.extra_images.is_empty(), "{:?}", args.extra_images);
+                assert!(args.overlay_text.contains("inline.jpg"));
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_image_attribute_never_collects_slides() {
+        let md = ":::hero {image=hero.jpg}\n![[b.jpg]]\n# Title\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert!(args.extra_images.is_empty());
+                // The body media line stays overlay content in attr mode.
+                assert!(args.overlay_text.contains("b.jpg"));
+            }
             other => panic!("expected Hero, got {other:?}"),
         }
     }

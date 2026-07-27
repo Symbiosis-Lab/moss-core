@@ -329,6 +329,7 @@ mod tests {
         let overlay = vec![img_block("overlay.jpg")];
         let doc = Document::from_blocks(vec![Block::Shortcode(Shortcode::Hero(HeroShortcode {
             image: Some(Url::resolved("hero.jpg", UrlKind::Asset)),
+            extra_images: Vec::new(),
             attrs: String::new(),
             classes: String::new(),
             overlay,
