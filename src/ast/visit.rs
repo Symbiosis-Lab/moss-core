@@ -129,6 +129,9 @@ where
             if let Some(image) = args.image.as_mut() {
                 callback(image);
             }
+            for image in &mut args.extra_images {
+                callback(image);
+            }
             // Phase 4 PR4.5 (2026-05-28): descend into the typed overlay
             // blocks so URLs inside `:::hero` overlay markdown (e.g. a
             // `[Read more](/x)` link in the overlay copy) get classified

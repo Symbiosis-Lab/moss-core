@@ -413,6 +413,13 @@ pub trait RenderHooks {
                 out.push_str(r#"<section class=""#);
                 out.push_str(&escape_attr(&class_attr));
                 out.push('"');
+                // Multi-image hero: data-slides drives the site.css
+                // crossfade; absent for the single-image hero.
+                if args.image.is_some() && !args.extra_images.is_empty() {
+                    out.push_str(r#" data-slides=""#);
+                    out.push_str(&(args.extra_images.len() + 1).to_string());
+                    out.push('"');
+                }
                 if let Some(w) = &args.width {
                     out.push_str(r#" data-width=""#);
                     out.push_str(w);
@@ -448,9 +455,34 @@ pub trait RenderHooks {
                         None => (&empty_snapshot, crate::render::image::ImageContext::HeroBare),
                     };
                     let opts = crate::render::image::ImageRenderOptions::default();
-                    let img_html =
-                        crate::render::image::synthesize_image_html(&src, "", snap, ctx, &opts);
-                    out.push_str(&img_html);
+                    let img_html = crate::render::image::synthesize_image_html(
+                        &src,
+                        "",
+                        snap,
+                        ctx.clone(),
+                        &opts,
+                    );
+                    if args.extra_images.is_empty() {
+                        out.push_str(&img_html);
+                    } else {
+                        // Multi-image hero: each slide wrapped for the
+                        // site.css crossfade, primary first.
+                        out.push_str(r#"<div class="moss-hero-slide">"#);
+                        out.push_str(&img_html);
+                        out.push_str("</div>");
+                        for extra in &args.extra_images {
+                            let href = match extra {
+                                crate::ast::url::Url::Resolved(r) => r.href.clone(),
+                                crate::ast::url::Url::Unresolved(s) => s.clone(),
+                            };
+                            let extra_html = crate::render::image::synthesize_image_html(
+                                &href, "", snap, ctx.clone(), &opts,
+                            );
+                            out.push_str(r#"<div class="moss-hero-slide">"#);
+                            out.push_str(&extra_html);
+                            out.push_str("</div>");
+                        }
+                    }
                 }
                 if !args.overlay.is_empty() {
                     // Phase 4 PR4.5 (2026-05-28): overlay is now typed

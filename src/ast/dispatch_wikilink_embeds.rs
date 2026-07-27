@@ -571,6 +571,7 @@ mod tests {
         let mut doc =
             Document::from_blocks(vec![Block::Shortcode(Shortcode::Hero(HeroShortcode {
                 image: None,
+                extra_images: Vec::new(),
                 attrs: String::new(),
                 classes: String::new(),
                 overlay,

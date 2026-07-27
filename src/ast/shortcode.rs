@@ -180,10 +180,19 @@ pub struct GridShortcode {
 /// Arguments for [`Shortcode::Hero`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeroShortcode {
-    /// Image source URL. `None` if neither the `image` attribute nor the
-    /// first body line provided one — the renderer emits a section with
-    /// no `<img>` in that case. Flows through resolver before rendering.
+    /// Primary image source URL. `None` if neither the `image` attribute
+    /// nor a leading body media line provided one — the renderer emits a
+    /// section with no `<img>` in that case. Flows through resolver before
+    /// rendering. With `extra_images`, this is the first slide and the
+    /// reduced-motion/static fallback.
     pub image: Option<Url>,
+    /// Remaining background slides (2026-07-27 multi-image hero): every
+    /// consecutive leading body media line after the first. Non-empty →
+    /// the hero renders an ambient crossfade (one slide visible at a
+    /// time, no controls — no slide may carry information the others
+    /// don't; design: docs/archive/2026-07-27-import-conventions-engine-design.md).
+    /// Empty for `image=`-attribute and directive-line heroes.
+    pub extra_images: Vec<Url>,
     /// Pipe-suffix media attributes verbatim (e.g. "cover top",
     /// "1.5:1 contain"). Empty if no pipe in the source.
     pub attrs: String,

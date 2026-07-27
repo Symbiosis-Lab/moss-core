@@ -951,6 +951,12 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 default: "body",
                 description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9. Phase 1c will emit this from authoring shortcode (e.g. `:::hero {full}` -> `data-width=\"screen\"`).",
             },
+            DataAttr {
+                name: "data-slides",
+                values: &["2", "3", "4", "5", "6"],
+                default: "",
+                description: "Slide count of a multi-image hero (consecutive leading media lines). Present only when > 1; drives the ambient CSS crossfade — one slide visible at a time, no controls. Absent = single-image hero, today's exact markup.",
+            },
         ],
         example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
@@ -970,6 +976,22 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Confirmed,
         since: "0",
         description: "Text content slot inside `.moss-hero`.",
+    },
+    ComponentEntry {
+        class: "moss-hero-slide",
+        kind: "instance",
+        parent: "moss-hero",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-hero-slide"><img src="portrait-1.jpg" alt="" /></div>"#,
+        example_markdown: ":::hero
+![[portrait-1.jpg]]
+![[portrait-2.jpg]]
+# Title
+:::
+",
+        status: Status::Confirmed,
+        since: "0",
+        description: "One background slide of a multi-image hero. Emitted only when the hero has 2+ images; slides crossfade ambiently via site.css keyed on the section's data-slides. First slide is the reduced-motion static fallback.",
     },
     ComponentEntry {
         class: "moss-image",

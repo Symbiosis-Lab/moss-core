@@ -199,6 +199,7 @@ mod tests {
     fn hero_block(image_url: Option<&str>, overlay: Vec<Block>) -> Block {
         Block::Shortcode(Shortcode::Hero(HeroShortcode {
             image: image_url.map(|u| Url::resolved(u, UrlKind::Asset)),
+            extra_images: Vec::new(),
             attrs: String::new(),
             classes: String::new(),
             overlay,
