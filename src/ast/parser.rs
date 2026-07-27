@@ -150,7 +150,10 @@ pub fn parser_options(math: bool) -> Options {
     // never has one) — vanilla CommonMark flanking leaves it as a literal `**`.
     // pulldown-cmark#1059, implementing the `tats-u/markdown-cjk-friendly`
     // amendment to CommonMark 0.31.2; backward-compatible on every existing
-    // CommonMark example. Pinned by `tests/cjk_emphasis.rs`.
+    // CommonMark example. Feature-gated because the flag exists only in the
+    // `[patch]` fork until pulldown releases it, keeping the published crate
+    // buildable against crates.io. Pinned by `src-tauri/tests/cjk_emphasis.rs`.
+    #[cfg(feature = "cjk-friendly-emphasis")]
     options.insert(Options::ENABLE_CJK_FRIENDLY_EMPHASIS);
     if math {
         options.insert(Options::ENABLE_MATH);
