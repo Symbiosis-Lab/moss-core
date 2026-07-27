@@ -978,6 +978,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Text content slot inside `.moss-hero`.",
     },
     ComponentEntry {
+        class: "moss-hero-slides",
+        kind: "instance",
+        parent: "moss-hero",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-hero-slides"><div class="moss-hero-slide"><img src="portrait-1.jpg" alt="" /></div></div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Wrapper holding the `.moss-hero-slide` images of a multi-image hero; the CSS ambient crossfade cycles one slide visible at a time.",
+    },
+    ComponentEntry {
         class: "moss-hero-slide",
         kind: "instance",
         parent: "moss-hero",
