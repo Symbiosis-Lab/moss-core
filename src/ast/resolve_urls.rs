@@ -294,6 +294,12 @@ fn resolve_shortcode_image_urls(
                 if let Some(image_url) = args.image.as_mut() {
                     resolve_asset_url(image_url, "", graph, source_path, outgoing);
                 }
+                // Multi-image hero: every extra slide resolves exactly like
+                // the primary — skipping this re-creates the 2026-05-29
+                // chps-site regression (raw filenames at depth) per slide.
+                for image_url in &mut args.extra_images {
+                    resolve_asset_url(image_url, "", graph, source_path, outgoing);
+                }
                 // Overlay may itself contain shortcodes (e.g. `::::buttons`
                 // inside `:::hero`); recurse so any nested Hero/Gallery
                 // structural image URLs resolve too.
@@ -1517,6 +1523,43 @@ mod tests {
         assert!(
             outgoing.iter().any(|o| o.target_path == "assets/hero.jpg"),
             "expected OutgoingLink to assets/hero.jpg, got {outgoing:?}"
+        );
+    }
+
+    #[test]
+    fn hero_extra_images_resolve_against_graph_like_the_primary() {
+        // Multi-image hero: every extra slide resolves through the content
+        // graph exactly like the primary and registers a dependency edge —
+        // review finding on 06585a7cd (the chps-site regression class,
+        // re-introduced per slide).
+        let mut doc = parse(":::hero\n![[hero.jpg]]\n![[second.jpg]]\n# Welcome\n:::\n");
+        let mut b = ContentGraphBuilder::new();
+        b.add_file("index.md", "home");
+        b.add_file("assets/hero.jpg", "hero");
+        b.add_file("assets/second.jpg", "second");
+        let graph = b.build();
+        let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+
+        let extras: Vec<String> = doc
+            .blocks
+            .iter()
+            .find_map(|blk| match blk {
+                Block::Shortcode(Shortcode::Hero(h)) => Some(
+                    h.extra_images
+                        .iter()
+                        .map(|u| match u {
+                            Url::Resolved(r) => r.href.clone(),
+                            Url::Unresolved(s) => format!("UNRESOLVED:{s}"),
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .expect("hero present");
+        assert_eq!(extras, vec!["assets/second.jpg".to_string()], "{extras:?}");
+        assert!(
+            outgoing.iter().any(|o| o.target_path == "assets/second.jpg"),
+            "expected OutgoingLink to assets/second.jpg, got {outgoing:?}"
         );
     }
 

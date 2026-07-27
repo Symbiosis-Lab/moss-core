@@ -675,16 +675,25 @@ fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, b
                 continue;
             }
             if let Some((path, attrs_str)) = parse_hero_media_line(line) {
-                if image_path.is_none() {
+                // A bare filename containing whitespace on a CONTINUATION
+                // line is almost certainly prose that happens to end in a
+                // media extension ("Photo: alpine-meadow.jpg") — treat it
+                // as overlay rather than silently eating a caption. The
+                // first line keeps the historical bare-filename grammar.
+                let bare = !line.trim_start().starts_with("![");
+                if image_path.is_some() && bare && path.contains(char::is_whitespace) {
+                    in_media_run = false;
+                } else if image_path.is_none() {
                     image_path = Some(path);
                     // Frame-level media attrs (object-fit/position) come
-                    // from the primary slide; later pipes are ignored.
+                    // from the primary slide and apply to every slide.
                     image_attrs = attrs_str;
                     used_priority_3 = true;
+                    continue;
                 } else {
                     extra_images.push(Url::unresolved(path));
+                    continue;
                 }
-                continue;
             }
             // First non-media, non-empty line — overlay starts here.
             in_media_run = false;
@@ -2828,6 +2837,25 @@ mod tests {
                 );
                 assert!(args.overlay_text.contains("# Michael"), "{}", args.overlay_text);
                 assert!(!args.overlay_text.contains("b.jpg"), "{}", args.overlay_text);
+            }
+            other => panic!("expected Hero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hero_prose_ending_in_media_extension_stays_overlay() {
+        // "Photo: alpine-meadow.jpg" is prose, not a slide — a bare path
+        // with whitespace on a continuation line ends the media run.
+        let md = ":::hero\n![[a.jpg]]\nPhoto: alpine-meadow.jpg\nMore text\n:::\n";
+        let result = extract_shortcodes(md);
+        match &result.extracted[0].shortcode {
+            Shortcode::Hero(args) => {
+                assert!(args.extra_images.is_empty(), "{:?}", args.extra_images);
+                assert!(
+                    args.overlay_text.contains("Photo: alpine-meadow.jpg"),
+                    "{}",
+                    args.overlay_text
+                );
             }
             other => panic!("expected Hero, got {other:?}"),
         }

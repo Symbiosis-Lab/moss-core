@@ -414,10 +414,13 @@ pub trait RenderHooks {
                 out.push_str(&escape_attr(&class_attr));
                 out.push('"');
                 // Multi-image hero: data-slides drives the site.css
-                // crossfade; absent for the single-image hero.
-                if args.image.is_some() && !args.extra_images.is_empty() {
+                // crossfade; absent for the single-image hero. Capped at 6
+                // like the production renderer.
+                let hero_extras: &[crate::ast::url::Url] =
+                    &args.extra_images[..args.extra_images.len().min(5)];
+                if args.image.is_some() && !hero_extras.is_empty() {
                     out.push_str(r#" data-slides=""#);
-                    out.push_str(&(args.extra_images.len() + 1).to_string());
+                    out.push_str(&(hero_extras.len() + 1).to_string());
                     out.push('"');
                 }
                 if let Some(w) = &args.width {
@@ -462,15 +465,16 @@ pub trait RenderHooks {
                         ctx.clone(),
                         &opts,
                     );
-                    if args.extra_images.is_empty() {
+                    if hero_extras.is_empty() {
                         out.push_str(&img_html);
                     } else {
-                        // Multi-image hero: each slide wrapped for the
-                        // site.css crossfade, primary first.
-                        out.push_str(r#"<div class="moss-hero-slide">"#);
+                        // Multi-image hero: slides wrapper = positioning
+                        // context (mobile stacked safety), each slide
+                        // wrapped, primary first.
+                        out.push_str(r#"<div class="moss-hero-slides"><div class="moss-hero-slide">"#);
                         out.push_str(&img_html);
                         out.push_str("</div>");
-                        for extra in &args.extra_images {
+                        for extra in hero_extras {
                             let href = match extra {
                                 crate::ast::url::Url::Resolved(r) => r.href.clone(),
                                 crate::ast::url::Url::Unresolved(s) => s.clone(),
@@ -482,6 +486,7 @@ pub trait RenderHooks {
                             out.push_str(&extra_html);
                             out.push_str("</div>");
                         }
+                        out.push_str("</div>");
                     }
                 }
                 if !args.overlay.is_empty() {
