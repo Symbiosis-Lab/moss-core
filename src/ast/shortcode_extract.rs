@@ -682,7 +682,7 @@ fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, b
                 // first line keeps the historical bare-filename grammar.
                 let bare = !line.trim_start().starts_with("![");
                 if image_path.is_some() && bare && path.contains(char::is_whitespace) {
-                    in_media_run = false;
+                    // fall through: the line below ends the media run.
                 } else if image_path.is_none() {
                     image_path = Some(path);
                     // Frame-level media attrs (object-fit/position) come
