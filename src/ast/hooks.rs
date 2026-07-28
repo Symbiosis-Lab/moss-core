@@ -458,13 +458,28 @@ pub trait RenderHooks {
                         None => (&empty_snapshot, crate::render::image::ImageContext::HeroBare),
                     };
                     let opts = crate::render::image::ImageRenderOptions::default();
-                    let img_html = crate::render::image::synthesize_image_html(
-                        &src,
-                        "",
-                        snap,
-                        ctx.clone(),
-                        &opts,
-                    );
+                    let hero_media = |href: &str| -> String {
+                        let ext = href.rsplit('.').next().unwrap_or("");
+                        if matches!(
+                            crate::resolve::ext_kind::reference_kind_for_ext(ext),
+                            crate::resolve::ext_kind::ExtKind::Video
+                        ) {
+                            // Video backgrounds are ambient loops — same
+                            // synthesis as `![[clip.mp4|loop]]`.
+                            let mut params = crate::resolve::title_params::TitleParams::default();
+                            params.params.insert("loop".into(), "1".into());
+                            crate::render::video::synthesize_video_html(&params, href, snap)
+                        } else {
+                            crate::render::image::synthesize_image_html(
+                                href,
+                                "",
+                                snap,
+                                ctx.clone(),
+                                &opts,
+                            )
+                        }
+                    };
+                    let img_html = hero_media(&src);
                     if hero_extras.is_empty() {
                         out.push_str(&img_html);
                     } else {
@@ -479,9 +494,7 @@ pub trait RenderHooks {
                                 crate::ast::url::Url::Resolved(r) => r.href.clone(),
                                 crate::ast::url::Url::Unresolved(s) => s.clone(),
                             };
-                            let extra_html = crate::render::image::synthesize_image_html(
-                                &href, "", snap, ctx.clone(), &opts,
-                            );
+                            let extra_html = hero_media(&href);
                             out.push_str(r#"<div class="moss-hero-slide">"#);
                             out.push_str(&extra_html);
                             out.push_str("</div>");
