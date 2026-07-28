@@ -87,16 +87,12 @@ fn parse_shortcode_block(
         "buttons" => (Some(Shortcode::Buttons(parse_buttons_body(args, body))), vec![]),
         "gallery" => (Some(Shortcode::Gallery(parse_gallery_body(args, body))), vec![]),
         "hero" => {
-            let (sc, used_p3) = parse_hero(args, body, config);
+            // Body media lines are the CANONICAL multi-slide grammar (the
+            // only way to express a crossfading hero), not a deprecated
+            // fallback — the old Priority-3 deprecation warning retired
+            // with the multi-image hero.
+            let (sc, _used_p3) = parse_hero(args, body, config);
             let mut warns = vec![];
-            if used_p3 {
-                warns.push(
-                    "shortcode `:::hero` uses a body-image fallback (deprecated Priority 3). \
-                     Move the image path to the `image=` attribute: \
-                     `:::hero {image=path.jpg}`."
-                        .to_string(),
-                );
-            }
             if let Some(ref v) = sc.mobile {
                 if v != "overlay" {
                     warns.push(format!(
@@ -2750,12 +2746,12 @@ mod tests {
     }
 
     #[test]
-    fn hero_priority3_body_image_emits_deprecation_warning() {
-        let md = ":::hero\nphoto.jpg\n# Title\n:::\n";
+    fn hero_body_media_lines_emit_no_deprecation_warning() {
+        // Body media lines are the canonical multi-slide grammar since the
+        // multi-image hero — the old Priority-3 deprecation is retired.
+        let md = ":::hero\n![[bg.jpg]]\n# Title\n:::\n";
         let result = extract_shortcodes(md);
-        assert_eq!(result.warnings.len(), 1);
-        assert!(result.warnings[0].contains("deprecated"));
-        assert!(result.warnings[0].contains("image="));
+        assert_eq!(result.warnings.len(), 0, "{:?}", result.warnings);
     }
 
     #[test]
