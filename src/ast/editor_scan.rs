@@ -76,13 +76,8 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
     // than panic in that pathological case.
     let mut offset: u32 = 0;
     for line in markdown.split_inclusive('\n') {
-        let has_newline = line.ends_with('\n');
-        let line_len_without_newline = if has_newline {
-            line.len() - 1
-        } else {
-            line.len()
-        };
-        let line_content = &line[..line_len_without_newline];
+        let line_content = line.strip_suffix('\n').unwrap_or(line);
+        let line_len_without_newline = line_content.len();
         let line_start = offset;
         let line_end = offset + line_len_without_newline as u32;
 
@@ -91,7 +86,10 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
             if !in_code_fence {
                 in_code_fence = true;
                 code_fence_marker = fence.to_string();
-            } else if fence.starts_with(code_fence_marker.as_str().chars().next().unwrap())
+            } else if code_fence_marker
+                .chars()
+                .next()
+                .is_some_and(|marker_ch| fence.starts_with(marker_ch))
                 && fence.len() >= code_fence_marker.len()
             {
                 in_code_fence = false;
@@ -124,11 +122,11 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
             // Nested opener — push its arity; depth increments.
             arity_stack.push(inner_arity);
             depth += 1;
-        } else {
-            // Check if this line closes the CURRENT depth level's block.
-            // SAFETY: arity_stack.len() == depth, and depth > 0 in this branch.
-            let current_arity = arity_stack.last().copied()
-                .expect("arity_stack is non-empty when depth > 0");
+        } else if let Some(current_arity) = arity_stack.last().copied() {
+            // Checks whether this line closes the CURRENT depth level's block.
+            // `arity_stack.len() == depth` and `depth > 0` here, so the pattern
+            // always matches; written as one so a future invariant break skips
+            // the line instead of panicking mid-build.
             if is_close_fence(line_content, current_arity) {
                 arity_stack.pop();
                 depth -= 1;
@@ -213,13 +211,11 @@ struct PartialBlock {
 /// Returns `(arity, name, args)` if matched.
 fn match_open_fence(line: &str) -> Option<(usize, &str, &str)> {
     let trimmed = line.trim_start();
-    let leading_ws = line.len() - trimmed.len();
     let arity = trimmed.bytes().take_while(|b| *b == b':').count();
     if arity < 3 {
         return None;
     }
-    let rest = &trimmed[arity..];
-    let name_start_in_line = leading_ws + arity;
+    let rest = trimmed.get(arity..)?;
     // Match the name-char set used by `parse_shortcode_opener` in
     // `shortcode_extract.rs`: alphanumeric, underscore, hyphen. Plugins can
     // register names like `:::my-widget`, and the editor must recognize them
@@ -231,8 +227,8 @@ fn match_open_fence(line: &str) -> Option<(usize, &str, &str)> {
     if name_bytes == 0 {
         return None;
     }
-    let name = &line[name_start_in_line..name_start_in_line + name_bytes];
-    let after_name = &line[name_start_in_line + name_bytes..];
+    let name = rest.get(..name_bytes)?;
+    let after_name = rest.get(name_bytes..)?;
     let args = after_name.trim();
     Some((arity, name, args))
 }
@@ -255,8 +251,7 @@ fn match_code_fence(line: &str) -> Option<&str> {
     if len < 3 {
         return None;
     }
-    let leading_ws = line.len() - trimmed.len();
-    Some(&line[leading_ws..leading_ws + len])
+    trimmed.get(..len)
 }
 
 #[cfg(test)]

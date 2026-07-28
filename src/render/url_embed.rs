@@ -42,8 +42,11 @@ pub fn detect_provider(url: &str) -> ProviderEmbed {
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
 
-    let (host, path_and_query) = match after_scheme.find('/') {
-        Some(i) => (&after_scheme[..i], &after_scheme[i..]),
+    let (host, path_and_query) = match after_scheme
+        .find('/')
+        .and_then(|i| after_scheme.split_at_checked(i))
+    {
+        Some(split) => split,
         None => (after_scheme, ""),
     };
 
@@ -200,8 +203,8 @@ fn extract_youtube_id(host: &str, path_and_query: &str) -> Option<(String, Optio
         let id = trimmed.split(['/', '?', '#']).next()?;
         let id = validate_youtube_id(id)?.to_string();
         let start = path_and_query
-            .find('?')
-            .and_then(|i| parse_youtube_timestamp(&path_and_query[i + 1..]));
+            .split_once('?')
+            .and_then(|(_, query)| parse_youtube_timestamp(query));
         return Some((id, start));
     }
 
@@ -209,8 +212,8 @@ fn extract_youtube_id(host: &str, path_and_query: &str) -> Option<(String, Optio
         let id = rest.split(['/', '?', '#']).next()?;
         let id = validate_youtube_id(id)?.to_string();
         let start = rest
-            .find('?')
-            .and_then(|i| parse_youtube_timestamp(&rest[i + 1..]));
+            .split_once('?')
+            .and_then(|(_, query)| parse_youtube_timestamp(query));
         return Some((id, start));
     }
 
@@ -218,8 +221,8 @@ fn extract_youtube_id(host: &str, path_and_query: &str) -> Option<(String, Optio
         let id = rest.split(['/', '?', '#']).next()?;
         let id = validate_youtube_id(id)?.to_string();
         let start = rest
-            .find('?')
-            .and_then(|i| parse_youtube_timestamp(&rest[i + 1..]));
+            .split_once('?')
+            .and_then(|(_, query)| parse_youtube_timestamp(query));
         return Some((id, start));
     }
 
@@ -227,14 +230,13 @@ fn extract_youtube_id(host: &str, path_and_query: &str) -> Option<(String, Optio
         let id = rest.split(['/', '?', '#']).next()?;
         let id = validate_youtube_id(id)?.to_string();
         let start = rest
-            .find('?')
-            .and_then(|i| parse_youtube_timestamp(&rest[i + 1..]));
+            .split_once('?')
+            .and_then(|(_, query)| parse_youtube_timestamp(query));
         return Some((id, start));
     }
 
     if path_and_query.starts_with("/watch") {
-        let query_start = path_and_query.find('?').map(|i| i + 1)?;
-        let query = &path_and_query[query_start..];
+        let (_, query) = path_and_query.split_once('?')?;
         for param in query.split('&') {
             if let Some(id) = param.strip_prefix("v=") {
                 let id = id.split(['&', '#']).next().unwrap_or(id);
@@ -262,8 +264,12 @@ fn extract_vimeo_embed_url(bare_host: &str, path_and_query: &str) -> Option<Stri
         return Some(format!("https://player.vimeo.com{}", path_and_query));
     }
 
-    let (path, query) = match path_and_query.find('?') {
-        Some(i) => (&path_and_query[..i], Some(&path_and_query[i..])), // includes the '?'
+    // `split_at_checked`, not `split_once`: the query half keeps its leading '?'.
+    let (path, query) = match path_and_query
+        .find('?')
+        .and_then(|i| path_and_query.split_at_checked(i))
+    {
+        Some((path, query)) => (path, Some(query)),
         None => (path_and_query, None),
     };
     let mut segments = path.trim_start_matches('/').split('/');

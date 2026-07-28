@@ -449,13 +449,13 @@ pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String)> 
     let close_paren = paren_close?;
 
     // Phase 3: after `)`, only whitespace/blank lines.
-    let tail = &stripped[close_paren + 1..];
+    let tail = stripped.get(close_paren + 1..)?;
     if !tail.chars().all(|c| c.is_whitespace()) {
         return None;
     }
 
     // Phase 4: validate inner content.
-    let inner = &stripped[1..close_bracket];
+    let inner = stripped.get(1..close_bracket)?;
     if inner.trim().is_empty() {
         return None;
     }
@@ -512,7 +512,7 @@ pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String)> 
         }
     }
 
-    let url = &stripped[close_bracket + 2..close_paren];
+    let url = stripped.get(close_bracket + 2..close_paren)?;
     Some((url.to_string(), inner.to_string()))
 }
 

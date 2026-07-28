@@ -799,7 +799,7 @@ fn parse_block_with_tag(
 /// can fall back to constructing the standard `Block::Paragraph` without
 /// re-walking events.
 fn try_promote_to_figure(
-    inlines: Vec<Inline>,
+    mut inlines: Vec<Inline>,
     events: &[Event<'_>],
     para_start: usize,
 ) -> Result<Block, Vec<Inline>> {
@@ -922,15 +922,14 @@ fn try_promote_to_figure(
     }
 
     // Extract the single image, applying the width-stripped alt if any.
-    let mut image_owned: Option<Inline> = None;
-    for inline in inlines.into_iter() {
-        if matches!(inline, Inline::Image { .. }) {
-            image_owned = Some(inline);
-            break;
-        }
-    }
-    let mut image =
-        image_owned.expect("invariant: image_count == 1 implies one Image present");
+    let Some(image_pos) = inlines.iter().position(|i| matches!(i, Inline::Image { .. }))
+    else {
+        // `image_count == 1` was checked above, so this never fires. Handing the
+        // inlines back is this function's own "can't promote" path — a better
+        // failure than a panic if that invariant ever stops holding.
+        return Err(inlines);
+    };
+    let mut image = inlines.swap_remove(image_pos);
     if let (Some(new_alt), Inline::Image { alt, .. }) = (rewritten_alt, &mut image) {
         *alt = new_alt;
     }
@@ -1560,13 +1559,13 @@ fn detect_and_assemble_callout(
 fn parse_callout_marker(text: &str) -> Option<(&str, Option<Fold>, Option<&str>, usize)> {
     let after_open = text.strip_prefix("[!")?;
     let close_offset = after_open.find(']')?;
-    let raw_kind = &after_open[..close_offset];
+    let raw_kind = after_open.get(..close_offset)?;
     if raw_kind.is_empty() || raw_kind.chars().any(|c| c.is_whitespace()) {
         return None;
     }
     // Offset within `text` immediately after the `]`.
     let after_bracket_offset = 2 + close_offset + 1;
-    let rest = &text[after_bracket_offset..];
+    let rest = text.get(after_bracket_offset..)?;
 
     let (fold, after_fold_offset) = match rest.chars().next() {
         Some('+') => (Some(Fold::Open), after_bracket_offset + 1),
@@ -1574,7 +1573,7 @@ fn parse_callout_marker(text: &str) -> Option<(&str, Option<Fold>, Option<&str>,
         _ => (None, after_bracket_offset),
     };
 
-    let rest_after_fold = &text[after_fold_offset..];
+    let rest_after_fold = text.get(after_fold_offset..)?;
     let (title, marker_byte_len) = if rest_after_fold.is_empty() {
         // Marker only, no title segment.
         (None, after_fold_offset)

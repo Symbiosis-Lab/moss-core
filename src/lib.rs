@@ -55,9 +55,8 @@
 //! profile), so a panic on user input crashes the whole desktop app (see the
 //! `date.rs` fix for the
 //! editor-mount panic on Chinese filenames). The lint attributes below enforce
-//! the panic-free contract — `deny(clippy::string_slice)` plus
-//! `deny(clippy::unwrap_used/expect_used)` outside tests — each with a per-site
-//! escape-hatch rule.
+//! the panic-free contract — `string_slice` plus `unwrap_used`/`expect_used`,
+//! all denied outside tests — each with a per-site escape-hatch rule.
 
 #![forbid(unsafe_code)]
 // `clippy::string_slice` flags `&s[..n]` byte-indexed slicing on `&str`. That
@@ -66,7 +65,14 @@
 // carry a per-site `#[allow(clippy::string_slice)]` with a one-line rationale
 // (e.g. "char-aligned: pos came from `find('/')`"). Audited at PR time, not
 // "we hope no one writes the bug shape again."
-#![deny(clippy::string_slice)]
+//
+// Exempted in tests via `cfg_attr(not(test), ...)`, for the same reason as the
+// `unwrap_used`/`expect_used` pair below: the contract protects PRODUCTION —
+// a panic there crashes the desktop app on user input. A test that slices past
+// a char boundary just fails, which is the outcome a test wants. Prod code is
+// at zero without a single `#[allow]`; keeping the deny unconditional would
+// only tax assertion messages like `&html[..html.len().min(300)]`.
+#![cfg_attr(not(test), deny(clippy::string_slice))]
 // `clippy::unwrap_used` / `clippy::expect_used` enforce the second half of the
 // panic-free contract: production code must never `.unwrap()` / `.expect()`
 // a value that could be `None`/`Err` at runtime. Test code (`#[cfg(test)]

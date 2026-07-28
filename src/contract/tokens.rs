@@ -215,7 +215,12 @@ pub fn format_dark_root_block(tokens: &Tokens) -> String {
         out.push_str(&format!("  /* {} */\n", title));
 
         for entry in dark_entries {
-            let dark_val = entry.dark_value.as_deref().unwrap();
+            // `dark_entries` is filtered to entries that have one; skip rather than
+            // panic if that ever stops holding — a missing dark value is a dropped
+            // declaration, not a reason to fail the build.
+            let Some(dark_val) = entry.dark_value.as_deref() else {
+                continue;
+            };
             let value = normalize_value(dark_val, entry.type_hint.as_deref());
             out.push_str(&format!("  --{}: {};\n", entry.name, value));
         }
@@ -276,7 +281,12 @@ pub fn format_dark_media_block(tokens: &Tokens) -> String {
         out.push_str(&format!("  /* {} */\n", title));
 
         for entry in dark_entries {
-            let dark_val = entry.dark_value.as_deref().unwrap();
+            // `dark_entries` is filtered to entries that have one; skip rather than
+            // panic if that ever stops holding — a missing dark value is a dropped
+            // declaration, not a reason to fail the build.
+            let Some(dark_val) = entry.dark_value.as_deref() else {
+                continue;
+            };
             let value = normalize_value(dark_val, entry.type_hint.as_deref());
             out.push_str(&format!("  --{}: {};\n", entry.name, value));
         }
@@ -342,10 +352,12 @@ fn normalize_hex_color(value: &str) -> String {
             let lower = rest.to_lowercase();
             // Expand 3-digit hex to 6-digit.
             if lower.len() == 3 {
-                let r = &lower[0..1];
-                let g = &lower[1..2];
-                let b = &lower[2..3];
-                return format!("#{r}{r}{g}{g}{b}{b}");
+                let mut digits = lower.chars();
+                if let (Some(r), Some(g), Some(b)) =
+                    (digits.next(), digits.next(), digits.next())
+                {
+                    return format!("#{r}{r}{g}{g}{b}{b}");
+                }
             }
             return format!("#{}", lower);
         }

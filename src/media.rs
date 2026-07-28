@@ -504,10 +504,13 @@ pub fn set_image_width(image_md: &str, width: Option<&str>) -> String {
 
     // ── Standard: ![alt](url) ────────────────────────────────────────
     if image_md.starts_with("![") {
-        if let Some(close) = image_md.rfind("](") {
-            if image_md.ends_with(')') {
-                let alt_raw = &image_md[2..close];
-                let url = &image_md[close + 2..image_md.len() - 1];
+        // `![` off the front and `)` off the back, then split on the last `](`:
+        // the same three anchors the byte offsets used, without the arithmetic.
+        let body = image_md
+            .strip_prefix("![")
+            .and_then(|rest| rest.strip_suffix(')'));
+        if let Some((alt_raw, url)) = body.and_then(|body| body.rsplit_once("](")) {
+            {
                 let (rest_alt, _old) = split_alt_width(alt_raw);
                 // Setting a width always emits `![{alt}|{w}]` — even when the
                 // remaining alt is empty (`![|55%]`), so it round-trips with

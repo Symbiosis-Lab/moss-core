@@ -316,14 +316,25 @@ fn lower_transclusion_and_folder_wikilinks(
         let mut rewritten = String::with_capacity(line.len());
         let mut rest = line;
         while let Some(start) = rest.find("![[") {
-            rewritten.push_str(&rest[..start]);
-            let after = &rest[start + 3..];
-            let Some(end) = after.find("]]") else {
-                rewritten.push_str(&rest[start..]);
-                rest = "";
+            // Split once at the marker and name what follows. Every bail below is
+            // a plain `break`: `rest` already points at the unconsumed marker, and
+            // the `push_str(rest)` after the loop emits it verbatim — which is the
+            // no-rewrite behaviour these paths want anyway.
+            let Some((before, from_marker)) = rest.split_at_checked(start) else {
                 break;
             };
-            let inner = &after[..end];
+            rewritten.push_str(before);
+            rest = from_marker;
+            let Some(after) = rest.get(3..) else { break };
+            let Some(end) = after.find("]]") else { break };
+            // `token` is the whole `![[…]]`; `remainder` is everything past it.
+            // Computed once here instead of re-deriving `start + 3 + end + 2`
+            // at each of the nine exits below.
+            let (Some(inner), Some(token), Some(remainder)) =
+                (after.get(..end), rest.get(..3 + end + 2), after.get(end + 2..))
+            else {
+                break;
+            };
             // Pothole-aware: pre-Phase-3 dropped pothole text for the
             // marker (params live in the marker's heading-anchor /
             // query suffix). Today the marker only cares about the
@@ -332,15 +343,15 @@ fn lower_transclusion_and_folder_wikilinks(
                 Some((f, _)) => f,
                 None => inner,
             };
-            let (file_part, anchor) = match inner_no_pothole.find('#') {
-                Some(p) => (&inner_no_pothole[..p], Some(&inner_no_pothole[p + 1..])),
+            let (file_part, anchor) = match inner_no_pothole.split_once('#') {
+                Some((file, anchor)) => (file, Some(anchor)),
                 None => (inner_no_pothole, None),
             };
 
             // Skip empty target (`![[]]` is meaningless).
             if file_part.is_empty() {
-                rewritten.push_str(&rest[start..start + 3 + end + 2]);
-                rest = &rest[start + 3 + end + 2..];
+                rewritten.push_str(token);
+                rest = remainder;
                 continue;
             }
 
@@ -357,7 +368,7 @@ fn lower_transclusion_and_folder_wikilinks(
                 let marker =
                     embed_renderer::folder_list::emit_marker(file_part, source_path, &params);
                 rewritten.push_str(&marker);
-                rest = &rest[start + 3 + end + 2..];
+                rest = remainder;
                 continue;
             }
 
@@ -368,8 +379,8 @@ fn lower_transclusion_and_folder_wikilinks(
             let target_path = match resolved {
                 fuzzy_path::ResolvedRef::Found(p) => p,
                 fuzzy_path::ResolvedRef::Unresolved => {
-                    rewritten.push_str(&rest[start..start + 3 + end + 2]);
-                    rest = &rest[start + 3 + end + 2..];
+                    rewritten.push_str(token);
+                    rest = remainder;
                     continue;
                 }
             };
@@ -388,7 +399,7 @@ fn lower_transclusion_and_folder_wikilinks(
                 rewritten.push_str("<!-- moss-embed:");
                 rewritten.push_str(&target_with_anchor);
                 rewritten.push_str(" -->");
-                rest = &rest[start + 3 + end + 2..];
+                rest = remainder;
                 continue;
             }
             // Deferred-handler embeds: `.ipynb` → notebook marker,
@@ -408,14 +419,14 @@ fn lower_transclusion_and_folder_wikilinks(
                 rewritten.push(':');
                 rewritten.push_str(&target_path);
                 rewritten.push_str(" -->");
-                rest = &rest[start + 3 + end + 2..];
+                rest = remainder;
                 continue;
             }
             // Other extensions (.pdf / .mp4 / .png / etc.) flow through
             // the Stage 2 dispatcher untouched — those renderers
             // produce HTML inline, not deferred markers.
-            rewritten.push_str(&rest[start..start + 3 + end + 2]);
-            rest = &rest[start + 3 + end + 2..];
+            rewritten.push_str(token);
+            rest = remainder;
         }
         rewritten.push_str(rest);
         output_lines.push(rewritten);

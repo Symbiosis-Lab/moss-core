@@ -184,8 +184,8 @@ pub fn extract_md_references(source: &str) -> Vec<RawRef> {
                 let inner = &source[inner_start..close];
                 let token_end = close + 2;
                 // Split on | for alias/pothole
-                let (path_part, pipe_part) = match inner.find('|') {
-                    Some(p) => (&inner[..p], Some(&inner[p+1..])),
+                let (path_part, pipe_part) = match inner.split_once('|') {
+                    Some((before, after)) => (before, Some(after)),
                     None => (inner, None),
                 };
                 // Only record non-empty targets
