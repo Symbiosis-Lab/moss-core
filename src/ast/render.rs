@@ -524,7 +524,14 @@ fn render_block<H: RenderHooks + ?Sized>(
                     src, alt, title, ..
                 } => match src {
                     Url::Resolved(r) => {
-                        hooks.render_image_styled(out, r, alt, title.as_deref(), img_style.as_deref());
+                        hooks.render_image_styled(
+                            out,
+                            r,
+                            alt,
+                            title.as_deref(),
+                            img_style.as_deref(),
+                            width.as_deref(),
+                        );
                     }
                     Url::Unresolved(s) => {
                         debug_assert!(

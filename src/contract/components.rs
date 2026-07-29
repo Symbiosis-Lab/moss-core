@@ -949,7 +949,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-width",
                 values: &["body", "wide", "page", "screen"],
                 default: "body",
-                description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9. Phase 1c will emit this from authoring shortcode (e.g. `:::hero {full}` -> `data-width=\"screen\"`).",
+                description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9. Emitted from the authoring shortcode (e.g. `:::hero {full}` -> `data-width=\"screen\"`); on article children, site.css sizes the band via the content-width escape (ADR-021 Corollary 2). The hero itself escapes by DOM position (outside `<main>`), not by these rules.",
             },
             DataAttr {
                 name: "data-slides",

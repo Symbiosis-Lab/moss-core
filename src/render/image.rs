@@ -256,6 +256,13 @@ pub struct ImageRenderOptions<'a> {
     /// for `:::hero` covers carrying `MediaAttrs`). The caller is responsible
     /// for HTML-escaping values inside this fragment.
     pub extra_attrs: Option<&'a str>,
+    /// Explicit `sizes=` override for the srcset ladder. When `Some`, wins
+    /// over the [`ImageContext`]-derived default — used by callers that know
+    /// the rendered slot better than the context does: a figure carrying a
+    /// `data-width` token ([`crate::contract::sizes::sizes_for_data_width`])
+    /// or an image inside a `.moss-grid` cell
+    /// ([`crate::contract::sizes::sizes_for_grid_cell`]).
+    pub sizes: Option<&'a str>,
 }
 
 /// Synthesize the HTML for an image reference.
@@ -399,28 +406,26 @@ pub fn synthesize_image_html(
     // and optional `<figcaption>` are the only context-dependent
     // structure. Compute the inner first, then wrap if requested.
     //
-    // The context also decides the `sizes=` value for the srcset ladder
+    // The context decides the `sizes=` value for the srcset ladder
     // (responsive-image-variants Task 3): full-bleed surfaces (hero,
-    // `data-width="screen|full"` figures) span the viewport; cards/gallery
-    // thumbs occupy grid cells; everything else renders in the content
-    // column. Only emitted when the ladder is non-empty — see
-    // synthesize_inner.
-    //
-    // wide/page intentionally map to SIZES_BODY: today's site.css has NO
-    // width rule for data-width (ADR-021 follow-up), so wide/page figures
-    // render at the content column and 100vw would over-fetch. When ADR-021
-    // gives data-width real widths, update this mapping (blurry-risk
-    // otherwise). Same note in contract/sizes.rs.
-    let sizes_value: &str = match &context {
-        ImageContext::Hero => ctx_sizes::SIZES_FULL_BLEED,
-        ImageContext::MarkdownStandalone { width: Some(w), .. }
-            if matches!(*w, "screen" | "full") =>
-        {
-            ctx_sizes::SIZES_FULL_BLEED
-        }
-        ImageContext::FolderCardCover | ImageContext::LinkPreview => ctx_sizes::SIZES_CARD,
-        ImageContext::GalleryThumb => ctx_sizes::SIZES_GALLERY,
-        _ => ctx_sizes::SIZES_BODY,
+    // `data-width="screen|full"` figures) span the viewport; wide/page
+    // figures span their escape band (ADR-021 Corollary 2, the data-width
+    // CSS in site.css); cards/gallery thumbs occupy grid cells; everything
+    // else renders in the content column. `options.sizes` overrides all of
+    // it — the caller (figure renderer with a data-width token, grid cell)
+    // knows the slot better than the context does. Only emitted when the
+    // ladder is non-empty — see synthesize_inner.
+    let sizes_value: &str = match options.sizes {
+        Some(s) => s,
+        None => match &context {
+            ImageContext::Hero => ctx_sizes::SIZES_FULL_BLEED,
+            ImageContext::MarkdownStandalone { width: Some(w), .. } => {
+                ctx_sizes::sizes_for_data_width(w).unwrap_or(ctx_sizes::SIZES_BODY)
+            }
+            ImageContext::FolderCardCover | ImageContext::LinkPreview => ctx_sizes::SIZES_CARD,
+            ImageContext::GalleryThumb => ctx_sizes::SIZES_GALLERY,
+            _ => ctx_sizes::SIZES_BODY,
+        },
     };
     let inner = synthesize_inner(src, alt, assets, options, sizes_value);
 

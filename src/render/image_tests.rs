@@ -1168,12 +1168,12 @@ fn hero_context_uses_full_bleed_sizes() {
 }
 
 #[test]
-fn markdown_standalone_width_wide_uses_body_sizes() {
-    // Task-3 review decision: wide/page map to SIZES_BODY, NOT full
-    // bleed — today's site.css has no width rule for data-width
-    // (ADR-021 follow-up), so a wide figure renders at the content
-    // column and 100vw would over-fetch. When ADR-021 lands, this
-    // mapping (and test) flips to SIZES_FULL_BLEED.
+fn markdown_standalone_width_wide_uses_wide_band_sizes() {
+    // ADR-021 Corollary 2 content-width escape (2026-07-30): site.css now
+    // sizes data-width bands, so a wide figure declares the wide band —
+    // min(63rem, 100vw) above the 48rem breakpoint — not the content
+    // column. (Pre-escape this mapped to SIZES_BODY because the attribute
+    // had no width rule and 100vw would have over-fetched.)
     let s = snapshot_dims("photo.jpg", 2000, 1200);
     let extras = empty_extras();
     let html = synthesize_image_html(
@@ -1194,19 +1194,61 @@ fn markdown_standalone_width_wide_uses_body_sizes() {
         "got: {html}"
     );
     assert!(
-        html.contains(r#"sizes="(min-width: 48rem) 47.25rem, 100vw""#),
-        "wide maps to SIZES_BODY until ADR-021; got: {html}"
+        html.contains(r#"sizes="(min-width: 48rem) min(63rem, 100vw), 100vw""#),
+        "wide declares the wide escape band; got: {html}"
+    );
+}
+
+#[test]
+fn markdown_standalone_width_page_uses_page_band_sizes() {
+    // page = --moss-site-max-width (1200px), clamped to the container.
+    let s = snapshot_dims("photo.jpg", 2000, 1200);
+    let extras = empty_extras();
+    let html = synthesize_image_html(
+        "photo.jpg",
+        "",
+        &s,
+        ImageContext::MarkdownStandalone {
+            caption: None,
+            width: Some("page"),
+            align: None,
+            class_names: &[],
+            extra_attrs: &extras,
+        },
+        &ImageRenderOptions::default(),
+    );
+    assert!(
+        html.contains(r#"sizes="(min-width: 48rem) min(1200px, 100vw), 100vw""#),
+        "page declares the page escape band; got: {html}"
+    );
+}
+
+#[test]
+fn explicit_sizes_option_overrides_context() {
+    // The options.sizes channel (figure data-width tokens and grid-cell
+    // scoping thread through it) must win over the context default.
+    let s = snapshot_dims("photo.jpg", 2000, 1200);
+    let html = synthesize_image_html(
+        "photo.jpg",
+        "",
+        &s,
+        ImageContext::MarkdownInline,
+        &ImageRenderOptions {
+            sizes: Some("(min-width: 48rem) calc(min(1200px, 100vw) / 3), 100vw"),
+            ..Default::default()
+        },
+    );
+    assert!(
+        html.contains(r#"sizes="(min-width: 48rem) calc(min(1200px, 100vw) / 3), 100vw""#),
+        "options.sizes must override the context default; got: {html}"
     );
 }
 
 #[test]
 fn markdown_standalone_width_screen_uses_full_bleed_sizes() {
-    // Honest framing: today's site.css has NO data-width width rule for
-    // ANY value (site.css:2346-2348 — ADR-021 follow-up), so
-    // screen/full → 100vw is a forward-compat plan-owner call, not a
-    // reflection of current CSS. Over-fetch is the safe direction for
-    // an intended-full-bleed figure (never blurry, at worst wasted
-    // bytes). Mirrors markdown_standalone_width_screen_emits_data_width
+    // screen/full = the full container band (100cqw in site.css's
+    // content-width escape); 100vw is the closest sizes= can express.
+    // Mirrors markdown_standalone_width_screen_emits_data_width
     // _on_figure but with ladder-triggering dims.
     let s = snapshot_dims("photo.jpg", 2000, 1200);
     let extras = empty_extras();

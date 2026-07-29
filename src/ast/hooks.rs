@@ -125,11 +125,14 @@ pub trait RenderHooks {
 
     /// Emit the inner `<img>` of a `Block::Figure`, optionally carrying an
     /// inline `style=` fragment on the image element (fit/position from a
-    /// parameterized wikilink embed, e.g. `object-fit:cover`).
+    /// parameterized wikilink embed, e.g. `object-fit:cover`) and the
+    /// figure's `data-width` token (`wide|page|screen|body`, or a percent),
+    /// so snapshot-aware impls can declare an honest `sizes=` for the
+    /// escape band the figure renders in (ADR-021 Corollary 2).
     ///
-    /// Default impl ignores `img_style` and delegates to [`render_image`],
-    /// so only snapshot-aware impls that can thread it through the
-    /// synthesizer's `extra_attrs` channel honor it. `img_style: None` MUST
+    /// Default impl ignores `img_style`/`width` and delegates to
+    /// [`render_image`], so only snapshot-aware impls that can thread them
+    /// through the synthesizer honor them. `img_style: None` MUST
     /// produce byte-identical output to a plain `render_image` call — the
     /// CommonMark `![](url)` figure path always passes `None`.
     fn render_image_styled(
@@ -139,10 +142,26 @@ pub trait RenderHooks {
         alt: &str,
         title: Option<&str>,
         img_style: Option<&str>,
+        width: Option<&str>,
     ) {
-        let _ = img_style;
+        let _ = (img_style, width);
         self.render_image(out, src, alt, title);
     }
+
+    /// Scope marker: the Grid arm of [`render_shortcode`]'s default impl
+    /// calls this before rendering cell blocks (and [`end_grid_cells`]
+    /// after), so an impl can scope image `sizes=` emission to the grid
+    /// CELL width instead of the content column — see
+    /// [`crate::contract::sizes::sizes_for_grid_cell`]. Calls nest for
+    /// grids inside grid cells (inner-most wins).
+    ///
+    /// Default: no-op. [`DefaultHooks`] keeps a stack.
+    fn begin_grid_cells(&self, columns: u32, data_width: Option<&str>) {
+        let _ = (columns, data_width);
+    }
+
+    /// Close the scope opened by [`begin_grid_cells`]. Default: no-op.
+    fn end_grid_cells(&self) {}
 
     /// Emit a math equation (ADR-030). `tex` is the raw LaTeX the author typed
     /// (delimiters stripped, unescaped); `display` distinguishes `$$…$$` from
@@ -583,6 +602,9 @@ pub trait RenderHooks {
                 // match production's `cards_html.join("\n")` from the
                 // (now-deleted) `render_grid_html_typed` byte shape.
                 let mut card_htmls: Vec<String> = Vec::with_capacity(args.cells.len());
+                // Scope image sizes= to the cell track while cells render
+                // (begin/end pair; see begin_grid_cells docs).
+                self.begin_grid_cells(args.columns, args.width.as_deref());
                 for cell_blocks in &args.cells {
                     let mut cell_html = String::new();
                     super::render::render_blocks(self, &mut cell_html, cell_blocks);
@@ -597,6 +619,7 @@ pub trait RenderHooks {
                     };
                     card_htmls.push(wrapped);
                 }
+                self.end_grid_cells();
                 out.push_str(&card_htmls.join("\n"));
                 out.push_str("</div>");
             }
@@ -721,6 +744,12 @@ pub trait RenderHooks {
 #[derive(Debug, Default)]
 pub struct DefaultHooks<'a> {
     assets: Option<&'a crate::asset_snapshot::AssetSnapshot>,
+    /// Stack of grid-cell `sizes=` scopes (innermost last), pushed/popped
+    /// by [`RenderHooks::begin_grid_cells`]/[`end_grid_cells`] around the
+    /// Grid arm's cell rendering. `RefCell` because the render walk holds
+    /// `&self` throughout; nesting (a grid inside a grid cell) is why this
+    /// is a stack and not an `Option`.
+    grid_cell_sizes: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'a> DefaultHooks<'a> {
@@ -730,7 +759,10 @@ impl<'a> DefaultHooks<'a> {
     /// this for tests, fragment-render paths, and downstream consumers
     /// without a primed `AssetSnapshot`.
     pub fn new() -> Self {
-        Self { assets: None }
+        Self {
+            assets: None,
+            grid_cell_sizes: std::cell::RefCell::new(Vec::new()),
+        }
     }
 
     /// Construct a `DefaultHooks` carrying an [`AssetSnapshot`] for the
@@ -742,6 +774,7 @@ impl<'a> DefaultHooks<'a> {
     pub fn with_snapshot(assets: &'a crate::asset_snapshot::AssetSnapshot) -> Self {
         Self {
             assets: Some(assets),
+            grid_cell_sizes: std::cell::RefCell::new(Vec::new()),
         }
     }
 }
@@ -791,7 +824,19 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
         alt: &str,
         title: Option<&str>,
     ) {
-        self.render_image_styled(out, src, alt, title, None);
+        self.render_image_styled(out, src, alt, title, None, None);
+    }
+
+    fn begin_grid_cells(&self, columns: u32, data_width: Option<&str>) {
+        self.grid_cell_sizes
+            .borrow_mut()
+            .push(crate::contract::sizes::sizes_for_grid_cell(
+                columns, data_width,
+            ));
+    }
+
+    fn end_grid_cells(&self) {
+        self.grid_cell_sizes.borrow_mut().pop();
     }
 
     /// Snapshot-aware figure-inner image. `img_style` (fit/position from a
@@ -802,6 +847,11 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
     /// (the same guard the legacy fast-path relied on). `img_style: None`
     /// yields `ImageRenderOptions::default()` — byte-identical to before the
     /// synth-collapse.
+    ///
+    /// `sizes=` precedence for the srcset ladder (most specific slot
+    /// knowledge wins): the figure's own `data-width` token → the enclosing
+    /// grid cell scope ([`begin_grid_cells`]) → the context default
+    /// ([`crate::contract::sizes::SIZES_BODY`] via `MarkdownInline`).
     fn render_image_styled(
         &self,
         out: &mut String,
@@ -809,6 +859,7 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
         alt: &str,
         title: Option<&str>,
         img_style: Option<&str>,
+        width: Option<&str>,
     ) {
         let assets = match self.assets {
             Some(a) => a,
@@ -843,8 +894,15 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
         let ctx = crate::render::image::ImageContext::MarkdownInline;
         let style_attr =
             img_style.map(|s| format!(r#"style="{}""#, crate::media::html_escape(s)));
+        // sizes= precedence: figure data-width token > grid cell scope >
+        // context default (see doc comment above).
+        let cell_scope = self.grid_cell_sizes.borrow();
+        let sizes: Option<&str> = width
+            .and_then(crate::contract::sizes::sizes_for_data_width)
+            .or_else(|| cell_scope.last().map(String::as_str));
         let opts = crate::render::image::ImageRenderOptions {
             extra_attrs: style_attr.as_deref(),
+            sizes,
             ..Default::default()
         };
         let html = crate::render::image::synthesize_image_html(
@@ -1077,6 +1135,7 @@ pub(super) fn escape_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::node::Inline;
     use crate::ast::url::Url;
 
     #[test]
@@ -1778,6 +1837,115 @@ mod tests {
         assert!(
             !out.contains("data-source-range"),
             "grid must omit source range when no source line; got: {out}"
+        );
+    }
+
+    // --- ADR-021 Corollary 2: sizes= threading through the typed paths ---
+    //
+    // These pin the PRODUCTION figure/grid render paths (Block::Figure and
+    // the Grid arm — the wikilink `![[x|screen]]` route), not just the
+    // synthesizer's MarkdownStandalone context, which production no longer
+    // constructs. Regression: `![[hero.png|screen]]` used to emit SIZES_BODY
+    // because the Figure renderer dropped the width before the synth call.
+
+    /// Snapshot with dims big enough to trigger the srcset ladder (sizes=
+    /// is only emitted when the ladder is non-empty).
+    fn ladder_snapshot(path: &str) -> crate::asset_snapshot::AssetSnapshot {
+        let mut s = crate::asset_snapshot::AssetSnapshot::new();
+        s.dimensions
+            .insert(std::path::PathBuf::from(path), (2000, 1200));
+        s
+    }
+
+    fn figure_block(width: Option<&str>) -> Block {
+        Block::Figure {
+            image: Inline::Image {
+                src: Url::Resolved(ResolvedUrl::new("photo.jpg", UrlKind::Asset)),
+                alt: String::new(),
+                title: None,
+                is_wikilink: true,
+                wikilink_pothole: None,
+            },
+            caption: None,
+            width: width.map(String::from),
+            align: None,
+            class_names: Vec::new(),
+            img_style: None,
+        }
+    }
+
+    #[test]
+    fn figure_block_screen_width_reaches_sizes() {
+        let snap = ladder_snapshot("photo.jpg");
+        let hooks = DefaultHooks::with_snapshot(&snap);
+        let mut out = String::new();
+        super::super::render::render_blocks(&hooks, &mut out, &[figure_block(Some("screen"))]);
+        assert!(
+            out.contains(r#"data-width="screen""#),
+            "figure carries the attribute; got: {out}"
+        );
+        assert!(
+            out.contains(r#"sizes="100vw""#),
+            "a |screen figure must declare full-bleed sizes, not the content column; got: {out}"
+        );
+    }
+
+    #[test]
+    fn figure_block_wide_width_reaches_sizes() {
+        let snap = ladder_snapshot("photo.jpg");
+        let hooks = DefaultHooks::with_snapshot(&snap);
+        let mut out = String::new();
+        super::super::render::render_blocks(&hooks, &mut out, &[figure_block(Some("wide"))]);
+        assert!(
+            out.contains(r#"sizes="(min-width: 48rem) min(63rem, 100vw), 100vw""#),
+            "a |wide figure declares the wide band; got: {out}"
+        );
+    }
+
+    #[test]
+    fn grid_cell_image_declares_cell_sizes_and_scope_pops() {
+        let snap = ladder_snapshot("photo.jpg");
+        let hooks = DefaultHooks::with_snapshot(&snap);
+        let grid = Shortcode::Grid(crate::ast::GridShortcode {
+            columns: 3,
+            ratio: None,
+            classes: String::new(),
+            cells: vec![vec![figure_block(None)]],
+            width: Some("page".to_string()),
+        });
+        let mut out = String::new();
+        hooks.render_shortcode(&mut out, &grid, None);
+        assert!(
+            out.contains(r#"sizes="(min-width: 48rem) calc(min(1200px, 100vw) / 3), 100vw""#),
+            "a widthless figure in a 3-col page grid declares the cell track; got: {out}"
+        );
+
+        // The scope must not leak past the grid: a figure rendered after
+        // returns to the content-column default.
+        let mut after = String::new();
+        super::super::render::render_blocks(&hooks, &mut after, &[figure_block(None)]);
+        assert!(
+            after.contains(r#"sizes="(min-width: 48rem) 47.25rem, 100vw""#),
+            "grid cell scope leaked; got: {after}"
+        );
+    }
+
+    #[test]
+    fn grid_cell_figure_own_width_beats_cell_scope() {
+        let snap = ladder_snapshot("photo.jpg");
+        let hooks = DefaultHooks::with_snapshot(&snap);
+        let grid = Shortcode::Grid(crate::ast::GridShortcode {
+            columns: 2,
+            ratio: None,
+            classes: String::new(),
+            cells: vec![vec![figure_block(Some("screen"))]],
+            width: None,
+        });
+        let mut out = String::new();
+        hooks.render_shortcode(&mut out, &grid, None);
+        assert!(
+            out.contains(r#"sizes="100vw""#),
+            "an explicit |screen inside a grid cell wins over the cell track; got: {out}"
         );
     }
 }
