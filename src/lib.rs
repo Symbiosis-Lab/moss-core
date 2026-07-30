@@ -24,7 +24,10 @@
 //!   embeds (`[[...]]`) become ordinary markdown links; [`content_graph`] does the
 //!   Obsidian-style fuzzy path matching underneath.
 //! - **Utilities** — small stateless helpers the editor and build share:
-//!   [`slug`], [`date`], [`sort`], [`home`], [`page_kind`], and [`heading`].
+//!   [`slug`], [`date`], [`sort`], [`home`], [`page_kind`], [`heading`], and
+//!   [`inert_regions`] (the one answer to "which byte ranges of this markdown
+//!   are code or comment, and therefore not live syntax?", shared by every
+//!   pre-parse scanner in moss).
 //!
 //! Plus [`contract`]: the design surface (W3C design tokens + the `moss-*` HTML
 //! class table) that theme authors and codegen depend on.
@@ -96,6 +99,7 @@ pub mod frontmatter_union;
 pub mod frontmatter_typed;
 pub mod heading;
 pub use heading::{extract_headings, HeadingInfo};
+pub mod inert_regions;
 pub mod link_candidates;
 pub mod link_completions;
 pub mod media;

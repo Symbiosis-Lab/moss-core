@@ -210,6 +210,7 @@ mod tests {
         let out = r.render(&ParsedEmbed {
             resolved_path: "x.html",
             from_path: "post.md",
+            pinned_url: "x.html",
             query: None,
             section: None,
             alias: None,

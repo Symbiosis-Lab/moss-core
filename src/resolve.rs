@@ -272,42 +272,28 @@ pub fn resolve_content_with_handlers_and_snapshot(
 /// video / audio / 3d / notebook / table embeds still flow through the
 /// Stage 2 dispatcher untouched.
 ///
-/// The conversion is line-based and respects fenced code blocks
-/// (`{```/~~~}` blocks pass through unchanged). It does not honor
-/// inline-code spans on a line — wikilinks inside `` `like this` ``
-/// would also be rewritten — which mirrors the pre-Phase-3 wikilink
-/// resolver's coarse line-level scan.
+/// Inert regions are honored via [`crate::inert_regions`], the one shared
+/// scanner: a wikilink inside a code fence, an indented code block, an
+/// inline code span or an HTML comment is left exactly as written. The
+/// inline-code and comment cases are new — this pass used to carry its own
+/// fence-only tracker, so `` `![[note]]` `` in prose was rewritten into a
+/// marker and `<!-- ![[note]] -->` was rewritten into a nested comment.
 fn lower_transclusion_and_folder_wikilinks(
     body: &str,
     graph: &ContentGraph,
     source_path: &str,
 ) -> String {
     let mut output_lines: Vec<String> = Vec::with_capacity(body.lines().count() + 1);
-    let mut fence_char: Option<char> = None;
-    for line in body.lines() {
-        // Fenced code block tracking — same logic as markdown_refs.
-        if let Some(fc) = fence_char {
-            let trimmed = line.trim_start();
-            let closes = trimmed.starts_with(fc)
-                && trimmed.chars().take(3).all(|c| c == fc)
-                && trimmed.trim_matches(fc).trim().is_empty();
-            if closes {
-                fence_char = None;
-            }
+    // The mask is byte-length- and line-preserving, so an offset in a masked
+    // line indexes the real line: a `![[` that survives in the mask is live,
+    // one that was blanked out is code or comment.
+    let masked = crate::inert_regions::mask_inert(body);
+    for (line, masked_line) in body.lines().zip(masked.lines()) {
+        // Nothing live to rewrite — covers whole-line inert regions (fenced
+        // and indented code) and ordinary prose alike.
+        if !masked_line.contains("![[") {
             output_lines.push(line.to_string());
             continue;
-        }
-        let trimmed = line.trim_start();
-        let fence_rest = trimmed
-            .strip_prefix("```")
-            .map(|r| ('`', r))
-            .or_else(|| trimmed.strip_prefix("~~~").map(|r| ('~', r)));
-        if let Some((candidate_char, rest)) = fence_rest {
-            if !rest.contains(candidate_char) {
-                fence_char = Some(candidate_char);
-                output_lines.push(line.to_string());
-                continue;
-            }
         }
 
         // Rewrite `![[…]]` wikilinks where the resolved target is a
@@ -325,6 +311,16 @@ fn lower_transclusion_and_folder_wikilinks(
             };
             rewritten.push_str(before);
             rest = from_marker;
+            // This occurrence is inert (inline code span or HTML comment on
+            // an otherwise-live line): emit the author's `![[` untouched and
+            // keep scanning the rest of the line.
+            let at = line.len() - rest.len();
+            if masked_line.as_bytes().get(at..at + 3) != Some(b"![[".as_slice()) {
+                let Some(after) = rest.get(3..) else { break };
+                rewritten.push_str("![[");
+                rest = after;
+                continue;
+            }
             let Some(after) = rest.get(3..) else { break };
             let Some(end) = after.find("]]") else { break };
             // `token` is the whole `![[…]]`; `remainder` is everything past it.
@@ -705,6 +701,61 @@ mod tests {
 
     fn mock_reader(files: &HashMap<String, String>) -> impl Fn(&str) -> Option<String> + '_ {
         move |path: &str| files.get(path).cloned()
+    }
+
+    // ----- lower_transclusion_and_folder_wikilinks: inert regions -----
+
+    fn lower(body: &str) -> String {
+        lower_transclusion_and_folder_wikilinks(body, &test_graph(), "index.md")
+    }
+
+    #[test]
+    fn transclusion_lowers_to_a_marker() {
+        assert_eq!(lower("![[note.md]]\n"), "<!-- moss-embed:note.md -->\n");
+    }
+
+    #[test]
+    fn transclusion_in_a_code_fence_is_left_alone() {
+        let md = "```\n![[note.md]]\n```\n";
+        assert_eq!(lower(md), md);
+    }
+
+    #[test]
+    fn transclusion_in_an_indented_code_block_is_left_alone() {
+        let md = "how to embed:\n\n    ![[note.md]]\n";
+        assert_eq!(lower(md), md);
+    }
+
+    #[test]
+    fn transclusion_in_an_inline_code_span_is_left_alone() {
+        // New with the shared inert scanner: this pass used to rewrite
+        // wikilinks inside inline code, so documenting the syntax silently
+        // transcluded the note being documented.
+        let md = "write `![[note.md]]` to transclude a note\n";
+        assert_eq!(lower(md), md);
+    }
+
+    #[test]
+    fn transclusion_in_an_html_comment_is_left_alone() {
+        // Also new: rewriting here produced `<!-- <!-- moss-embed:… --> -->`,
+        // whose first `-->` closed the author's comment early.
+        let md = "<!-- TODO: ![[note.md]] -->\n";
+        assert_eq!(lower(md), md);
+    }
+
+    #[test]
+    fn a_live_transclusion_beside_an_inert_one_still_lowers() {
+        // Pins the per-occurrence offset check, not just the line fast path.
+        assert_eq!(
+            lower("`![[note.md]]` renders ![[note.md]] inline\n"),
+            "`![[note.md]]` renders <!-- moss-embed:note.md --> inline\n"
+        );
+    }
+
+    #[test]
+    fn folder_list_embed_in_a_comment_is_left_alone() {
+        let md = "<!-- ![[/posts/|limit:3]] -->\n";
+        assert_eq!(lower(md), md);
     }
 
     // ----- split_frontmatter unit tests -----

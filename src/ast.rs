@@ -36,6 +36,7 @@ pub mod dispatch_wikilink_embeds;
 pub mod document;
 pub mod editor_scan;
 pub mod extract_hero;
+pub mod grid_parts;
 pub mod hooks;
 pub mod math_text;
 pub mod node;
@@ -51,12 +52,13 @@ pub mod visit;
 pub use dispatch_wikilink_embeds::{dispatch_wikilink_embeds, WikilinkDispatchResult};
 pub use document::{BlockMeta, Document};
 pub use extract_hero::{extract_hero, HeroExtraction};
+pub use grid_parts::{render_grid_parts, GridCellParts, GridParts};
 pub use hooks::{DefaultHooks, HeroOverlayHooks, RenderHooks};
 pub use node::{Block, CalloutKind, Fold, Inline};
 pub use parser::{parse, parse_with_config, parser_options, ParseConfig};
 pub use query::find_first_block_image;
-pub use render::render_document;
-pub use resolve_urls::{classify_remaining_urls, resolve_urls, GraphAssetIndex};
+pub use render::{render_block_with_meta, render_blocks, render_document};
+pub use resolve_urls::{classify_remaining_urls, resolve_urls, GraphAssetIndex, UrlResolution};
 pub use shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
     RecentShortcode, Shortcode, ShortcodeKind, SubscribeShortcode,

@@ -104,8 +104,13 @@ pub use folder_list::{MARKER_END, MARKER_FOLDER_LIST};
 pub struct ParsedEmbed<'a> {
     /// Resolved target path, as returned by the ContentGraph.
     pub resolved_path: &'a str,
-    /// The calling file's path (for computing relative asset URLs).
+    /// The calling file's path — identifies the referencing note, and is NOT an
+    /// input to the emitted URL (see [`Self::pinned_url`]).
     pub from_path: &'a str,
+    /// The URL the site serves [`Self::resolved_path`] at, pinned once by the
+    /// dispatcher via `ContentGraph::pinned_url`. Emit it verbatim; re-deriving
+    /// a URL per referencing page is moss#903 bug 3.
+    pub pinned_url: &'a str,
     /// `?query` from the source wikilink, without the leading `?`.
     pub query: Option<&'a str>,
     /// `#fragment` from the source wikilink, without the leading `#`.
@@ -305,9 +310,7 @@ pub fn lookup_renderer(ext: &str) -> Option<&'static dyn EmbedRenderer> {
 // ---------------------------------------------------------------------------
 
 use crate::heading::anchor::obsidian_heading_anchor;
-use crate::media::parse_media_attrs;
 
-use super::fuzzy_path::relative_asset_path;
 use super::title_params::TitleParams;
 
 /// Image file extensions recognized by `ImageRenderer`.
@@ -417,18 +420,14 @@ fn render_link_markdown(
     kind: &'static str,
     extra: impl FnOnce(&ParsedEmbed<'_>, &mut TitleParams),
 ) -> String {
-    let url = relative_asset_path(embed.from_path, embed.resolved_path);
-    // Phase 3 PR4 (2026-05-27): the `moss:kind=…` title channel retired.
-    // The accumulated params (kind / data-width / extras / attribute
-    // block) are no longer round-tripped through a markdown title —
-    // `parse_title` is gone, and `render_inline_md_for_dispatch` was
-    // already discarding the title in its Tag::Link arm. We keep the
-    // `params` accumulation as a no-op so the `extra` and
-    // `fold_attrs_into_params` plumbing stays exercised (tests still
-    // call through). Future PRs threading typed params into iframe /
-    // pdf / video / audio / 3D wikilink dispatch should bypass this
-    // markdown round-trip entirely — `EmitKind::Inline` is the wrong
-    // channel for typed structural data.
+    let url = embed.pinned_url;
+    // The `moss:kind=…` markdown-title channel is retired: params (kind /
+    // data-width / extras / attribute block) are no longer round-tripped
+    // through a title. The accumulation stays as a no-op so the `extra` and
+    // `fold_attrs_into_params` plumbing keeps being exercised. Anything
+    // threading typed params into iframe / pdf / video / audio / 3D dispatch
+    // must bypass this round-trip — `EmitKind::Inline` is the wrong channel
+    // for typed structural data.
     let mut params = TitleParams::default();
     params.insert("kind", kind);
     if let Some(w) = embed.width {

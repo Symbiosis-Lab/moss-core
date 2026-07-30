@@ -49,7 +49,7 @@ use crate::media::{
 use super::embed_renderer::{
     lookup_renderer, EmbedRenderer, ParsedEmbed, RenderedEmbed, Sizing, IMAGE_EXTENSIONS,
 };
-use super::fuzzy_path::{relative_asset_path, resolve_reference, ResolvedRef};
+use super::fuzzy_path::{resolve_reference, ResolvedRef};
 use super::title_params::TitleParams;
 use super::{Diagnostic, LinkType, OutgoingLink};
 
@@ -482,9 +482,11 @@ fn dispatch_embed_form(
                 link_type: LinkType::Embed,
             };
 
+            let pinned_url = graph.pinned_url(&target_path);
             let parsed = ParsedEmbed {
                 resolved_path: &target_path,
                 from_path,
+                pinned_url: &pinned_url,
                 query: split.query,
                 section: split.section,
                 alias: alias_owned.as_deref(),
@@ -492,22 +494,19 @@ fn dispatch_embed_form(
                 attrs: None,
             };
 
-            // Phase 3 PR4.5 (2026-05-27): non-image wikilink embeds
-            // (video / pdf / audio / iframe / 3D) route DIRECTLY to the
-            // typed-HTML synthesizer here. Previously they emitted
-            // `EmitKind::Inline(markdown_link)` with a `moss:kind=…`
-            // title that Stage 2 was supposed to read back via
-            // `parse_title` — but PR4 deleted `parse_title`, and PR2's
-            // markdown round-trip had already been dropping the title.
-            // The result was non-image embeds rendering as plain
-            // `<a href>` links. The fix is to skip the round-trip
-            // entirely: derive `TitleParams` from the pothole content
-            // and the resolved URL, then hand them straight to the
-            // per-kind synthesizer. Image embeds keep their inline-
-            // markdown emission so `<picture>` / `<figure>` wrap stays
-            // in the markdown round-trip path that already worked.
+            // Non-image wikilink embeds (video / pdf / audio / iframe / 3D)
+            // route DIRECTLY to the typed-HTML synthesizer: derive
+            // `TitleParams` from the pothole content and the pinned URL, then
+            // hand them to the per-kind synthesizer. Routing them through
+            // `EmitKind::Inline(markdown_link)` instead rendered them as plain
+            // `<a href>` links, because the markdown round-trip drops the
+            // title the params travelled in. Image embeds keep inline-markdown
+            // emission so the `<picture>` / `<figure>` wrap stays on the path
+            // that already worked.
             let ext = path_extension(&target_path);
-            let url = relative_asset_path(from_path, &target_path);
+            // Page-independent and case-canonical: same href from the vault root
+            // and from a note nested three folders down (moss#903 bug 3).
+            let url = pinned_url.clone();
             if let Some(synth_kind) = ext.as_deref().and_then(synth_kind_for_ext) {
                 let params = build_synth_params(synth_kind, &parsed, &pothole);
                 let html = match synth_kind {

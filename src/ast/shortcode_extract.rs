@@ -1,7 +1,9 @@
 //! Pre-parse extraction of `:::shortcode` blocks from markdown source.
 //!
-//! Walks the markdown line-by-line, tracking fenced code blocks (so
-//! `:::buttons` inside a code fence stays inert) and recognizing
+//! Walks the markdown line-by-line, skipping the inert lines
+//! [`crate::inert_regions`] reports (so `:::buttons` inside a code fence,
+//! an indented code block, an inline code span or an HTML comment stays
+//! literal text) and recognizing
 //! `:::name ...args` / `:::` openers/closers. Each block is replaced with
 //! a sentinel HTML comment (`<!--MOSS_SC_{nonce}_N-->`) that pulldown-cmark
 //! emits as a `Block::Other` raw HTML; the final parser pass walks the
@@ -251,13 +253,12 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
         // Simple compound-link special case: when the inner content is
         // plain phrasing text (no images, no nested links, no
         // block-level markdown) AND the URL is external, fall through
-        // to the normal markdown parse so the cell renders as
-        // `<p><a href="URL">text</a></p>` — the shape `build/render/
-        // grid_post.rs::link_only_cell_href` detects to layer the
-        // `<span class="link-preview-title">` post-pass enhancement
-        // (title + favicon + domain). LinkCard's
-        // `<a class="moss-grid-card link-preview">` shape would skip
-        // the post-pass (tag != "div" guard) and lose the title row.
+        // to the normal markdown parse so the cell stays a
+        // `[Paragraph([Link])]` — the typed shape the host's grid-cell
+        // classifier (`build/render/grid_cells.rs`) turns into a link
+        // preview (title + favicon + domain). A `LinkCard` cell is final
+        // markup that already carries its own `<a class="moss-grid-card">`
+        // chrome, so the host leaves it alone and the title row is lost.
         //
         // Mirrors the pre-PR4.5 carve-out in
         // `crate::build::markdown::typed_renderers::render_compound_link_cell`
@@ -269,7 +270,7 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
         let is_external = url.starts_with("http://") || url.starts_with("https://");
         if inner_is_plain_text && is_external {
             // Re-emit as standard markdown link inside a paragraph so the
-            // grid_post post-pass owns the rendering.
+            // host's link-preview pass owns the rendering.
             let linkified = format!("[{}]({})", inner_trimmed, url);
             return parse_with_config(&linkified, config).blocks;
         }
@@ -283,9 +284,10 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
     // entire cell content is a single bare URL on its own line (no
     // markdown link syntax), parse it as `[](URL)` so the cell renders as
     // `<p><a href="URL"></a></p>` (an empty-text link inside a paragraph).
-    // The grid-render post-pass in `build/render/grid_post.rs` detects
-    // this shape and replaces with a `<span class="link-preview-domain">…</span>`
-    // wrapper carrying title/favicon (from cached link metadata).
+    // The host's grid-cell pass (`build/render/grid_cells.rs`) reads this
+    // shape off the typed cell and replaces it with a
+    // `<span class="link-preview-domain">…</span>` wrapper carrying
+    // title/favicon (from cached link metadata).
     //
     // Matches the pre-PR4.5 `linkify_bare_urls_in_cell` behavior — the
     // helper turned `https://...` into `[](https://...)` so the downstream
@@ -305,8 +307,8 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
 ///
 /// Returns the URL string on match, `None` otherwise. Used by
 /// [`parse_cell_to_blocks`] to linkify bare-URL cells via `[](URL)` so
-/// they thread through the grid_post link-preview post-pass like
-/// authored `[Title](URL)` cells.
+/// they thread through the host's link-preview pass like authored
+/// `[Title](URL)` cells.
 fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
     let trimmed = cell_text.trim();
     if trimmed.is_empty() {
@@ -1121,38 +1123,22 @@ fn extract_with_state(
 ) -> String {
     let mut output = String::with_capacity(markdown.len());
     let lines: Vec<&str> = markdown.lines().collect();
+    // Which lines are code or comment, and therefore carry no live `:::`
+    // syntax. One shared scanner for every pre-parse pass in the tree —
+    // this module used to track fenced code itself and knew nothing about
+    // HTML comments, which is how a `:::gallery` inside an authored
+    // `<!-- TODO … -->` block got extracted, spliced a sentinel into the
+    // middle of the comment, and deleted the rest of the page (#903 bug 2).
+    let inert = crate::inert_regions::inert_lines(markdown);
+    let is_inert = |idx: usize| inert.get(idx).copied().unwrap_or(false);
     let mut i = 0;
-    let mut in_code_fence = false;
-    let mut fence_marker = String::new();
 
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim();
 
-        // Track code fences first; do not parse shortcodes inside them.
-        if in_code_fence {
-            output.push_str(line);
-            output.push('\n');
-            // `fence_marker` is set non-empty by `detect_code_fence_open`
-            // when we entered this state, so `chars().next()` returns
-            // `Some` in practice. `unwrap_or(' ')` is a safe degenerate
-            // fallback: a literal space could only match a fence-close
-            // line if the trimmed line *was* spaces, but `trimmed` has
-            // already had its surrounding whitespace stripped, so the
-            // is_empty check would still reject it.
-            let fence_char = fence_marker.chars().next().unwrap_or(' ');
-            if trimmed.starts_with(&fence_marker)
-                && trimmed.trim_start_matches(fence_char).trim().is_empty()
-            {
-                in_code_fence = false;
-                fence_marker.clear();
-            }
-            i += 1;
-            continue;
-        }
-        if let Some(marker) = detect_code_fence_open(trimmed) {
-            in_code_fence = true;
-            fence_marker = marker;
+        // Inert line: emit verbatim, recognize nothing.
+        if is_inert(i) {
             output.push_str(line);
             output.push('\n');
             i += 1;
@@ -1179,7 +1165,10 @@ fn extract_with_state(
             let mut j = body_start;
             let mut closed = false;
             while j < lines.len() {
-                if is_close_fence(lines[j].trim(), arity) {
+                // An inert line cannot close the block either: a bare `:::`
+                // inside a code fence or a comment in the body used to end
+                // the shortcode early and strand the rest of it as prose.
+                if !is_inert(j) && is_close_fence(lines[j].trim(), arity) {
                     closed = true;
                     break;
                 }
@@ -1342,16 +1331,6 @@ fn html_escape_attr(s: &str) -> String {
         }
     }
     out
-}
-
-fn detect_code_fence_open(trimmed: &str) -> Option<String> {
-    if trimmed.starts_with("```") {
-        Some("```".to_string())
-    } else if trimmed.starts_with("~~~") {
-        Some("~~~".to_string())
-    } else {
-        None
-    }
 }
 
 /// Parse an opening fence line into (colon_count, name, args). Returns
