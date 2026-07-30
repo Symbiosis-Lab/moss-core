@@ -64,6 +64,7 @@ use std::ops::Range;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InertRegions {
     ranges: Vec<Range<usize>>,
+    unterminated_comment: Option<usize>,
 }
 
 /// Convenience for the common "find tokens outside inert regions" shape:
@@ -97,6 +98,10 @@ impl InertRegions {
         // the closing run to be the same char and at least as long.
         let mut fence: Option<(u8, usize)> = None;
         let mut in_comment = false;
+        // Where the currently-open `<!--` started. Survives to the end of the
+        // scan only when the comment is never closed, which is what
+        // `unterminated_comment` reports.
+        let mut comment_start: Option<usize> = None;
         let mut in_indented_code = false;
         // Start-of-document reads like "after a blank line": an indented
         // first line is an indented code block.
@@ -116,6 +121,7 @@ impl InertRegions {
                 match find_bytes(bytes, line_start, content_end, b"-->") {
                     Some(at) => {
                         in_comment = false;
+                        comment_start = None;
                         push_range(&mut ranges, line_start..at + 3);
                         // The rest of the line is live again — it can open
                         // another comment or a code span.
@@ -126,6 +132,7 @@ impl InertRegions {
                             next_start,
                             &mut ranges,
                             &mut in_comment,
+                            &mut comment_start,
                         );
                     }
                     None => push_range(&mut ranges, line_start..next_start),
@@ -201,12 +208,28 @@ impl InertRegions {
                 next_start,
                 &mut ranges,
                 &mut in_comment,
+                &mut comment_start,
             );
             prev_blank = false;
             line_start = next_start;
         }
 
-        Self { ranges }
+        Self {
+            ranges,
+            unterminated_comment: if in_comment { comment_start } else { None },
+        }
+    }
+
+    /// Byte offset of an `<!--` that the document never closes, if there is
+    /// one.
+    ///
+    /// Per CommonMark an unterminated HTML comment runs to end-of-input, so
+    /// everything after it is inert — the whole tail of the page stops being
+    /// markdown. That is silent content loss, which is the failure this
+    /// module exists to stop, so callers with a diagnostics channel report
+    /// it (see `ast::shortcode_extract`).
+    pub fn unterminated_comment(&self) -> Option<usize> {
+        self.unterminated_comment
     }
 
     /// The inert ranges, sorted by start and non-overlapping.
@@ -414,9 +437,10 @@ fn is_list_marker(bytes: &[u8], text_start: usize, content_end: usize) -> bool {
 /// Scan `[from, content_end)` of one line for inline code spans and HTML
 /// comments, pushing the inert ranges it finds.
 ///
-/// Sets `in_comment` when the line ends inside an unterminated `<!--`; the
-/// range pushed in that case runs to `next_start` so the line's terminator is
-/// covered.
+/// Sets `in_comment` (and records `comment_start`) when the line ends inside
+/// an unterminated `<!--`; the range pushed in that case runs to `next_start`
+/// so the line's terminator is covered.
+#[allow(clippy::too_many_arguments)]
 fn scan_inline(
     bytes: &[u8],
     from: usize,
@@ -424,6 +448,7 @@ fn scan_inline(
     next_start: usize,
     ranges: &mut Vec<Range<usize>>,
     in_comment: &mut bool,
+    comment_start: &mut Option<usize>,
 ) {
     let mut i = from;
     while i < content_end {
@@ -456,6 +481,7 @@ fn scan_inline(
                     None => {
                         push_range(ranges, i..next_start);
                         *in_comment = true;
+                        *comment_start = Some(i);
                         return;
                     }
                 }

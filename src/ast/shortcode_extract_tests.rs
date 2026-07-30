@@ -2005,3 +2005,19 @@ fn commented_close_fence_does_not_end_a_live_shortcode() {
         other => panic!("expected Grid, got {other:?}"),
     }
 }
+
+#[test]
+fn everything_after_an_unterminated_html_comment_is_inert() {
+    // The one input shape this series changes behavior for. Per CommonMark an
+    // unclosed `<!--` runs to end-of-input, so the page tail is comment text —
+    // where before, an extraction sentinel's own `-->` could accidentally
+    // rescue it. Correct, but silent, so the host warns: see
+    // `pipeline::unterminated_comment_warning`.
+    let md = "intro\n\n<!-- TODO owner assets\n\n:::grid 2\nA\n:::\n";
+    let result = extract_shortcodes(md);
+    assert!(
+        result.extracted.is_empty(),
+        "everything after the unclosed comment is comment text"
+    );
+    assert_eq!(result.markdown_with_placeholders, md);
+}
