@@ -18,36 +18,68 @@ use super::node::Block;
 use super::shortcode::GridShortcode;
 
 /// A `:::grid` block's serialized pieces: the opening `<div class="moss-grid"
-/// …>` tag and one HTML string per cell.
+/// …>` tag and one [`GridCellParts`] per cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GridParts {
     /// Carries the author's classes, the ratio `style=`, `data-width`, and
     /// `data-source-range`.
     pub open_tag: String,
-    /// One entry per [`GridShortcode::cells`] entry, in the same order. Each
-    /// is already wrapped in its card chrome (`<div class="moss-grid-card">`,
-    /// or the bare `<a>` a [`Block::LinkCard`] cell renders for itself).
-    pub cells: Vec<String>,
+    /// One entry per [`GridShortcode::cells`] entry, in the same order.
+    pub cells: Vec<GridCellParts>,
+}
+
+/// One grid cell's content and the card-chrome decision made about it.
+///
+/// Kept apart rather than pre-joined because a host pass that re-wraps a cell
+/// (an internal-link cell becomes one big `<a>`) needs the content WITHOUT the
+/// chrome, and the alternative — handing it the joined string to cut the
+/// wrapper back off — is the string surgery ADR-034 exists to delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridCellParts {
+    /// The cell's rendered content, before any card chrome.
+    pub inner: String,
+    /// Whether `inner` gets the `<div class="moss-grid-card">` wrapper. False
+    /// for a [`Block::LinkCard`] cell, which renders its own wrapping `<a
+    /// class="moss-grid-card">`, and for host-supplied replacement markup that
+    /// already carries its own chrome.
+    pub carded: bool,
+}
+
+impl GridCellParts {
+    /// Content plus chrome. The ONE place the card wrapper's bytes are written.
+    pub fn to_html(&self) -> String {
+        if self.carded {
+            format!(r#"<div class="moss-grid-card">{}</div>"#, self.inner)
+        } else {
+            self.inner.clone()
+        }
+    }
+
+    /// Final markup that brings its own chrome (a rendered collection card, a
+    /// link preview).
+    pub fn final_markup(html: String) -> Self {
+        Self {
+            inner: html,
+            carded: false,
+        }
+    }
 }
 
 impl GridParts {
     /// Re-assemble the flat grid HTML — byte-identical to what the `Grid` arm
     /// of [`RenderHooks::render_shortcode`] emits.
     pub fn to_html(&self) -> String {
-        let mut out = String::with_capacity(self.open_tag.len() + 8);
-        out.push_str(&self.open_tag);
-        out.push_str(&self.cells.join("\n"));
-        out.push_str("</div>");
-        out
+        let cells: Vec<String> = self.cells.iter().map(GridCellParts::to_html).collect();
+        Self::assemble(&self.open_tag, &cells)
     }
 
-    /// Re-assemble with `cells` replaced by `replacement` (same length and
-    /// order). Used by a host that swapped some cells for markup derived from
-    /// whole-build state and wants the original wrapper back verbatim.
-    pub fn to_html_with_cells(&self, replacement: &[String]) -> String {
-        let mut out = String::with_capacity(self.open_tag.len() + 8);
-        out.push_str(&self.open_tag);
-        out.push_str(&replacement.join("\n"));
+    /// Re-assemble with `replacement` cells (same order) inside this grid's own
+    /// opening tag, so `data-columns`, the ratio `style=`, `data-width` and
+    /// `data-source-range` survive any cell substitution.
+    pub fn assemble(open_tag: &str, cells: &[String]) -> String {
+        let mut out = String::with_capacity(open_tag.len() + 8);
+        out.push_str(open_tag);
+        out.push_str(&cells.join("\n"));
         out.push_str("</div>");
         out
     }
@@ -107,18 +139,16 @@ pub fn render_grid_parts<H: RenderHooks + ?Sized>(
     // gets wrapped — or not, for `Block::LinkCard`, which renders its own
     // wrapping `<a>`. `to_html` joins with `\n` to match the byte shape of the
     // long-deleted `render_grid_html_typed`.
-    let mut cells: Vec<String> = Vec::with_capacity(args.cells.len());
+    let mut cells: Vec<GridCellParts> = Vec::with_capacity(args.cells.len());
     // Scope image `sizes=` to the cell track while cells render.
     hooks.begin_grid_cells(args.columns, args.width.as_deref());
     for cell_blocks in &args.cells {
         let mut cell_html = String::new();
         super::render::render_blocks(hooks, &mut cell_html, cell_blocks);
         let collapsed = collapse_tag_adjacent_newlines(&cell_html);
-        let trimmed = collapsed.trim();
-        cells.push(if let [Block::LinkCard { .. }] = cell_blocks.as_slice() {
-            trimmed.to_string()
-        } else {
-            format!(r#"<div class="moss-grid-card">{}</div>"#, trimmed)
+        cells.push(GridCellParts {
+            inner: collapsed.trim().to_string(),
+            carded: !matches!(cell_blocks.as_slice(), [Block::LinkCard { .. }]),
         });
     }
     hooks.end_grid_cells();
