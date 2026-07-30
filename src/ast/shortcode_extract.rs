@@ -1,7 +1,9 @@
 //! Pre-parse extraction of `:::shortcode` blocks from markdown source.
 //!
-//! Walks the markdown line-by-line, tracking fenced code blocks (so
-//! `:::buttons` inside a code fence stays inert) and recognizing
+//! Walks the markdown line-by-line, skipping the inert lines
+//! [`crate::inert_regions`] reports (so `:::buttons` inside a code fence,
+//! an indented code block, an inline code span or an HTML comment stays
+//! literal text) and recognizing
 //! `:::name ...args` / `:::` openers/closers. Each block is replaced with
 //! a sentinel HTML comment (`<!--MOSS_SC_{nonce}_N-->`) that pulldown-cmark
 //! emits as a `Block::Other` raw HTML; the final parser pass walks the
@@ -1121,38 +1123,22 @@ fn extract_with_state(
 ) -> String {
     let mut output = String::with_capacity(markdown.len());
     let lines: Vec<&str> = markdown.lines().collect();
+    // Which lines are code or comment, and therefore carry no live `:::`
+    // syntax. One shared scanner for every pre-parse pass in the tree —
+    // this module used to track fenced code itself and knew nothing about
+    // HTML comments, which is how a `:::gallery` inside an authored
+    // `<!-- TODO … -->` block got extracted, spliced a sentinel into the
+    // middle of the comment, and deleted the rest of the page (#903 bug 2).
+    let inert = crate::inert_regions::inert_lines(markdown);
+    let is_inert = |idx: usize| inert.get(idx).copied().unwrap_or(false);
     let mut i = 0;
-    let mut in_code_fence = false;
-    let mut fence_marker = String::new();
 
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim();
 
-        // Track code fences first; do not parse shortcodes inside them.
-        if in_code_fence {
-            output.push_str(line);
-            output.push('\n');
-            // `fence_marker` is set non-empty by `detect_code_fence_open`
-            // when we entered this state, so `chars().next()` returns
-            // `Some` in practice. `unwrap_or(' ')` is a safe degenerate
-            // fallback: a literal space could only match a fence-close
-            // line if the trimmed line *was* spaces, but `trimmed` has
-            // already had its surrounding whitespace stripped, so the
-            // is_empty check would still reject it.
-            let fence_char = fence_marker.chars().next().unwrap_or(' ');
-            if trimmed.starts_with(&fence_marker)
-                && trimmed.trim_start_matches(fence_char).trim().is_empty()
-            {
-                in_code_fence = false;
-                fence_marker.clear();
-            }
-            i += 1;
-            continue;
-        }
-        if let Some(marker) = detect_code_fence_open(trimmed) {
-            in_code_fence = true;
-            fence_marker = marker;
+        // Inert line: emit verbatim, recognize nothing.
+        if is_inert(i) {
             output.push_str(line);
             output.push('\n');
             i += 1;
@@ -1179,7 +1165,10 @@ fn extract_with_state(
             let mut j = body_start;
             let mut closed = false;
             while j < lines.len() {
-                if is_close_fence(lines[j].trim(), arity) {
+                // An inert line cannot close the block either: a bare `:::`
+                // inside a code fence or a comment in the body used to end
+                // the shortcode early and strand the rest of it as prose.
+                if !is_inert(j) && is_close_fence(lines[j].trim(), arity) {
                     closed = true;
                     break;
                 }
@@ -1342,16 +1331,6 @@ fn html_escape_attr(s: &str) -> String {
         }
     }
     out
-}
-
-fn detect_code_fence_open(trimmed: &str) -> Option<String> {
-    if trimmed.starts_with("```") {
-        Some("```".to_string())
-    } else if trimmed.starts_with("~~~") {
-        Some("~~~".to_string())
-    } else {
-        None
-    }
 }
 
 /// Parse an opening fence line into (colon_count, name, args). Returns
