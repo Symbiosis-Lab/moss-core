@@ -251,13 +251,12 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
         // Simple compound-link special case: when the inner content is
         // plain phrasing text (no images, no nested links, no
         // block-level markdown) AND the URL is external, fall through
-        // to the normal markdown parse so the cell renders as
-        // `<p><a href="URL">text</a></p>` — the shape `build/render/
-        // grid_post.rs::link_only_cell_href` detects to layer the
-        // `<span class="link-preview-title">` post-pass enhancement
-        // (title + favicon + domain). LinkCard's
-        // `<a class="moss-grid-card link-preview">` shape would skip
-        // the post-pass (tag != "div" guard) and lose the title row.
+        // to the normal markdown parse so the cell stays a
+        // `[Paragraph([Link])]` — the typed shape the host's grid-cell
+        // classifier (`build/render/grid_cells.rs`) turns into a link
+        // preview (title + favicon + domain). A `LinkCard` cell is final
+        // markup that already carries its own `<a class="moss-grid-card">`
+        // chrome, so the host leaves it alone and the title row is lost.
         //
         // Mirrors the pre-PR4.5 carve-out in
         // `crate::build::markdown::typed_renderers::render_compound_link_cell`
@@ -269,7 +268,7 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
         let is_external = url.starts_with("http://") || url.starts_with("https://");
         if inner_is_plain_text && is_external {
             // Re-emit as standard markdown link inside a paragraph so the
-            // grid_post post-pass owns the rendering.
+            // host's link-preview pass owns the rendering.
             let linkified = format!("[{}]({})", inner_trimmed, url);
             return parse_with_config(&linkified, config).blocks;
         }
@@ -283,9 +282,10 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
     // entire cell content is a single bare URL on its own line (no
     // markdown link syntax), parse it as `[](URL)` so the cell renders as
     // `<p><a href="URL"></a></p>` (an empty-text link inside a paragraph).
-    // The grid-render post-pass in `build/render/grid_post.rs` detects
-    // this shape and replaces with a `<span class="link-preview-domain">…</span>`
-    // wrapper carrying title/favicon (from cached link metadata).
+    // The host's grid-cell pass (`build/render/grid_cells.rs`) reads this
+    // shape off the typed cell and replaces it with a
+    // `<span class="link-preview-domain">…</span>` wrapper carrying
+    // title/favicon (from cached link metadata).
     //
     // Matches the pre-PR4.5 `linkify_bare_urls_in_cell` behavior — the
     // helper turned `https://...` into `[](https://...)` so the downstream
@@ -305,8 +305,8 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
 ///
 /// Returns the URL string on match, `None` otherwise. Used by
 /// [`parse_cell_to_blocks`] to linkify bare-URL cells via `[](URL)` so
-/// they thread through the grid_post link-preview post-pass like
-/// authored `[Title](URL)` cells.
+/// they thread through the host's link-preview pass like authored
+/// `[Title](URL)` cells.
 fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
     let trimmed = cell_text.trim();
     if trimmed.is_empty() {
