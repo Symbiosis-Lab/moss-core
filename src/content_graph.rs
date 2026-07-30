@@ -222,9 +222,45 @@ pub struct ContentGraph {
 
     /// Lowercased path -> Vec<original-case paths> for case-insensitive lookup.
     asset_ci: HashMap<String, Vec<String>>,
+
+    /// The build's source-directory → URL-slug overrides, so this graph can
+    /// answer "what URL is this file served at" (see [`Self::pinned_url`]) and
+    /// not just "which file does this reference mean". Empty unless the host
+    /// installed them via [`Self::with_output_overrides`]; an empty map still
+    /// yields base slugification, which is what every case-fold bug needed.
+    output_overrides: HashMap<String, String>,
 }
 
 impl ContentGraph {
+    /// Install the build's source-directory → URL-slug overrides, making this
+    /// graph the authority on emitted URLs as well as on resolution.
+    ///
+    /// The host calls this once, right after the overrides are computed
+    /// (`build_page_map` in src-tauri), and every emitter downstream reads the
+    /// answer off the same graph it already holds. Sites that don't map any
+    /// directory still benefit: base slugification (`MIRROR/` → `mirror/`) runs
+    /// with an empty map.
+    pub fn with_output_overrides(mut self, overrides: HashMap<String, String>) -> Self {
+        self.output_overrides = overrides;
+        self
+    }
+
+    /// **The one URL a resolved reference may be emitted as.**
+    ///
+    /// `root_rel` is a source path this graph resolved (via
+    /// [`Self::resolve_path`] or the asset engine). The result is the pinned,
+    /// root-absolute, case-canonical URL the site serves that file at — see
+    /// [`crate::resolve::output_url::pinned_url`] for the properties this
+    /// guarantees.
+    ///
+    /// **Never** re-derive an emitted URL from a folder name, a referencing
+    /// page's depth, or a case-insensitive retry: those are the four-times-
+    /// recurring bug class this method exists to end (moss#903 bug 3). A
+    /// reference that does not resolve gets a `Diagnostic`, not a guessed path.
+    pub fn pinned_url(&self, root_rel: &str) -> String {
+        crate::resolve::output_url::pinned_url(root_rel, &self.output_overrides)
+    }
+
     /// **Single source of truth for target resolution in moss.**
     ///
     /// Every link syntax — wikilinks `[[x]]`, standard markdown links
@@ -601,6 +637,9 @@ impl ContentGraphBuilder {
             blocks: self.blocks,
             asset_exact: self.asset_exact,
             asset_ci: self.asset_ci,
+            // Installed by the host via `with_output_overrides` once the build's
+            // page map is known; the builder itself is scan-time and has none.
+            output_overrides: HashMap::new(),
         }
     }
 }

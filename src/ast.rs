@@ -58,7 +58,7 @@ pub use node::{Block, CalloutKind, Fold, Inline};
 pub use parser::{parse, parse_with_config, parser_options, ParseConfig};
 pub use query::find_first_block_image;
 pub use render::{render_block_with_meta, render_blocks, render_document};
-pub use resolve_urls::{classify_remaining_urls, resolve_urls, GraphAssetIndex};
+pub use resolve_urls::{classify_remaining_urls, resolve_urls, GraphAssetIndex, UrlResolution};
 pub use shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
     RecentShortcode, Shortcode, ShortcodeKind, SubscribeShortcode,

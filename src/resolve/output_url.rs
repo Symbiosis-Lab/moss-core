@@ -1,8 +1,10 @@
 //! Pure output-path + output-relative-URL helpers shared by every asset/embed/
 //! folder emitter. `resolve_path_with_overrides` slugifies intermediate dir
-//! segments (generate_slug) and preserves the leaf; `reference_output_url`
-//! computes the relative URL between two source paths IN OUTPUT SPACE so a
-//! shared mixed-case prefix cancels (the Bug A fix, generalized).
+//! segments (generate_slug) and preserves the leaf; `pinned_url` is the one
+//! way a resolved source path becomes a URL in emitted HTML;
+//! `reference_output_url` computes the relative URL between two source paths IN
+//! OUTPUT SPACE so a shared mixed-case prefix cancels (the Bug A fix,
+//! generalized).
 //!
 //! NOTE: this calls `crate::slug::generate_slug` (the text-to-slug primitive
 //! page_map.rs's original used via the `super::slug::generate_slug` re-export),
@@ -41,6 +43,41 @@ pub fn resolve_path_with_overrides(path: &str, overrides: &HashMap<String, Strin
         }
     }
     resolved.join("/")
+}
+
+/// The **pinned URL** for a resolved source path: the one URL the site serves
+/// that file at, independent of which page references it.
+///
+/// This is the only sanctioned way a graph-resolved reference (asset, embed,
+/// non-page file link) becomes a URL in emitted HTML. Properties that make it
+/// correct by construction:
+///
+/// - **Root-absolute.** The referencing page's depth cannot enter the result,
+///   so the same target resolves identically from the vault root and from a
+///   note nested three folders down. The pretty-URL `../` compensation that
+///   page-relative asset URLs need (`article.md` is served at `article/`, one
+///   level deeper than the source file) has nothing to compensate for.
+/// - **Case-canonical.** Intermediate directory segments go through the same
+///   `resolve_path_with_overrides` the asset copier uses to place the file, so
+///   a mixed-case source folder (`MIRROR/`) yields the slug the bytes actually
+///   land under (`/mirror/`). No caller re-derives it by string surgery on a
+///   folder name, and no caller needs a case-insensitive retry.
+/// - **Encoded once.** Every segment is percent-encoded here, at the single
+///   point where the path becomes a URL.
+///
+/// `root_rel` is a source path relative to the vault root, as returned by
+/// `ContentGraph::resolve_path` / the asset engine. A leading `/` is tolerated
+/// (author-written absolute refs arrive that way) and re-emitted.
+///
+/// Prefer [`crate::content_graph::ContentGraph::pinned_url`], which carries the
+/// build's overrides — call this directly only where no graph is in scope.
+pub fn pinned_url(root_rel: &str, overrides: &HashMap<String, String>) -> String {
+    let stripped = root_rel.strip_prefix('/').unwrap_or(root_rel);
+    let mapped = resolve_path_with_overrides(stripped, overrides);
+    format!(
+        "/{}",
+        crate::resolve::fuzzy_path::percent_encode_path_segments(&mapped)
+    )
 }
 
 /// Output-relative URL from `from_source`'s page to `target_source`, both
@@ -85,6 +122,36 @@ mod tests {
             resolve_path_with_overrides("Sub Dir/Winter-Song.mov", &o),
         );
         assert!(!resolve_path_with_overrides("A\\B\\index.html", &o).contains('\\'));
+    }
+
+    #[test]
+    fn pinned_url_is_depth_independent_and_case_canonical() {
+        let o = HashMap::new();
+        // The same target, referenced from any depth, is the same URL — and the
+        // mixed-case source folder resolves to the slug the file lands under.
+        assert_eq!(
+            pinned_url("MIRROR/在場/cover-IMG.png", &o),
+            "/mirror/%E5%9C%A8%E5%A0%B4/cover-IMG.png"
+        );
+        // Leading `/` (author-written absolute ref) is tolerated, not doubled.
+        assert_eq!(
+            pinned_url("/MIRROR/cover-IMG.png", &o),
+            pinned_url("MIRROR/cover-IMG.png", &o)
+        );
+        // An explicit override wins over base slugification.
+        let mut with_override = HashMap::new();
+        with_override.insert("图片".to_string(), "images".to_string());
+        assert_eq!(
+            pinned_url("图片/photo.jpg", &with_override),
+            "/images/photo.jpg"
+        );
+        // Spaces in a directory name slug away; the leaf keeps its bytes and is
+        // encoded (never re-encoded — `pinned_url` takes SOURCE paths, and is
+        // the single point where a path becomes a URL).
+        assert_eq!(
+            pinned_url("My Photos/a b.jpg", &o),
+            "/my-photos/a%20b.jpg"
+        );
     }
 
     #[test]

@@ -41,7 +41,7 @@ fn markdown_link_fragment_preserved_raw_not_slugged() {
 fn resolves_standard_markdown_link_to_internal() {
     let mut doc = parse("[文字](文字.md)");
     let graph = graph_with(&["index.md", "文字/文字.md"]);
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
 
     assert_eq!(outgoing.len(), 1);
     assert_eq!(outgoing[0].target_path, "文字/文字.md");
@@ -72,7 +72,7 @@ fn resolves_standard_markdown_link_to_internal() {
 fn passes_through_external_link() {
     let mut doc = parse("[ex](https://example.com)");
     let graph = graph_with(&["index.md"]);
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
 
     assert!(outgoing.is_empty());
     match &doc.blocks[0] {
@@ -94,7 +94,7 @@ fn passes_through_external_link() {
 fn classifies_anchor_link() {
     let mut doc = parse("[top](#top)");
     let graph = graph_with(&["index.md"]);
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     assert!(outgoing.is_empty());
     match &doc.blocks[0] {
         Block::Paragraph(children) => match &children[0] {
@@ -115,7 +115,7 @@ fn classifies_anchor_link() {
 fn classifies_mailto() {
     let mut doc = parse("[Mail](mailto:test@example.com)");
     let graph = graph_with(&["index.md"]);
-    let _ = resolve_urls(&mut doc, &graph, "index.md");
+    let _ = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     match &doc.blocks[0] {
         Block::Paragraph(children) => match &children[0] {
             Inline::Link { url, .. } => {
@@ -137,7 +137,7 @@ fn resolves_bare_filename_image_against_graph() {
     let mut b = ContentGraphBuilder::new();
     b.add_file("assets/photo.jpg", "photo");
     let graph = b.build();
-    let outgoing = resolve_urls(&mut doc, &graph, "articles/post.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "articles/post.md").outgoing;
 
     assert_eq!(outgoing.len(), 1);
     assert_eq!(outgoing[0].target_path, "assets/photo.jpg");
@@ -151,7 +151,7 @@ fn resolves_bare_filename_image_against_graph() {
                 let Url::Resolved(r) = src else {
                     panic!("expected Resolved, got {src:?}")
                 };
-                assert_eq!(r.href, "../assets/photo.jpg");
+                assert_eq!(r.href, "/assets/photo.jpg");
                 assert_eq!(r.kind, UrlKind::Asset);
             }
             Inline::Link {
@@ -166,7 +166,7 @@ fn resolves_bare_filename_image_against_graph() {
                     let Url::Resolved(r) = src else {
                         panic!("expected Resolved, got {src:?}")
                     };
-                    assert_eq!(r.href, "../assets/photo.jpg");
+                    assert_eq!(r.href, "/assets/photo.jpg");
                 }
             }
             _ => panic!("expected Image, got {children:?}"),
@@ -178,7 +178,7 @@ fn resolves_bare_filename_image_against_graph() {
                 let Url::Resolved(r) = src else {
                     panic!("expected Resolved, got {src:?}")
                 };
-                assert_eq!(r.href, "../assets/photo.jpg");
+                assert_eq!(r.href, "/assets/photo.jpg");
             }
         }
         _ => panic!("expected Paragraph or Figure, got {:?}", doc.blocks[0]),
@@ -189,7 +189,7 @@ fn resolves_bare_filename_image_against_graph() {
 fn unresolved_bare_filename_passes_through() {
     let mut doc = parse("![](nonexistent.jpg)");
     let graph = graph_with(&["index.md"]);
-    let outgoing = resolve_urls(&mut doc, &graph, "articles/post.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "articles/post.md").outgoing;
 
     assert!(outgoing.is_empty());
     // URL stays as raw "nonexistent.jpg" but becomes Resolved (Asset
@@ -228,7 +228,7 @@ fn does_not_resolve_url_inside_code_block() {
     // fence-aware behavior structurally.
     let mut doc = parse("```\n[link](inside.md)\n```\n");
     let graph = graph_with(&["index.md", "inside.md"]);
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     assert!(
         outgoing.is_empty(),
         "code block content must not produce OutgoingLink"
@@ -239,7 +239,7 @@ fn does_not_resolve_url_inside_code_block() {
 fn fragment_preserved_on_internal_link() {
     let mut doc = parse("[x](文字/文字.md#sec)");
     let graph = graph_with(&["index.md", "文字/文字.md"]);
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
 
     assert_eq!(outgoing.len(), 1);
     assert_eq!(outgoing[0].target_path, "文字/文字.md");
@@ -265,7 +265,7 @@ fn query_string_preserved_on_internal_link() {
     let graph = b.build();
 
     let mut doc = parse("[demo](scale-compare.html?a=major_pent&r=major_pent%3AD)");
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
 
     assert_eq!(outgoing.len(), 1);
     assert_eq!(outgoing[0].target_path, "assets/scale-compare.html");
@@ -307,7 +307,7 @@ fn standard_markdown_link_emits_sentinel() {
     let graph = graph_with(&["index.md", "文字/文字.md"]);
 
     let mut doc = parse(content);
-    let visitor = resolve_urls(&mut doc, &graph, source);
+    let visitor = resolve_urls(&mut doc, &graph, source).outgoing;
 
     assert_eq!(visitor.len(), 1);
     assert_eq!(visitor[0].target_path, "文字/文字.md");
@@ -336,7 +336,7 @@ fn multiple_links_one_line_emit_sentinels() {
     let graph = graph_with(&["index.md", "foo.md", "bar.md"]);
 
     let mut doc = parse(content);
-    let visitor = resolve_urls(&mut doc, &graph, source);
+    let visitor = resolve_urls(&mut doc, &graph, source).outgoing;
 
     assert_eq!(visitor.len(), 2);
     assert_eq!(visitor[0].target_path, "foo.md");
@@ -350,7 +350,7 @@ fn external_links_no_outgoing() {
     let graph = graph_with(&["index.md"]);
 
     let mut doc = parse(content);
-    let visitor = resolve_urls(&mut doc, &graph, source);
+    let visitor = resolve_urls(&mut doc, &graph, source).outgoing;
 
     assert!(visitor.is_empty());
 }
@@ -362,7 +362,7 @@ fn unresolved_link_no_outgoing() {
     let graph = graph_with(&["index.md"]);
 
     let mut doc = parse(content);
-    let visitor = resolve_urls(&mut doc, &graph, source);
+    let visitor = resolve_urls(&mut doc, &graph, source).outgoing;
 
     assert!(visitor.is_empty());
     // The unresolved URL stays as-is (no sentinel) but is marked
@@ -394,7 +394,7 @@ fn code_block_urls_not_visited() {
     let graph = b.build();
 
     let mut doc = parse(content);
-    let visitor = resolve_urls(&mut doc, &graph, source);
+    let visitor = resolve_urls(&mut doc, &graph, source).outgoing;
 
     // Only the trailing `[link](inside.md)` (outside the fence) emits
     // an OutgoingLink. URLs inside `Block::CodeBlock` are not visited.
@@ -412,7 +412,7 @@ fn query_and_fragment_sentinel_shape() {
     let graph = b.build();
 
     let mut doc = parse(content);
-    let visitor = resolve_urls(&mut doc, &graph, source);
+    let visitor = resolve_urls(&mut doc, &graph, source).outgoing;
 
     assert_eq!(visitor.len(), 1);
     assert_eq!(visitor[0].target_path, "assets/app.html");
@@ -460,7 +460,7 @@ fn link_wrapping_image_target_path() {
     let graph = b.build();
 
     let mut doc = parse(content);
-    let visitor = resolve_urls(&mut doc, &graph, source);
+    let visitor = resolve_urls(&mut doc, &graph, source).outgoing;
 
     // Phase 1 emits the image dependency edge; phase 2 emits the link.
     assert_eq!(
@@ -494,7 +494,7 @@ fn pipe_bearing_image_url_unchanged() {
     let mut b = ContentGraphBuilder::new();
     b.add_file("assets/photo.jpg", "p");
     let graph = b.build();
-    let outgoing = resolve_urls(&mut doc, &graph, "articles/post.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "articles/post.md").outgoing;
 
     // Phase 3 PR3 contract: pipe-bearing URLs pass through verbatim,
     // no OutgoingLink emitted.
@@ -508,9 +508,9 @@ fn idempotent_on_already_resolved_url() {
     // invocation should produce the SAME state.
     let mut doc = parse("[文字](文字.md)");
     let graph = graph_with(&["index.md", "文字/文字.md"]);
-    let outgoing1 = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing1 = resolve_urls(&mut doc, &graph, "index.md").outgoing;
 
-    let outgoing2 = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing2 = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     // After the first pass everything is Resolved; the second pass
     // produces no new OutgoingLink entries.
     assert!(
@@ -525,7 +525,7 @@ fn idempotent_on_already_resolved_url() {
 fn absolute_path_passes_through() {
     let mut doc = parse("[abs](/about.html)");
     let graph = graph_with(&["index.md", "about.html"]);
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     // Absolute paths bypass the graph (mirrors markdown_links).
     assert!(outgoing.is_empty());
     match &doc.blocks[0] {
@@ -574,19 +574,19 @@ fn extract_hero_image_href(doc: &Document) -> Option<String> {
 fn hero_body_wikilink_resolves_against_graph_at_depth_0() {
     // chps-site home page shape: `:::hero` with `![[hero.jpg]]`
     // wikilink as the body-image fallback. The asset lives at
-    // `assets/hero.jpg` on disk. From depth-0 (home), the emitted
-    // href must be `assets/hero.jpg`, not the bare wikilink target.
+    // `assets/hero.jpg` on disk, so the emitted href is that file's pinned
+    // URL — not the bare wikilink target.
     let mut doc = parse(":::hero\n![[hero.jpg]]\n# Welcome\n:::\n");
     let mut b = ContentGraphBuilder::new();
     b.add_file("index.md", "home");
     b.add_file("assets/hero.jpg", "hero");
     let graph = b.build();
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
 
     let href = extract_hero_image_href(&doc).expect("hero image must be Resolved");
     assert_eq!(
-        href, "assets/hero.jpg",
-        "hero body-wikilink must resolve to depth-0 asset path, got {href:?}"
+        href, "/assets/hero.jpg",
+        "hero body-wikilink must resolve to the asset's pinned URL, got {href:?}"
     );
     // OutgoingLink registers the discovered dependency edge.
     assert!(
@@ -607,7 +607,7 @@ fn hero_extra_images_resolve_against_graph_like_the_primary() {
     b.add_file("assets/hero.jpg", "hero");
     b.add_file("assets/second.jpg", "second");
     let graph = b.build();
-    let outgoing = resolve_urls(&mut doc, &graph, "index.md");
+    let outgoing = resolve_urls(&mut doc, &graph, "index.md").outgoing;
 
     let extras: Vec<String> = doc
         .blocks
@@ -625,7 +625,7 @@ fn hero_extra_images_resolve_against_graph_like_the_primary() {
             _ => None,
         })
         .expect("hero present");
-    assert_eq!(extras, vec!["assets/second.jpg".to_string()], "{extras:?}");
+    assert_eq!(extras, vec!["/assets/second.jpg".to_string()], "{extras:?}");
     assert!(
         outgoing
             .iter()
@@ -635,24 +635,29 @@ fn hero_extra_images_resolve_against_graph_like_the_primary() {
 }
 
 #[test]
-fn hero_body_wikilink_resolves_with_relative_prefix_at_depth_1() {
-    // Source one directory deep (e.g. `articles/post.md`) must emit
-    // a `../assets/hero.jpg` href so it resolves from the deployed
-    // pretty-URL `/articles/post/index.html`. Mirrors the
-    // `resolves_bare_filename_image_against_graph` test's relative-
-    // path assertion for `Inline::Image`.
+fn hero_body_wikilink_href_does_not_depend_on_referencing_depth() {
+    // The same asset, referenced from a note one directory deep, emits the
+    // SAME href as from the home page. Before the pinned-URL rule this test
+    // asserted `../assets/hero.jpg` — a source-relative path that a later
+    // string pass had to patch again (the referencing page is served at
+    // `/articles/post/`, one level deeper than `articles/post.md`, so `../`
+    // pointed at `/articles/assets/`). Depth is now structurally out of the
+    // answer instead of being compensated for. moss#903 bug 3.
     let mut doc = parse(":::hero\n![[hero.jpg]]\n:::\n");
     let mut b = ContentGraphBuilder::new();
     b.add_file("articles/post.md", "post");
+    b.add_file("index.md", "home");
     b.add_file("assets/hero.jpg", "hero");
     let graph = b.build();
-    let _ = resolve_urls(&mut doc, &graph, "articles/post.md");
+    let _ = resolve_urls(&mut doc, &graph, "articles/post.md").outgoing;
+    let deep = extract_hero_image_href(&doc).expect("hero image must be Resolved");
 
-    let href = extract_hero_image_href(&doc).expect("hero image must be Resolved");
-    assert_eq!(
-        href, "../assets/hero.jpg",
-        "hero body-wikilink at source-depth 1 must resolve with `../` prefix, got {href:?}"
-    );
+    let mut doc_root = parse(":::hero\n![[hero.jpg]]\n:::\n");
+    let _ = resolve_urls(&mut doc_root, &graph, "index.md").outgoing;
+    let root = extract_hero_image_href(&doc_root).expect("hero image must be Resolved");
+
+    assert_eq!(deep, "/assets/hero.jpg", "got {deep:?}");
+    assert_eq!(deep, root, "depth must not change the emitted href");
 }
 
 #[test]
@@ -662,7 +667,7 @@ fn hero_unresolved_wikilink_passes_through() {
     // invariant holds). Mirrors `unresolved_bare_filename_passes_through`.
     let mut doc = parse(":::hero\n![[missing.jpg]]\n:::\n");
     let graph = graph_with(&["index.md"]);
-    let _ = resolve_urls(&mut doc, &graph, "index.md");
+    let _ = resolve_urls(&mut doc, &graph, "index.md").outgoing;
 
     let href = extract_hero_image_href(&doc).expect("hero image must be Resolved");
     assert_eq!(href, "missing.jpg");
@@ -707,7 +712,7 @@ fn wikilink_cross_page_fragment_is_slugged() {
     // `[[other#Getting Started]]` → sentinel `moss-resolved:other.md#getting-started`.
     let mut doc = parse("[[other#Getting Started]]");
     let graph = graph_with(&["index.md", "other.md"]);
-    let _ = resolve_urls(&mut doc, &graph, "index.md");
+    let _ = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     assert_eq!(
         first_link_href(&doc),
         "moss-resolved:other.md#getting-started"
@@ -720,7 +725,7 @@ fn wikilink_same_page_fragment_is_slugged() {
     // no `moss-resolved:` prefix (the path part is empty).
     let mut doc = parse("[[#Local Section]]");
     let graph = graph_with(&["index.md"]);
-    let _ = resolve_urls(&mut doc, &graph, "index.md");
+    let _ = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     assert_eq!(first_link_href(&doc), "#local-section");
 }
 
@@ -734,7 +739,7 @@ fn markdown_link_fragment_stays_raw_not_slugged() {
     // would slug to `#gettingstarted`.)
     let mut doc = parse("[x](other#GettingStarted)");
     let graph = graph_with(&["index.md", "other.md"]);
-    let _ = resolve_urls(&mut doc, &graph, "index.md");
+    let _ = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     assert_eq!(
         first_link_href(&doc),
         "moss-resolved:other.md#GettingStarted"
@@ -748,7 +753,7 @@ fn wikilink_block_ref_keeps_id_raw() {
     // so slugging would be observably different.
     let mut doc = parse("[[other#^Block Id]]");
     let graph = graph_with(&["index.md", "other.md"]);
-    let _ = resolve_urls(&mut doc, &graph, "index.md");
+    let _ = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     let href = first_link_href(&doc);
     assert!(
         href.contains("#Block Id"),
@@ -762,7 +767,7 @@ fn wikilink_cjk_fragment_preserved() {
     // CJK characters are preserved by obsidian_heading_anchor.
     let mut doc = parse("[[other#中文标题]]");
     let graph = graph_with(&["index.md", "other.md"]);
-    let _ = resolve_urls(&mut doc, &graph, "index.md");
+    let _ = resolve_urls(&mut doc, &graph, "index.md").outgoing;
     assert_eq!(first_link_href(&doc), "moss-resolved:other.md#中文标题");
 }
 
@@ -801,8 +806,8 @@ fn resolve_image_src(
     graph: &crate::content_graph::ContentGraph,
 ) -> String {
     let mut url = Url::Unresolved(raw.to_string());
-    let mut outgoing = Vec::new();
-    resolve_asset_url(&mut url, "", graph, source_path, &mut outgoing);
+    let mut found = UrlResolution::default();
+    resolve_asset_url(&mut url, "", graph, source_path, &mut found);
     match url {
         Url::Resolved(r) => r.href,
         Url::Unresolved(s) => s,
@@ -813,21 +818,23 @@ fn resolve_image_src(
 fn image_separator_fallback_rebases_to_root() {
     // The 404 bug: `./assets/AGU2025.jpg` authored in `News/post.md` is
     // not adjacent (no `News/assets/` dir). Old code passed it verbatim →
-    // 404. New engine: SeparatorFallback → root `assets/AGU2025.jpg` →
-    // `relative_asset_path("News/post.md", "assets/AGU2025.jpg")` = "../assets/AGU2025.jpg".
-    // (The downstream +1 ../ for pretty-URL nesting is added by
-    // adjust_relative_paths_for_pretty_urls in src-tauri, not here.)
+    // 404. The engine rebases to the real file (SeparatorFallback → root
+    // `assets/AGU2025.jpg`) and that file's pinned URL is emitted. The two
+    // downstream `../` compensations this used to need — one from the source
+    // directory, one more for pretty-URL nesting, added by a later string pass
+    // — have nothing left to compensate for.
     let graph = graph_with(&["assets/AGU2025.jpg", "News/post.md"]);
     assert_eq!(
         resolve_image_src("./assets/AGU2025.jpg", "News/post.md", &graph),
-        "../assets/AGU2025.jpg"
+        "/assets/AGU2025.jpg"
     );
 }
 
 #[test]
 fn image_absolute_stays_absolute() {
-    // R3: an absolute `/`-prefixed asset reference must be emitted with
-    // its leading `/` intact, never run through relative_asset_path.
+    // R3: an absolute `/`-prefixed asset reference keeps its leading `/`.
+    // Now the general case rather than a special one — every resolved asset
+    // reference is emitted root-absolute.
     let graph = graph_with(&["assets/x.jpg"]);
     assert_eq!(
         resolve_image_src("/assets/x.jpg", "News/post.md", &graph),
@@ -837,27 +844,61 @@ fn image_absolute_stays_absolute() {
 
 #[test]
 fn image_case_mismatch_emits_canonical() {
-    // `./assets/Hoon.jpg` authored in `Team.md` (root); disk is `Hoon.JPG`.
-    // Engine: CaseMismatch → root_rel = "assets/Hoon.JPG".
-    // relative_asset_path("Team.md", "assets/Hoon.JPG"):
-    //   from_dir = "" (Team.md is at root) → ups = 0 → "assets/Hoon.JPG"
-    //   (no leading `../` because the source is at the project root).
+    // `./assets/Hoon.jpg` authored in `Team.md`; disk is `Hoon.JPG`. The
+    // engine finds the real file (CaseMismatch → `assets/Hoon.JPG`) and the
+    // emitted URL is that file's pinned URL: the LEAF keeps the disk's case
+    // (the bytes are served under it) while directory segments take the slug
+    // the output tree uses.
     let graph = graph_with(&["assets/Hoon.JPG"]);
     assert_eq!(
         resolve_image_src("./assets/Hoon.jpg", "Team.md", &graph),
-        "assets/Hoon.JPG"
+        "/assets/Hoon.JPG"
     );
 }
 
 #[test]
+fn image_href_is_identical_from_root_and_from_a_nested_note() {
+    // moss#903 bug 3, at the unit level: one asset under a MIXED-CASE folder,
+    // referenced from the vault root and from a note two folders deep. Both
+    // emit the same pinned URL, and its directory segment is the slug the
+    // asset copier writes (`MIRROR/` → `/mirror/`) — not the source spelling,
+    // and not a case-folded guess.
+    let graph = graph_with(&[
+        "MIRROR/在場/cover-IMG.png",
+        "index.md",
+        "MIRROR/在場/note.md",
+    ]);
+    let from_root = resolve_image_src("cover-IMG.png", "index.md", &graph);
+    let from_deep = resolve_image_src("cover-IMG.png", "MIRROR/在場/note.md", &graph);
+    assert_eq!(from_root, "/mirror/%E5%9C%A8%E5%A0%B4/cover-IMG.png");
+    assert_eq!(
+        from_root, from_deep,
+        "the referencing note's depth must not change the emitted URL"
+    );
+}
+
+#[test]
+fn unresolvable_image_ref_reports_instead_of_guessing() {
+    // A reference the graph cannot resolve keeps the author's bytes and
+    // produces a Diagnostic. The failure mode this replaces is a synthesized
+    // path that looks like a working link and 404s at deploy.
+    let graph = graph_with(&["assets/photo.jpg", "post.md"]);
+    let mut doc = parse("![](nope.jpg)");
+    let found = resolve_urls(&mut doc, &graph, "post.md");
+    assert!(found.outgoing.is_empty(), "{:?}", found.outgoing);
+    assert_eq!(found.diagnostics.len(), 1, "{:?}", found.diagnostics);
+    assert_eq!(found.diagnostics[0].reference, "nope.jpg");
+    assert_eq!(found.diagnostics[0].source_path, "post.md");
+}
+
+#[test]
 fn image_bare_unchanged_from_today() {
-    // Gate: bare-filename resolution must produce the SAME result via the
-    // engine as the old resolve_reference path did. `photo.jpg` from
-    // `post.md` (root) → BareFuzzy → root_rel = "assets/photo.jpg" →
-    // relative_asset_path("post.md", "assets/photo.jpg") = "assets/photo.jpg".
+    // Gate: bare-filename resolution must find the SAME file via the engine as
+    // the old resolve_reference path did. `photo.jpg` from `post.md` →
+    // BareFuzzy → `assets/photo.jpg` → that file's pinned URL.
     let graph = graph_with(&["assets/photo.jpg", "post.md"]);
     assert_eq!(
         resolve_image_src("photo.jpg", "post.md", &graph),
-        "assets/photo.jpg"
+        "/assets/photo.jpg"
     );
 }
