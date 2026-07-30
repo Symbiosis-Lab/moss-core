@@ -181,6 +181,26 @@ pub fn render_document<H: RenderHooks>(doc: &Document, hooks: &H) -> String {
     out
 }
 
+/// Render ONE top-level block with its [`BlockMeta`] — the body of
+/// [`render_document`]'s loop, exposed.
+///
+/// A host that serializes a document one top-level block at a time (so it can
+/// record where each block's output begins and ends, instead of scanning the
+/// finished string for structure later — see src-tauri's `BodyPlan` and
+/// ADR-034) must go through this rather than [`render_blocks`]: the latter has
+/// no meta vec and would silently drop every `data-source-line` annotation.
+///
+/// Concatenating this over `doc.blocks`/`doc.block_meta` in lockstep is
+/// byte-identical to [`render_document`] by construction.
+pub fn render_block_with_meta<H: RenderHooks + ?Sized>(
+    hooks: &H,
+    out: &mut String,
+    block: &Block,
+    meta: &BlockMeta,
+) {
+    render_block(hooks, out, block, meta);
+}
+
 /// Render a sequence of blocks to HTML. Used by [`render_document`]
 /// and by src-tauri's `render_hero_html_typed` (Phase 4 PR4.5) to render
 /// a `Vec<Block>` that didn't come from a full `Document` (e.g. a hero
