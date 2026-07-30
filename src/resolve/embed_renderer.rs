@@ -310,7 +310,6 @@ pub fn lookup_renderer(ext: &str) -> Option<&'static dyn EmbedRenderer> {
 // ---------------------------------------------------------------------------
 
 use crate::heading::anchor::obsidian_heading_anchor;
-use crate::media::parse_media_attrs;
 
 use super::title_params::TitleParams;
 
