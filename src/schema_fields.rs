@@ -652,7 +652,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         field_type: FieldType::String,
         widget: Widget::Select,
         enum_values: Some(&["page", "article"]),
-        description: "Template layout override (page or article)",
+        description: "Template layout override (page or article). On a folder-index page with a cover, \"article\" also swaps the book-open cover row for a full-width stacked hero banner",
         skip_schema: true, // build-only, not an editor form field
         ..FIELD_DEFAULTS
     },
