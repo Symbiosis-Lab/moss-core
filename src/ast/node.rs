@@ -1,14 +1,26 @@
 //! Block-level and inline-level AST nodes.
 //!
 //! Closed enums; pattern matching is the visitor framework. The variants
-//! cover what moss emits today (CommonMark + GFM extensions enabled in the
-//! pipeline: tables, strikethrough, footnotes — see
-//! `src-tauri/src/build/markdown/pipeline.rs`'s `Options` setup).
+//! model every construct [`super::parser::parser_options`] turns on —
+//! CommonMark plus the GFM tables, strikethrough, footnotes and task lists
+//! moss enables (ADR-034 § Task lists, amended) — so nothing pulldown-cmark
+//! emits for those constructs reaches a catch-all.
 //!
-//! Anything pulldown-cmark emits that the AST hasn't modeled flows through
-//! `Block::Other` / `Inline::Other`, which carries the raw HTML so the
-//! renderer passes it through unchanged. New variants may be promoted out
-//! of `Other` over time as a need is identified.
+//! `Block::Other` / `Inline::Other` are NOT a general catch-all. They carry
+//! **raw HTML only** — `Tag::HtmlBlock` and `Event::Html`/`InlineHtml` in
+//! [`super::parser`] — plus payloads moss synthesizes itself (math, ADR-030;
+//! dispatched wikilink embeds). Anything pulldown-cmark emits that has no arm
+//! is **dropped, not passed through**: `parse_block`, `parse_block_with_tag`
+//! and `parse_inline` all end in `_ => (None, 1)`, and
+//! `parse_inline_event`'s whitelist ends in `_ => None`.
+//!
+//! So turning on a new `Options` bit is never a one-line flag flip. It needs a
+//! variant here PLUS arms in `parse_block_with_tag` / `parse_inline` /
+//! `parse_inline_event`'s whitelist, in the same change, or the construct
+//! silently disappears from published pages. That is not hypothetical: before
+//! ADR-034, `~~` was a construct the AST hadn't modeled and it did not flow
+//! through `Inline::Other` — `~~gone~~ stays` published `gone stays` for two
+//! months. See ADR-034 § Why now.
 
 use serde::{Deserialize, Serialize};
 
@@ -345,9 +357,15 @@ pub enum Block {
     /// - External URL (`http(s)://...`): `<a href=URL class="moss-grid-card link-preview" target="_blank" rel="noopener">children</a>`.
     /// - Internal URL: `<a href=URL class="moss-grid-card" data-kind="link">children</a>`.
     LinkCard { url: Url, children: Vec<Block> },
-    /// Escape hatch: anything pulldown-cmark emits that the AST hasn't
-    /// modeled. Carries the raw HTML so the renderer passes it through
-    /// unchanged.
+    /// `[^label]: body` — a GFM footnote definition, wherever the author
+    /// wrote it (pulldown-cmark nests one written inside a blockquote or a
+    /// list item under that container). The renderer hoists it out to the
+    /// document's endnote section; see ADR-034.
+    FootnoteDefinition { label: String, children: Vec<Block> },
+    /// Raw HTML passthrough: a `Tag::HtmlBlock` the author wrote, or a
+    /// payload moss synthesized itself (the shortcode sentinel pass in
+    /// `dispatch_wikilink_embeds`). Emitted verbatim. NOT a fallback for
+    /// unmodeled pulldown constructs — see the module doc.
     Other(String),
 }
 
@@ -417,7 +435,24 @@ pub enum Inline {
     Code(String),
     /// Hard line break.
     LineBreak,
-    /// Escape hatch for unmodeled inline HTML.
+    /// `~~struck~~`
+    Strikethrough(Vec<Inline>),
+    /// `[^label]` — a GFM footnote marker. Carries the author's label, not
+    /// the printed number: numbering is first-reference order over the whole
+    /// document, which is a render-time fact (same rule as
+    /// [`ColumnAlignment`]'s numeric auto-alignment). See ADR-034.
+    FootnoteRef(String),
+    /// The `[ ]` / `[x]` of a GFM task-list item, carrying its checked state.
+    ///
+    /// Modeled as an INLINE, not as a field on [`Block::List`], because that is
+    /// where pulldown-cmark puts it: `Event::TaskListMarker` is the first event
+    /// *inside* `Tag::Item`, ahead of the item's own content. Keeping it inline
+    /// leaves `Block::List`'s shape untouched and avoids a third vector parallel
+    /// to `items` / `item_source_lines`. See ADR-034 § Task lists.
+    TaskMarker(bool),
+    /// Raw inline HTML passthrough (`Event::Html` / `Event::InlineHtml`),
+    /// plus the math node `math_text::math_inline` synthesizes (ADR-030).
+    /// NOT a fallback for unmodeled pulldown constructs — see the module doc.
     Other(String),
 }
 

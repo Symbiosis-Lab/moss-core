@@ -21,7 +21,7 @@
 use super::attrs::gather_multi_line_attrs;
 use super::cells::split_cells;
 use super::node::Block;
-use super::parser::{parse_with_config, ParseConfig};
+use super::parser::{parse_fragment_with_config, ParseConfig};
 use super::shortcode::{
     ApplyShortcode, ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode,
     HeroShortcode, RecentShortcode, Shortcode, SubscribeShortcode,
@@ -271,9 +271,9 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
             // Re-emit as standard markdown link inside a paragraph so the
             // grid_post post-pass owns the rendering.
             let linkified = format!("[{}]({})", inner_trimmed, url);
-            return parse_with_config(&linkified, config).blocks;
+            return parse_fragment_with_config(&linkified, config).blocks;
         }
-        let inner_doc = parse_with_config(inner_trimmed, config);
+        let inner_doc = parse_fragment_with_config(inner_trimmed, config);
         return vec![Block::LinkCard {
             url: Url::unresolved(url),
             children: inner_doc.blocks,
@@ -293,10 +293,10 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
     // parse time so the bytes flow through the typed AST.
     if let Some(url) = detect_bare_url_cell(raw) {
         let linkified = format!("[]({})", url);
-        let doc = parse_with_config(&linkified, config);
+        let doc = parse_fragment_with_config(&linkified, config);
         return doc.blocks;
     }
-    let doc = parse_with_config(raw, config);
+    let doc = parse_fragment_with_config(raw, config);
     doc.blocks
 }
 
@@ -723,7 +723,7 @@ fn parse_overlay_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
     if raw.is_empty() {
         return Vec::new();
     }
-    let doc = parse_with_config(raw, config);
+    let doc = parse_fragment_with_config(raw, config);
     doc.blocks
 }
 

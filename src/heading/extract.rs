@@ -3,16 +3,16 @@
 //! `assign_heading_id_suffixes`) so the returned slugs are byte-identical
 //! to the rendered `<hN id="...">` attributes — the keystone invariant.
 //!
-//! The plain-text flattening is [`super::text::inlines_to_text`] — shared
-//! with the event-stream walker the parser slugs from, so the label this
-//! returns and the `<hN id>` cannot describe the heading differently.
+//! The plain-text flattening is [`crate::ast::plain_text::inlines_to_plain_text`]
+//! — shared with the event-stream walker the parser slugs from, so the label
+//! this returns and the `<hN id>` cannot describe the heading differently.
 //!
 //! v1 extracts TOP-LEVEL headings only (the common case). Headings nested
 //! inside callouts / blockquotes / lists are not offered for autocomplete;
 //! a recursive walk is a follow-up if needed.
 
-use super::text::inlines_to_text;
 use crate::ast::parser::ParseConfig;
+use crate::ast::plain_text::inlines_to_plain_text;
 use crate::ast::{parse_with_config, Block};
 
 /// A heading discovered in a document, in document order.
@@ -55,8 +55,7 @@ pub fn extract_headings_with_config(markdown: &str, config: &ParseConfig) -> Vec
             id,
         } = block
         {
-            let mut text = String::new();
-            inlines_to_text(children, &mut text);
+            let text = inlines_to_plain_text(children);
             out.push(HeadingInfo {
                 text: text.trim().to_string(),
                 slug: id.clone().unwrap_or_default(),
@@ -224,5 +223,105 @@ mod tests {
         let hs = extract_headings_with_config("## Case $a$\n\n## Case $b$\n", &math_on);
         assert_ne!(hs[0].slug, hs[1].slug);
         assert!(!hs[1].slug.ends_with("-1"), "slug {:?} collided", hs[1].slug);
+    }
+
+    /// The keystone invariant across a shortcode boundary. A `:::grid` cell
+    /// is parsed by a recursive `parse_fragment_with_config`, which is told
+    /// to SKIP `assign_heading_id_suffixes` precisely so its heading arrives
+    /// holding the bare slug — the cell renders into the SAME page, so the
+    /// page's own parse must be the only pass that numbers. When the nested
+    /// parse numbered too, a cell was disambiguated against its own private
+    /// counter and then again against the page's, which both re-collided and
+    /// produced impossible shapes like `notes-1-1`.
+    ///
+    /// The counter has to be shared, or the page emits two `id="notes"` and
+    /// the browser resolves `#notes` to whichever comes first in the DOM
+    /// (the card), never the author's section.
+    #[test]
+    fn grid_cell_heading_shares_the_page_id_counter() {
+        let md = ":::grid\n### Notes\n:::\n\n## Notes\n";
+        let hs = extract_headings(md);
+        assert_eq!(hs.len(), 1, "only top-level headings are offered: {hs:?}");
+        assert_eq!(
+            hs[0].slug, "notes-1",
+            "the body section must report the id it actually renders with"
+        );
+
+        let mut doc = crate::ast::parse(md);
+        crate::ast::classify_remaining_urls(&mut doc);
+        let html = crate::ast::render_document(&doc, &crate::ast::DefaultHooks::new());
+        assert_eq!(
+            html.matches(r#"id="notes""#).count(),
+            1,
+            "duplicate DOM id: {html}"
+        );
+        assert!(
+            html.contains(r#"id="notes-1""#),
+            "the body heading lost its disambiguated id: {html}"
+        );
+    }
+
+    /// Every `id=` a page publishes, in DOM order.
+    fn rendered_ids(md: &str) -> Vec<String> {
+        let mut doc = crate::ast::parse(md);
+        crate::ast::classify_remaining_urls(&mut doc);
+        let html = crate::ast::render_document(&doc, &crate::ast::DefaultHooks::new());
+        let mut ids = Vec::new();
+        let mut rest = html.as_str();
+        while let Some(at) = rest.find("id=\"") {
+            let Some(after) = rest.get(at + 4..) else { break };
+            let Some(end) = after.find('"') else { break };
+            let Some(id) = after.get(..end) else { break };
+            ids.push(id.to_string());
+            rest = after.get(end + 1..).unwrap_or("");
+        }
+        ids
+    }
+
+    /// One cell holding TWO same-titled headings. `grid_cell_heading_shares_
+    /// the_page_id_counter` puts one heading per cell, where the nested parse
+    /// assigns no suffix at all — so it cannot see a cell that arrives already
+    /// carrying `notes-1` and gets suffixed a second time by the page walk.
+    /// Assert on the whole id set, not one slug: the collision lands on
+    /// whatever slug the double-suffixing produced, which counting `id="notes"`
+    /// never sees.
+    #[test]
+    fn a_cell_holding_two_same_titled_headings_still_yields_unique_ids() {
+        for (name, md) in [
+            ("grid", "## Notes\n\n:::grid\n### Notes\n\n### Notes\n:::\n"),
+            (
+                "hero overlay",
+                ":::hero\ncover.jpg\n---\n### Notes\n\n### Notes\n:::\n\n## Notes\n",
+            ),
+            (
+                "compound-link card",
+                ":::grid\n[### Notes\n\n### Notes](https://example.com/a)\n:::\n\n## Notes\n",
+            ),
+        ] {
+            let ids = rendered_ids(md);
+            let unique: std::collections::HashSet<&String> = ids.iter().collect();
+            assert_eq!(
+                unique.len(),
+                ids.len(),
+                "{name}: duplicate DOM id among {ids:?}"
+            );
+        }
+    }
+
+    /// A slug rule can never mint `notes-1-1`; only a second suffixing pass
+    /// over an already-suffixed id can. Two cells, two same-titled headings
+    /// each, is the shape that made it visible.
+    #[test]
+    fn no_id_carries_a_doubled_suffix() {
+        let ids = rendered_ids(":::grid 2\n### Notes\n\n### Notes\n+++\n### Notes\n\n### Notes\n:::\n\n## Notes\n");
+        for id in &ids {
+            assert!(
+                !id.contains("-1-"),
+                "id {id:?} was suffixed twice — the nested parse numbered it \
+                 and the page walk numbered it again: {ids:?}"
+            );
+        }
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate DOM id among {ids:?}");
     }
 }

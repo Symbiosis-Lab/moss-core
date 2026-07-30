@@ -125,7 +125,14 @@ pub(crate) fn math_source_from_other(html: &str) -> Option<String> {
 /// carries the source verbatim, so P2's typesetter recovers the exact bytes the
 /// engine needs. Round-tripping `math_inline` → this is pinned by
 /// `node_parts_round_trips` below.
-pub(crate) fn math_node_parts(html: &str) -> Option<(String, bool)> {
+///
+/// `pub` for the same reason as [`math_source`]: the email HTML renderer in
+/// `moss::infra::newsletter` walks `Document` directly (ADR-035) rather than
+/// going through `RenderHooks`, so it decodes `Inline::Other` math nodes here
+/// to route them through its own hosted-PNG math path, falling back to the
+/// escaped source on refusal — the same three-question gate `render_math`
+/// documents, just applied by a second, email-specific lowering.
+pub fn math_node_parts(html: &str) -> Option<(String, bool)> {
     let source = math_source_from_other(html)?;
     // `math_source_from_other` returns the *delimited* source ($tex$ / $$tex$$);
     // `math_source_from_other` already told prefix-vs-display via the same

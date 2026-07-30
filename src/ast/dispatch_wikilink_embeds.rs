@@ -147,7 +147,9 @@ fn dispatch_in_block_children(
         // bodies — a wikilink embed inside a `:::grid` cell or `:::hero`
         // overlay would not be dispatched.
         match &mut blocks[i] {
-            Block::BlockQuote(children) | Block::Callout { children, .. } => {
+            Block::BlockQuote(children)
+            | Block::Callout { children, .. }
+            | Block::FootnoteDefinition { children, .. } => {
                 dispatch_in_block_children(
                     children,
                     snapshot,
