@@ -244,14 +244,22 @@ pub trait RenderHooks {
                     class_attr.push(' ');
                     class_attr.push_str(&args.classes);
                 }
-                let style_attr = match args.columns {
-                    Some(n) => format!(r#" style="--gallery-columns: {n}""#),
+                // An author-specified column count is emitted TWICE on
+                // purpose: `--gallery-columns` is the value `repeat()` can
+                // compute with, and `data-columns` is the selector hook that
+                // lets site.css give the counted and count-less galleries
+                // different track rules (CSS cannot branch on "is this custom
+                // property set?"). Mirrors `.moss-grid[data-columns]`.
+                // Without the split, an explicit N inherits auto-fill's 200px
+                // track floor and the gallery overflows its container.
+                let count_attrs = match args.columns {
+                    Some(n) => format!(r#" data-columns="{n}" style="--gallery-columns: {n}""#),
                     None => String::new(),
                 };
                 out.push_str(r#"<div class=""#);
                 out.push_str(&escape_attr(&class_attr));
                 out.push('"');
-                out.push_str(&style_attr);
+                out.push_str(&count_attrs);
                 if let Some(w) = &args.width {
                     out.push_str(r#" data-width=""#);
                     out.push_str(w);
@@ -1424,6 +1432,42 @@ mod tests {
             !html.contains("data-width"),
             "default should omit data-width, got: {html}"
         );
+    }
+
+    /// An author column count must reach the stylesheet BOTH ways: as a value
+    /// (`--gallery-columns`, the only form `repeat()` can compute with) and as
+    /// a selector hook (`data-columns`, the only form the cascade can branch
+    /// on). site.css needs the hook to give a counted gallery a `minmax(0,
+    /// 1fr)` track floor instead of auto-fill's 200px one — without it,
+    /// `:::gallery 8` demands 8 × 200px and overflows its container.
+    /// Gate: tests/render-gates/site/gallery-track-sizing.spec.js.
+    #[test]
+    fn gallery_with_columns_emits_both_count_hook_and_value() {
+        let sc = Shortcode::Gallery(GalleryShortcode {
+            columns: Some(8),
+            items: vec![GalleryItem {
+                src: Url::resolved("a.jpg", UrlKind::Asset),
+                alt: String::new(),
+                attrs: String::new(),
+            }],
+            ..Default::default()
+        });
+        let html = render_shortcode_html(&sc);
+        assert!(html.contains(r#"data-columns="8""#), "got: {html}");
+        assert!(html.contains(r#"--gallery-columns: 8"#), "got: {html}");
+    }
+
+    #[test]
+    fn gallery_without_columns_omits_the_count_hook() {
+        // No count means auto-fill, and auto-fill must NOT match
+        // `.moss-gallery[data-columns]` or it loses its 200px density floor.
+        let sc = Shortcode::Gallery(GalleryShortcode::default());
+        let html = render_shortcode_html(&sc);
+        assert!(
+            !html.contains("data-columns"),
+            "count-less gallery must stay on the auto-fill rule, got: {html}"
+        );
+        assert!(!html.contains("--gallery-columns"), "got: {html}");
     }
 
     #[test]
