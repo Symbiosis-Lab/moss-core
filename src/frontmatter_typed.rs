@@ -265,7 +265,7 @@ pub struct FrontMatter {
     pub translation_key: Option<String>,
     /// Whether to show comments on this page (default: true)
     pub comments: Option<bool>,
-    /// Content-addressable unique identifier (first 8 chars of SHA-256 of relative path)
+    /// Durable page identity: 8 RANDOM hex chars minted at first build — never derivable, never changed once published (docs/reference/social-data-standard.md)
     #[serde(default, deserialize_with = "deserialize_string_lenient")]
     pub uid: Option<String>,
     /// Typesetting direction: "horizontal" (default) or "vertical"

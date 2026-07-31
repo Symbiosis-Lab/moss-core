@@ -605,6 +605,21 @@ pub trait RenderHooks {
         super::grid_parts::render_grid_parts(self, args, source_line)
     }
 
+    /// Whether in-body footnote markers and the endnote section carry
+    /// `id="fnref-…"` / `href="#fn-…"` anchors.
+    ///
+    /// Default `true` — byte-identical to before this method existed.
+    /// `crate` (src-tauri)'s `EmailHooks` overrides to `false`: ADR-035 fixes
+    /// "email emits no anchors" as the target behavior (an in-body fragment
+    /// link is dead weight in a mail client, and a stray `id=` surviving a
+    /// client's HTML sanitizer is noise), but the marker's visible number and
+    /// the endnote's `[N]` still render — only the linking apparatus is
+    /// suppressed. See `ast::footnotes::render_marker` / `render_section`,
+    /// the two call sites this gates.
+    fn emit_footnote_anchors(&self) -> bool {
+        true
+    }
+
     /// The localized `aria-label` for the per-heading permalink anchor
     /// (`<a class="moss-heading-anchor" aria-label="…">`).
     ///

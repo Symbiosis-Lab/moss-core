@@ -2182,6 +2182,44 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "1",
         description: "Center-aligned table cell (`<th>`/`<td>`). Applied to a whole column the author center-aligned in GFM (`|:-:|`).",
     },
+    ComponentEntry {
+        class: "moss-footnotes",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r##"<section class="moss-footnotes" role="doc-endnotes">
+<ol>
+<li id="fn-1"><p>The note. <a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;</a></p>
+</li>
+</ol>
+</section>"##,
+        example_markdown: "Text[^1].\n\n[^1]: The note.",
+        status: Status::Emerging,
+        since: "1",
+        description: "The document's endnote section, appended after the body by the renderer. Holds one `<li id=\"fn-N\">` per footnote in first-reference order, whatever depth the author wrote the definition at — a definition inside a blockquote or a list item is hoisted here too. Present only on pages that define at least one footnote. `role=\"doc-endnotes\"` (DPUB-ARIA) names the region for assistive tech.",
+    },
+    ComponentEntry {
+        class: "moss-footnote-ref",
+        kind: "instance",
+        parent: "moss-footnotes",
+        data_attrs: &[],
+        example_html: r##"<sup class="moss-footnote-ref" id="fnref-1"><a href="#fn-1" role="doc-noteref">1</a></sup>"##,
+        example_markdown: "Text[^1].\n\n[^1]: The note.",
+        status: Status::Emerging,
+        since: "1",
+        description: "The in-body footnote marker: a superscript number linking down to its note. The number is first-reference order, not the author's label, so `[^method]` and `[^1]` both print as ordinals. A second marker for the same note takes id `fnref-N-2`, `fnref-N-3`, … so each has its own back-link.",
+    },
+    ComponentEntry {
+        class: "moss-footnote-backref",
+        kind: "instance",
+        parent: "moss-footnotes",
+        data_attrs: &[],
+        example_html: r##"<a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;</a>"##,
+        example_markdown: "Text[^1].\n\n[^1]: The note.",
+        status: Status::Emerging,
+        since: "1",
+        description: "The return arrow at the end of a note, linking back to the marker that sent the reader there. One per marker, so a note referenced twice ends with two arrows. A note nobody referenced has none.",
+    },
 ];
 
 /// Implementation classes that are emitted by moss for internal functionality

@@ -16,6 +16,7 @@
 use super::document::Document;
 use super::node::{Block, Inline};
 use super::shortcode::Shortcode;
+use std::collections::HashMap;
 
 /// Find the first `Inline::Image` reachable from the document's top-level
 /// block sequence.
@@ -43,20 +44,77 @@ use super::shortcode::Shortcode;
 /// Replaces the `body_cover_path` capture currently in
 /// `pipeline.rs::transform_events`. Closes the acceptance criteria of
 /// issue #643 (first-body-image AST walker) on top of the typed AST.
+/// # Render order, not source order (2026-07-29)
+///
+/// The walk is depth-first over the source tree, but a footnote definition
+/// does not render where it sits — `footnotes::render_section` hoists it to
+/// the end of the page. Writing `[^a]: ![diagram](d.png)` directly under the
+/// paragraph that cites it is the ordinary Obsidian habit, and a single-pass
+/// source-order walk hands that diagram the cover over the photo the reader
+/// actually meets in the body. The consumer is `body_cover_path`, i.e. the
+/// page's `og:image`, so the wrong answer ships as the social card.
+///
+/// Hence two passes: body first with definitions skipped; then the endnote
+/// section, walked in INDEX order — the order `render_section` emits the
+/// `<li>`s — not source order, which is not the order the reader meets the
+/// notes. The second pass only ever runs when the body has no image at all,
+/// so it answers the case the definition arm below exists for — an image
+/// that lives *only* in a note is still the only image — without letting an
+/// endnote outrank the body.
 pub fn find_first_block_image(doc: &Document) -> Option<&Inline> {
-    find_first_image_in_blocks(&doc.blocks)
+    // The renderer's identity decision, from the same lookup `is_hoisted`
+    // uses — a first-sighting counter here diverged from it whenever a
+    // label's first definition was NESTED inside another note (the pass-one
+    // skip never descends, so the nested first was never counted and a
+    // later top-level repeat passed for it).
+    let hoisted = super::footnotes::hoisted_definition_bodies(&doc.blocks);
+    find_first_image_in_blocks(&doc.blocks, Notes::Hoisted, &hoisted).or_else(|| {
+        // No body image: the cover falls to the endnote section, whose
+        // notes render in first-reference index order. Within one note's
+        // body the same identity rule applies — a nested HOISTED
+        // definition's content is skipped here and searched separately at
+        // its OWN entry in this same iteration (which can land before or
+        // after the host's, depending on first-reference order), while a
+        // nested repeat renders in place.
+        let index = super::footnotes::FootnoteIndex::build(&doc.blocks);
+        index.entries().iter().find_map(|(_, label)| {
+            super::footnotes::FootnoteIndex::definition(&doc.blocks, label).and_then(
+                |children| find_first_image_in_blocks(children, Notes::Hoisted, &hoisted),
+            )
+        })
+    })
 }
 
-fn find_first_image_in_blocks(blocks: &[Block]) -> Option<&Inline> {
+/// Whether a footnote definition reached on this walk renders where it sits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Notes {
+    /// Hoisted to the endnote section, so its images are endnote matter and
+    /// lose to any body image however far down the page it sits.
+    Hoisted,
+    /// Rendered in place. True inside a shortcode body, which the endnote
+    /// section does not reach — the same asymmetry `collect_heading_id_slots`
+    /// encodes as `HoistScope` in `parser.rs`.
+    InPlace,
+}
+
+fn find_first_image_in_blocks<'a>(
+    blocks: &'a [Block],
+    notes: Notes,
+    hoisted: &HashMap<String, usize>,
+) -> Option<&'a Inline> {
     for block in blocks {
-        if let Some(img) = find_first_image_in_block(block) {
+        if let Some(img) = find_first_image_in_block(block, notes, hoisted) {
             return Some(img);
         }
     }
     None
 }
 
-fn find_first_image_in_block(block: &Block) -> Option<&Inline> {
+fn find_first_image_in_block<'a>(
+    block: &'a Block,
+    notes: Notes,
+    hoisted: &HashMap<String, usize>,
+) -> Option<&'a Inline> {
     match block {
         // Direct hit: PR3's typed Figure variant.
         Block::Figure { image, .. } => Some(image),
@@ -70,14 +128,14 @@ fn find_first_image_in_block(block: &Block) -> Option<&Inline> {
         // walk as the top-level loop.
         Block::List { items, .. } => {
             for item in items {
-                if let Some(img) = find_first_image_in_blocks(item) {
+                if let Some(img) = find_first_image_in_blocks(item, notes, hoisted) {
                     return Some(img);
                 }
             }
             None
         }
-        Block::BlockQuote(children) => find_first_image_in_blocks(children),
-        Block::Callout { children, .. } => find_first_image_in_blocks(children),
+        Block::BlockQuote(children) => find_first_image_in_blocks(children, notes, hoisted),
+        Block::Callout { children, .. } => find_first_image_in_blocks(children, notes, hoisted),
         Block::Table { header, rows, .. } => {
             // Headers walked first (document order), then rows.
             for cell in header {
@@ -96,13 +154,37 @@ fn find_first_image_in_block(block: &Block) -> Option<&Inline> {
         }
 
         // Shortcodes: descend by variant. Gallery/Hero/Grid carry images.
-        Block::Shortcode(sc) => find_first_image_in_shortcode(sc),
+        // A definition inside a shortcode body is NOT hoisted — the endnote
+        // section does not reach in there — so its images are body matter.
+        Block::Shortcode(sc) => find_first_image_in_shortcode(sc, Notes::InPlace, hoisted),
 
         // Compound-link grid cells (PR4.5 LinkCard) wrap block-level
         // children including images.
-        Block::LinkCard { children, .. } => find_first_image_in_blocks(children),
+        Block::LinkCard { children, .. } => find_first_image_in_blocks(children, notes, hoisted),
 
         Block::Heading { children, .. } => find_first_image_in_inlines(children),
+
+        // Only the doc-order-FIRST definition of a label is hoisted; a
+        // REPEAT renders where it sits, so a repeat's images are body matter
+        // and must be eligible on pass one. Decided by the same identity
+        // `render.rs` asks (`hoisted_definition_bodies`) — everything inside
+        // a HOISTED definition's subtree renders in the endnote section
+        // (in place within the host's endnote, or hoisted to its own), so
+        // the walk skips the whole subtree without descending. Pass two
+        // never reaches a top-level definition through this arm (it walks
+        // note bodies directly, in index order — see
+        // `find_first_block_image`); a definition met here mid-body is
+        // either a repeat (descend: it renders right here) or, inside a
+        // note body on pass two, a nested hoisted definition whose content
+        // belongs to its own, later endnote (skip).
+        Block::FootnoteDefinition { label, children } => match notes {
+            Notes::Hoisted
+                if hoisted.get(label.as_str()) == Some(&(children.as_ptr() as usize)) =>
+            {
+                None
+            }
+            _ => find_first_image_in_blocks(children, notes, hoisted),
+        },
 
         Block::CodeBlock { .. } | Block::ThematicBreak | Block::Other(_) => None,
     }
@@ -114,18 +196,28 @@ fn find_first_image_in_inlines(inlines: &[Inline]) -> Option<&Inline> {
             Inline::Image { .. } => return Some(inline),
             Inline::Link { children, .. }
             | Inline::Emphasis(children)
-            | Inline::Strong(children) => {
+            | Inline::Strong(children)
+            | Inline::Strikethrough(children) => {
                 if let Some(img) = find_first_image_in_inlines(children) {
                     return Some(img);
                 }
             }
-            Inline::Text(_) | Inline::Code(_) | Inline::LineBreak | Inline::Other(_) => {}
+            Inline::Text(_)
+            | Inline::Code(_)
+            | Inline::LineBreak
+            | Inline::FootnoteRef(_)
+            | Inline::TaskMarker(_)
+            | Inline::Other(_) => {}
         }
     }
     None
 }
 
-fn find_first_image_in_shortcode(sc: &Shortcode) -> Option<&Inline> {
+fn find_first_image_in_shortcode<'a>(
+    sc: &'a Shortcode,
+    notes: Notes,
+    hoisted: &HashMap<String, usize>,
+) -> Option<&'a Inline> {
     match sc {
         Shortcode::Subscribe(_) | Shortcode::Buttons(_) | Shortcode::Recent(_) | Shortcode::Apply(_) => None,
         Shortcode::Gallery(args) => {
@@ -149,12 +241,12 @@ fn find_first_image_in_shortcode(sc: &Shortcode) -> Option<&Inline> {
             // `hero_image_url` directly from `apply_typed_shortcodes`
             // / extract_hero — that field is the source of truth for
             // hero-rung; body_cover_path explicitly excludes it.
-            find_first_image_in_blocks(&args.overlay)
+            find_first_image_in_blocks(&args.overlay, notes, hoisted)
         }
         Shortcode::Grid(args) => {
             // Walk each grid cell's blocks in document order.
             for cell in &args.cells {
-                if let Some(img) = find_first_image_in_blocks(cell) {
+                if let Some(img) = find_first_image_in_blocks(cell, notes, hoisted) {
                     return Some(img);
                 }
             }
@@ -193,6 +285,105 @@ mod tests {
 
     fn p_with_text(text: &str) -> Block {
         Block::Paragraph(vec![Inline::Text(text.into())])
+    }
+
+    /// A footnote definition is hoisted to the endnote section, so the image
+    /// inside one is the LAST thing on the rendered page — it must never win
+    /// the cover over an image the reader actually meets in the body. The
+    /// definition here sits above the body image in source, which is the
+    /// ordinary Obsidian habit (`[^a]: …` written under the citing paragraph)
+    /// and the only arrangement where source order and render order disagree.
+    ///
+    /// The consumer is `body_cover_path`, i.e. the page `og:image`, so getting
+    /// this wrong ships an endnote diagram as the article's social card.
+    #[test]
+    fn a_body_image_outranks_one_hoisted_into_the_endnotes() {
+        let doc = super::super::parse(
+            "Intro paragraph[^a].\n\n[^a]: ![diagram](d.png)\n\nLater section.\n\n![photo](p.png)\n",
+        );
+        match find_first_block_image(&doc) {
+            Some(Inline::Image { src, .. }) => assert_eq!(
+                src,
+                &Url::unresolved("p.png"),
+                "the endnote's image won the cover over the body's"
+            ),
+            other => panic!("expected an image, got {other:?}"),
+        }
+    }
+
+    /// Only the FIRST definition of a label is hoisted — `render.rs` guards its
+    /// arm with `footnotes::is_hoisted`, decided by identity. A repeated
+    /// label's SECOND definition therefore renders where the author wrote it,
+    /// in the body, so its image is body matter and must win the cover over the
+    /// first definition's, which the reader only meets in the endnotes.
+    ///
+    /// The shape is a copy-pasted paragraph that brought its own note along.
+    #[test]
+    fn a_repeated_labels_second_definition_is_body_matter_not_endnote_matter() {
+        let doc = super::super::parse(
+            "Para one[^1].\n\n[^1]: see ![chart](c1.png)\n\nPara two[^1].\n\n[^1]: see ![chart2](c2.png)\n",
+        );
+        match find_first_block_image(&doc) {
+            Some(Inline::Image { src, .. }) => assert_eq!(
+                src,
+                &Url::unresolved("c2.png"),
+                "picked the hoisted first definition's image over the one that \
+                 actually renders in the body"
+            ),
+            other => panic!("expected an image, got {other:?}"),
+        }
+    }
+
+    /// The nested-first shape: `[^b]`'s FIRST definition sits inside `[^a]`'s
+    /// body, so the later top-level `[^b]` is a repeat and renders in the
+    /// body. A first-sighting counter never counted the nested first (the
+    /// pass-one skip does not descend), so the repeat passed for it and its
+    /// image — the page's only BODY image — lost the cover to an
+    /// endnote-only one. Identity does not depend on what the walk skipped.
+    #[test]
+    fn a_repeat_whose_first_definition_is_nested_is_still_body_matter() {
+        let doc = super::super::parse(
+            "Body[^a][^b].\n\n[^a]: OUT\n\n    > [^b]: IN ![in](in.png)\n\n[^b]: REPEAT ![repeat](r.png)\n",
+        );
+        match find_first_block_image(&doc) {
+            Some(Inline::Image { src, .. }) => assert_eq!(
+                src,
+                &Url::unresolved("r.png"),
+                "picked an endnote-only image over the repeat's body image"
+            ),
+            other => panic!("expected the repeat's body image, got {other:?}"),
+        }
+    }
+
+    /// When every image lives in the endnotes, "first" means first in the
+    /// ENDNOTE LIST — index order, the order `render_section` emits — not
+    /// first in source order. `[^b]` is referenced first, so its note is
+    /// fn-1 and its image is the first the reader meets, even though
+    /// `[^a]`'s definition is written first.
+    #[test]
+    fn with_no_body_image_the_first_endnote_image_wins_not_the_first_written() {
+        let doc =
+            super::super::parse("Body[^b][^a].\n\n[^a]: ![a](a.png)\n\n[^b]: ![b](b.png)\n");
+        match find_first_block_image(&doc) {
+            Some(Inline::Image { src, .. }) => assert_eq!(
+                src,
+                &Url::unresolved("b.png"),
+                "picked the first-written definition's image over the first-rendered note's"
+            ),
+            other => panic!("expected an image, got {other:?}"),
+        }
+    }
+
+    /// The other side of the same rule: the arm exists because an image that
+    /// lives ONLY in a note is still the page's only image. Skipping notes
+    /// outright would regress this, so the fix is two passes, not one filter.
+    #[test]
+    fn an_image_that_lives_only_in_a_note_is_still_found() {
+        let doc = super::super::parse("Intro[^a].\n\n[^a]: ![diagram](d.png)\n");
+        match find_first_block_image(&doc) {
+            Some(Inline::Image { src, .. }) => assert_eq!(src, &Url::unresolved("d.png")),
+            other => panic!("expected the note's image, got {other:?}"),
+        }
     }
 
     #[test]

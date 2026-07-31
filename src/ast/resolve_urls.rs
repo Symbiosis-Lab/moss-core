@@ -320,7 +320,9 @@ fn resolve_shortcode_image_urls(
         },
         // Container blocks: recurse so nested shortcodes (Hero inside a
         // Callout, Grid inside a list, etc.) are reached.
-        Block::Callout { children, .. } | Block::BlockQuote(children) => {
+        Block::Callout { children, .. }
+        | Block::BlockQuote(children)
+        | Block::FootnoteDefinition { children, .. } => {
             for nested in children {
                 resolve_shortcode_image_urls(nested, graph, source_path, found);
             }
@@ -525,7 +527,12 @@ fn split_path_suffix(url: &str) -> (&str, Option<&str>) {
 /// - `#frag` → `#<slug>`
 /// - `?query` → `?query` (no fragment, untouched)
 /// - `?query#frag` → `?query#<slug>` (query verbatim, fragment slugged)
-fn slug_wikilink_suffix(suffix: &str) -> String {
+///
+/// `pub` (ADR-036 stage 2): `src-tauri`'s `newsletter.rs` has no content
+/// graph to resolve wikilinks through — it just needs this same fragment
+/// half — so it calls this directly instead of carrying its own copy of the
+/// block-ref-vs-heading-anchor branch.
+pub fn slug_wikilink_suffix(suffix: &str) -> String {
     use crate::heading::anchor::obsidian_heading_anchor;
 
     // Find the fragment (`#…`); everything before it is a `?query` we leave
@@ -621,7 +628,9 @@ where
                 walk_images_in_inline(inline, f);
             }
         }
-        Block::Callout { children, .. } | Block::BlockQuote(children) => {
+        Block::Callout { children, .. }
+        | Block::BlockQuote(children)
+        | Block::FootnoteDefinition { children, .. } => {
             for nested in children {
                 walk_images_in_block(nested, f);
             }
@@ -713,12 +722,17 @@ where
                 walk_images_in_inline(nested, f);
             }
         }
-        Inline::Emphasis(children) | Inline::Strong(children) => {
+        Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children) => {
             for nested in children {
                 walk_images_in_inline(nested, f);
             }
         }
-        Inline::Text(_) | Inline::Code(_) | Inline::LineBreak | Inline::Other(_) => {}
+        Inline::Text(_)
+        | Inline::Code(_)
+        | Inline::LineBreak
+        | Inline::FootnoteRef(_)
+        | Inline::TaskMarker(_)
+        | Inline::Other(_) => {}
     }
 }
 
@@ -746,7 +760,9 @@ where
                 walk_links_in_inline(inline, f);
             }
         }
-        Block::Callout { children, .. } | Block::BlockQuote(children) => {
+        Block::Callout { children, .. }
+        | Block::BlockQuote(children)
+        | Block::FootnoteDefinition { children, .. } => {
             for nested in children {
                 walk_links_in_block(nested, f);
             }
@@ -858,12 +874,17 @@ where
         Inline::Image { .. } => {
             // Image src is a Url but it's image-kind — handled by phase 1.
         }
-        Inline::Emphasis(children) | Inline::Strong(children) => {
+        Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children) => {
             for nested in children {
                 walk_links_in_inline(nested, f);
             }
         }
-        Inline::Text(_) | Inline::Code(_) | Inline::LineBreak | Inline::Other(_) => {}
+        Inline::Text(_)
+        | Inline::Code(_)
+        | Inline::LineBreak
+        | Inline::FootnoteRef(_)
+        | Inline::TaskMarker(_)
+        | Inline::Other(_) => {}
     }
 }
 
@@ -882,7 +903,7 @@ fn gather_text_inline(inline: &Inline, out: &mut String) {
     match inline {
         Inline::Text(t) => out.push_str(t),
         Inline::Code(c) => out.push_str(c),
-        Inline::Emphasis(children) | Inline::Strong(children) => {
+        Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children) => {
             for nested in children {
                 gather_text_inline(nested, out);
             }
@@ -894,7 +915,10 @@ fn gather_text_inline(inline: &Inline, out: &mut String) {
         }
         Inline::Image { alt, .. } => out.push_str(alt),
         Inline::LineBreak => out.push('\n'),
-        Inline::Other(_) => {}
+        // A marker is a pointer, not prose: it must not leak into a
+        // description, a slug, or a numeric-column probe. A task checkbox is
+        // the same — `- [x] Ship it` should summarize as "Ship it".
+        Inline::FootnoteRef(_) | Inline::TaskMarker(_) | Inline::Other(_) => {}
     }
 }
 

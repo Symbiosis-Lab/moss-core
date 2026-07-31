@@ -45,6 +45,7 @@
 //! for the Phase 4 execution plan.
 
 use super::document::{BlockMeta, Document};
+use super::footnotes::{self, FootnoteCtx};
 use super::hooks::{escape_attr, escape_text, RenderHooks};
 use super::node::{Block, ColumnAlignment, Fold, Inline};
 use super::url::Url;
@@ -119,8 +120,7 @@ fn column_reads_as_numeric(rows: &[Vec<Vec<Inline>>], col: usize) -> bool {
     let mut numeric = 0usize;
     for row in rows {
         let Some(cell) = row.get(col) else { continue };
-        let mut text = String::new();
-        crate::heading::text::inlines_to_text(cell, &mut text);
+        let text = crate::ast::plain_text::inlines_to_plain_text(cell);
         if text.trim().is_empty() {
             continue;
         }
@@ -174,10 +174,12 @@ pub fn render_document<H: RenderHooks>(doc: &Document, hooks: &H) -> String {
         doc.block_meta.len(),
         "Document invariant: blocks.len() == block_meta.len()"
     );
+    let mut fnotes = FootnoteCtx::for_document(&doc.blocks);
     for (i, block) in doc.blocks.iter().enumerate() {
         let meta = doc.block_meta.get(i).copied().unwrap_or_default();
-        render_block(hooks, &mut out, block, &meta);
+        render_block(hooks, &mut out, block, &meta, &mut fnotes);
     }
+    footnotes::render_section(hooks, &mut out, &doc.blocks, &mut fnotes);
     out
 }
 
@@ -190,21 +192,34 @@ pub fn render_document<H: RenderHooks>(doc: &Document, hooks: &H) -> String {
 /// ADR-034) must go through this rather than [`render_blocks`]: the latter has
 /// no meta vec and would silently drop every `data-source-line` annotation.
 ///
-/// Concatenating this over `doc.blocks`/`doc.block_meta` in lockstep is
-/// byte-identical to [`render_document`] by construction.
+/// Takes the caller's [`FootnoteCtx`] (built once via `FootnoteCtx::
+/// for_document`, same as [`render_document`]) rather than owning one, so
+/// footnote numbering/hoisting stays document-wide even when the caller
+/// walks blocks one at a time instead of via `render_document`'s loop.
+///
+/// Concatenating this over `doc.blocks`/`doc.block_meta` in lockstep, sharing
+/// one `FootnoteCtx` across the walk, is byte-identical to [`render_document`]
+/// by construction.
 pub fn render_block_with_meta<H: RenderHooks + ?Sized>(
     hooks: &H,
     out: &mut String,
     block: &Block,
     meta: &BlockMeta,
+    fnotes: &mut FootnoteCtx,
 ) {
-    render_block(hooks, out, block, meta);
+    render_block(hooks, out, block, meta, fnotes);
 }
 
-/// Render a sequence of blocks to HTML. Used by [`render_document`]
-/// and by src-tauri's `render_hero_html_typed` (Phase 4 PR4.5) to render
-/// a `Vec<Block>` that didn't come from a full `Document` (e.g. a hero
-/// overlay).
+/// Render a sequence of blocks to HTML. Used by shortcode-body renderers —
+/// grid cells and, via src-tauri's `render_hero_html_typed` (Phase 4 PR4.5),
+/// the hero overlay — to render a `Vec<Block>` that didn't come from a full
+/// `Document`. [`render_document`] does NOT call this: it walks its blocks
+/// and meta in lockstep, calling `render_block` directly.
+///
+/// **Not table cells.** A `Block::Table` holds `Vec<Vec<Vec<Inline>>>` — its
+/// cells are inlines, rendered by `render_inlines` inside the table arm, so
+/// they never reach any block-level entry point. Listing them here (and in
+/// ADR-035) described a caller that cannot exist.
 ///
 /// **Source-line caveat:** this entry point has no per-block meta vec, so
 /// every block renders without `data-source-line`. Callers that need
@@ -218,7 +233,25 @@ pub fn render_block_with_meta<H: RenderHooks + ?Sized>(
 /// with `self: &Self` from inside a trait default method (where `Self`
 /// is not statically `Sized`). The hook surface is a thin dispatch
 /// boundary; monomorphization across all concrete impls is not required.
+/// **Footnote caveat:** this entry point carries no [`FootnoteIndex`], so a
+/// marker inside `blocks` renders as its literal `[^label]` source and a
+/// definition renders in place. That is the honest shape for the callers
+/// this function has — shortcode bodies, which are their own little
+/// documents with no endnote section of their own. Nested walks INSIDE a
+/// document use `render_blocks_with`. ADR-035 § Three call paths.
 pub fn render_blocks<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, blocks: &[Block]) {
+    render_blocks_with(hooks, out, blocks, &mut FootnoteCtx::default());
+}
+
+/// The in-document nested-block walk: same as [`render_blocks`] but keeps
+/// the caller's footnote state, so a marker inside a blockquote, callout,
+/// multi-paragraph list item or link card is numbered like any other.
+pub(super) fn render_blocks_with<H: RenderHooks + ?Sized>(
+    hooks: &H,
+    out: &mut String,
+    blocks: &[Block],
+    fnotes: &mut FootnoteCtx,
+) {
     for block in blocks {
         // Nested blocks render without source-line annotations (the
         // legacy transform_events emitted `data-source-line` on the
@@ -226,7 +259,7 @@ pub fn render_blocks<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, block
         // top-level + list-item depth. We omit the `<li>` annotation
         // for now; the iframe-bridge consumer picks the outer wrapper
         // when no inner annotation exists.
-        render_block(hooks, out, block, &BlockMeta::default());
+        render_block(hooks, out, block, &BlockMeta::default(), fnotes);
     }
 }
 
@@ -235,6 +268,7 @@ fn render_block<H: RenderHooks + ?Sized>(
     out: &mut String,
     block: &Block,
     meta: &BlockMeta,
+    fnotes: &mut FootnoteCtx,
 ) {
     match block {
         Block::Heading {
@@ -243,7 +277,7 @@ fn render_block<H: RenderHooks + ?Sized>(
             id,
         } => {
             let mut content = String::new();
-            render_inlines(hooks, &mut content, children);
+            render_inlines(hooks, &mut content, children, fnotes);
             hooks.render_heading(out, *level, id.as_deref(), meta.source_line, &content);
             out.push('\n');
         }
@@ -251,7 +285,7 @@ fn render_block<H: RenderHooks + ?Sized>(
             out.push_str("<p");
             push_source_line_attr(out, meta.source_line);
             out.push('>');
-            render_inlines(hooks, out, children);
+            render_inlines(hooks, out, children, fnotes);
             out.push_str("</p>\n");
         }
         Block::Callout {
@@ -300,10 +334,17 @@ fn render_block<H: RenderHooks + ?Sized>(
             out.push_str(r#"  <div class="callout-title">"#);
             out.push_str(&display_title);
             out.push_str("</div>\n");
-            out.push_str(r#"  <div class="callout-content">"#);
-            out.push('\n');
-            render_blocks(hooks, out, children);
-            out.push_str("</div>\n");
+            // The box itself always survives: its title is text the AUTHOR
+            // typed, and hoisting a footnote definition moves the note — it
+            // must not delete the prose around it. What goes is the empty
+            // content div a hoist leaves behind.
+            let body = render_children_to_string(hooks, children, fnotes);
+            if !hoist_emptied(children, &body) {
+                out.push_str(r#"  <div class="callout-content">"#);
+                out.push('\n');
+                out.push_str(&body);
+                out.push_str("</div>\n");
+            }
             out.push_str("</div>\n");
         }
         Block::List {
@@ -325,51 +366,75 @@ fn render_block<H: RenderHooks + ?Sized>(
                 item_source_lines.len(),
                 items.len()
             );
-            if *ordered {
-                out.push_str("<ol");
-                // Emit `start="N"` when the parser captured an explicit
-                // non-default start number (`3. foo` → `Some(3)`).
-                // `None` for the default `1. foo` case keeps the
-                // shorter `<ol>` shape. Attribute order mirrors other
-                // typed-AST blocks: existing tag attrs first, then
-                // `data-source-line`. Phase 4 followup B (2026-05-28).
-                if let Some(n) = start {
-                    out.push_str(" start=\"");
-                    out.push_str(&n.to_string());
-                    out.push('"');
-                }
-                push_source_line_attr(out, meta.source_line);
-                out.push_str(">\n");
-            } else {
-                out.push_str("<ul");
-                push_source_line_attr(out, meta.source_line);
-                out.push_str(">\n");
-            }
+            // Items render into a buffer first so an item the hoist emptied
+            // can be dropped — and, if that was the only item, so can the
+            // list. The render still happens exactly once, in order, so the
+            // `FootnoteCtx` side effects (hoist decisions, marker ids,
+            // back-link counts) are identical either way.
+            let mut body = String::new();
+            let mut kept = 0usize;
             for (idx, item_blocks) in items.iter().enumerate() {
+                let mut item = String::new();
+                // Single-paragraph items render their inline content inline
+                // (no extra <p>). Mirrors pulldown-cmark's "tight list" output.
+                let tight = matches!(item_blocks.as_slice(), [Block::Paragraph(_)]);
+                if let [Block::Paragraph(inlines)] = item_blocks.as_slice() {
+                    render_inlines(hooks, &mut item, inlines, fnotes);
+                } else {
+                    render_blocks_with(hooks, &mut item, item_blocks, fnotes);
+                }
+                if hoist_emptied(item_blocks, &item) {
+                    continue;
+                }
+                // The non-tight `<li>\n…</li>` shape is restored only AFTER the
+                // emptiness test, so the buffer under test is purely child
+                // output. Prefixing first made every non-tight item look
+                // non-empty, which forced `hoist_emptied` to `.trim()` — and
+                // that trim deleted whitespace the author typed.
+                if !tight {
+                    item.insert(0, '\n');
+                }
+                kept += 1;
                 // Per-`<li>` source line — populated only when the parser
                 // ran with `emit_source_lines: true` (otherwise
                 // `item_source_lines` is empty). Mirrors the legacy
                 // transform_events shape (commit f91aca8fa, 2026-04-01) that
                 // emitted `data-source-line` on `<li>` for proportional
                 // scroll-sync interpolation between editor and preview.
-                out.push_str("<li");
+                body.push_str("<li");
                 let item_line = item_source_lines.get(idx).copied().flatten();
-                push_source_line_attr(out, item_line);
-                out.push('>');
-                // Single-paragraph items render their inline content inline
-                // (no extra <p>). Mirrors pulldown-cmark's "tight list" output.
-                if let [Block::Paragraph(inlines)] = item_blocks.as_slice() {
-                    render_inlines(hooks, out, inlines);
-                } else {
-                    out.push('\n');
-                    render_blocks(hooks, out, item_blocks);
-                }
-                out.push_str("</li>\n");
+                push_source_line_attr(&mut body, item_line);
+                body.push('>');
+                body.push_str(&item);
+                body.push_str("</li>\n");
             }
-            if *ordered {
-                out.push_str("</ol>\n");
-            } else {
-                out.push_str("</ul>\n");
+            if items.is_empty() || kept > 0 {
+                if *ordered {
+                    out.push_str("<ol");
+                    // Emit `start="N"` when the parser captured an explicit
+                    // non-default start number (`3. foo` → `Some(3)`).
+                    // `None` for the default `1. foo` case keeps the
+                    // shorter `<ol>` shape. Attribute order mirrors other
+                    // typed-AST blocks: existing tag attrs first, then
+                    // `data-source-line`. Phase 4 followup B (2026-05-28).
+                    if let Some(n) = start {
+                        out.push_str(" start=\"");
+                        out.push_str(&n.to_string());
+                        out.push('"');
+                    }
+                    push_source_line_attr(out, meta.source_line);
+                    out.push_str(">\n");
+                } else {
+                    out.push_str("<ul");
+                    push_source_line_attr(out, meta.source_line);
+                    out.push_str(">\n");
+                }
+                out.push_str(&body);
+                if *ordered {
+                    out.push_str("</ol>\n");
+                } else {
+                    out.push_str("</ul>\n");
+                }
             }
         }
         Block::CodeBlock { lang, value } => {
@@ -426,7 +491,7 @@ fn render_block<H: RenderHooks + ?Sized>(
                 out.push_str("<th");
                 out.push_str(cell_class(col));
                 out.push('>');
-                render_inlines(hooks, out, cell);
+                render_inlines(hooks, out, cell, fnotes);
                 out.push_str("</th>");
             }
             out.push_str("</tr>\n</thead>\n");
@@ -441,7 +506,7 @@ fn render_block<H: RenderHooks + ?Sized>(
                         out.push_str("<td");
                         out.push_str(cell_class(col));
                         out.push('>');
-                        render_inlines(hooks, out, cell);
+                        render_inlines(hooks, out, cell, fnotes);
                         out.push_str("</td>");
                     }
                     out.push_str("</tr>\n");
@@ -452,11 +517,14 @@ fn render_block<H: RenderHooks + ?Sized>(
             out.push_str("</div>\n");
         }
         Block::BlockQuote(children) => {
-            out.push_str("<blockquote");
-            push_source_line_attr(out, meta.source_line);
-            out.push_str(">\n");
-            render_blocks(hooks, out, children);
-            out.push_str("</blockquote>\n");
+            let body = render_children_to_string(hooks, children, fnotes);
+            if !hoist_emptied(children, &body) {
+                out.push_str("<blockquote");
+                push_source_line_attr(out, meta.source_line);
+                out.push_str(">\n");
+                out.push_str(&body);
+                out.push_str("</blockquote>\n");
+            }
         }
         Block::Shortcode(sc) => {
             hooks.render_shortcode(out, sc, meta.source_line);
@@ -569,13 +637,13 @@ fn render_block<H: RenderHooks + ?Sized>(
                     // Defensive: a non-Image inline in a Figure violates
                     // the parser-enforced shape, but the renderer must
                     // still emit something rather than crash.
-                    render_inline(hooks, out, image);
+                    render_inline(hooks, out, image, fnotes);
                 }
             }
             if let Some(cap_inlines) = caption {
                 if !cap_inlines.is_empty() {
                     out.push_str("<figcaption>");
-                    render_inlines(hooks, out, cap_inlines);
+                    render_inlines(hooks, out, cap_inlines, fnotes);
                     out.push_str("</figcaption>");
                 }
             }
@@ -591,6 +659,10 @@ fn render_block<H: RenderHooks + ?Sized>(
             // shape was deleted from src-tauri in PR4.5). The wrapping
             // `<div class="moss-grid">` chrome lives in the Grid render
             // arm in hooks.rs; LinkCard is the per-cell shape.
+            let body = render_children_to_string(hooks, children, fnotes);
+            if hoist_emptied(children, &body) {
+                return;
+            }
             let resolved = match url {
                 Url::Resolved(r) => r,
                 Url::Unresolved(s) => {
@@ -601,7 +673,7 @@ fn render_block<H: RenderHooks + ?Sized>(
                     out.push_str(r#"<a href=""#);
                     out.push_str(&escape_attr(s));
                     out.push_str(r#"" class="moss-grid-card" data-kind="link">"#);
-                    render_blocks(hooks, out, children);
+                    out.push_str(&body);
                     out.push_str("</a>");
                     return;
                 }
@@ -619,13 +691,60 @@ fn render_block<H: RenderHooks + ?Sized>(
                 out.push_str(&escape_attr(&resolved.href));
                 out.push_str(r#"" class="moss-grid-card" data-kind="link">"#);
             }
-            render_blocks(hooks, out, children);
+            out.push_str(&body);
             out.push_str("</a>");
+        }
+        Block::FootnoteDefinition { label, children } => {
+            // The first definition of a label is hoisted into the endnote
+            // section, so it emits nothing here. Identity-decided, so
+            // skipping this subtree leaves no counter stale for a nested
+            // definition inside it.
+            if footnotes::is_hoisted(label, children, fnotes) {
+                return;
+            }
+            render_blocks_with(hooks, out, children, fnotes);
         }
         Block::Other(html) => {
             out.push_str(html);
         }
     }
+}
+
+/// Render a container's children into their own buffer.
+///
+/// The buffer is what lets a container ask "did my children produce
+/// anything?" before it commits to a wrapper element. Rendering still
+/// happens exactly once and in document order, so the [`FootnoteCtx`]
+/// side effects — hoist decisions, marker ids, back-link counts — are
+/// byte-for-byte what they were when the children rendered straight into
+/// `out`.
+fn render_children_to_string<H: RenderHooks + ?Sized>(
+    hooks: &H,
+    children: &[Block],
+    fnotes: &mut FootnoteCtx,
+) -> String {
+    let mut buf = String::new();
+    render_blocks_with(hooks, &mut buf, children, fnotes);
+    buf
+}
+
+/// True when a container HAD children and they all rendered to nothing —
+/// which today means the only thing inside it was a footnote definition, and
+/// `footnotes::render_section` hoisted that to the end of the page.
+///
+/// The `!children.is_empty()` half is the whole guard: a container the AUTHOR
+/// left empty (`- one\n-\n- two`, a bare `>`) still renders, because pruning
+/// is about the hoist moving content out from under a wrapper, not about
+/// tidying up the author's markup. Without it, `- one\n-\n- two` would drop
+/// from three bullets to two.
+///
+/// The test is EXACT emptiness, never `.trim()`: `str::trim` strips every
+/// `char::is_whitespace`, so an item holding only U+00A0 or U+3000 (the
+/// full-width space CJK authors type to indent) read as residue and was
+/// deleted. Callers must hand this child output and nothing else — the list
+/// arm adds its `'\n'` prefix only after this returns.
+fn hoist_emptied(children: &[Block], rendered: &str) -> bool {
+    !children.is_empty() && rendered.is_empty()
 }
 
 /// Append ` data-source-line="N"` to `out` when `source_line` is `Some`.
@@ -652,13 +771,19 @@ pub(super) fn render_inlines<H: RenderHooks + ?Sized>(
     hooks: &H,
     out: &mut String,
     inlines: &[Inline],
+    fnotes: &mut FootnoteCtx,
 ) {
     for inline in inlines {
-        render_inline(hooks, out, inline);
+        render_inline(hooks, out, inline, fnotes);
     }
 }
 
-fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &Inline) {
+fn render_inline<H: RenderHooks + ?Sized>(
+    hooks: &H,
+    out: &mut String,
+    inline: &Inline,
+    fnotes: &mut FootnoteCtx,
+) {
     match inline {
         Inline::Text(t) => out.push_str(&escape_text(t)),
         Inline::Link {
@@ -679,13 +804,13 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
                     out.push_str(r#"<a href=""#);
                     out.push_str(&escape_attr(s));
                     out.push_str(r#"">"#);
-                    render_inlines(hooks, out, children);
+                    render_inlines(hooks, out, children, fnotes);
                     out.push_str("</a>");
                     return;
                 }
             };
             let mut content = String::new();
-            render_inlines(hooks, &mut content, children);
+            render_inlines(hooks, &mut content, children, fnotes);
             // Phase 4 PR7a-flip-core-A (2026-05-28): pass the
             // `is_wikilink` flag directly to the hook. Pre-flip-core-A,
             // this arm synthesized a wikilink-kinded `ResolvedUrl` to
@@ -717,18 +842,38 @@ fn render_inline<H: RenderHooks + ?Sized>(hooks: &H, out: &mut String, inline: &
         }
         Inline::Emphasis(children) => {
             out.push_str("<em>");
-            render_inlines(hooks, out, children);
+            render_inlines(hooks, out, children, fnotes);
             out.push_str("</em>");
         }
         Inline::Strong(children) => {
             out.push_str("<strong>");
-            render_inlines(hooks, out, children);
+            render_inlines(hooks, out, children, fnotes);
             out.push_str("</strong>");
         }
         Inline::Code(c) => {
             out.push_str("<code>");
             out.push_str(&escape_text(c));
             out.push_str("</code>");
+        }
+        Inline::Strikethrough(children) => {
+            out.push_str("<del>");
+            render_inlines(hooks, out, children, fnotes);
+            out.push_str("</del>");
+        }
+        Inline::FootnoteRef(label) => footnotes::render_marker(hooks, out, label, fnotes),
+        // GFM's shape, which is also Obsidian's: a disabled checkbox inline at
+        // the head of the item. `disabled` because a published page is not an
+        // app — the state is whatever the source says. The `<li>` needs no
+        // class; `site.css` selects both shapes this renderer produces —
+        // `li:has(> input[type="checkbox"])` for tight items, and
+        // `li:has(> p:first-child > input[type="checkbox"]:first-child)` for
+        // loose/multi-block items whose leading paragraph is wrapped in `<p>`.
+        Inline::TaskMarker(checked) => {
+            out.push_str(if *checked {
+                "<input type=\"checkbox\" disabled checked /> "
+            } else {
+                "<input type=\"checkbox\" disabled /> "
+            });
         }
         Inline::LineBreak => out.push_str("<br />\n"),
         Inline::Other(html) => {

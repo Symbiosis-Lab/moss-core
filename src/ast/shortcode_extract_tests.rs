@@ -1789,7 +1789,7 @@ fn extracts_recent_end_to_end_with_sentinel() {
 /// Parse + render the way the build does, so these tests pin the OUTPUT,
 /// not just the extraction bookkeeping.
 fn render_markdown(md: &str) -> String {
-    let doc = parse_with_config(md, &ParseConfig::default());
+    let doc = crate::ast::parse_with_config(md, &ParseConfig::default());
     super::super::render::render_document(&doc, &super::super::hooks::DefaultHooks::new())
 }
 

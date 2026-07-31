@@ -1053,6 +1053,7 @@ fn end_to_end_parse_with_config_emits_data_source_line() {
         implicit_figure: true,
         source_line_offset: 0,
         math: false,
+        hard_line_breaks: false,
     };
     let mut doc = super::super::parser::parse_with_config(md, &config);
     super::super::visit::visit_urls_mut(&mut doc, |u| match u {

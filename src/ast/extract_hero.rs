@@ -41,7 +41,7 @@
 
 use super::document::Document;
 use super::hooks::RenderHooks;
-use super::node::{Block, Inline};
+use super::node::Block;
 use super::shortcode::Shortcode;
 use super::url::Url;
 
@@ -163,28 +163,21 @@ pub fn extract_hero(doc: &mut Document, hooks: &dyn RenderHooks) -> Option<HeroE
 fn first_paragraph_plain_text(blocks: &[Block]) -> String {
     for block in blocks {
         match block {
-            Block::Paragraph(inlines) => return inlines_plain_text(inlines),
+            Block::Paragraph(inlines) => {
+                return crate::ast::plain_text::inlines_to_plain_text(inlines)
+            }
             // Skip headings and shortcodes; the description chain wants
             // first body prose. Lists and other paragraphs follow if the
             // first hit didn't qualify.
+            //
+            // This walk is deliberately SHALLOW — it never descends into a
+            // container, `Block::FootnoteDefinition` included. Endnote prose
+            // is not the overlay's opening line, and a footnote body reached
+            // by recursion would land in `<meta name="description">`.
             _ => continue,
         }
     }
     String::new()
-}
-
-/// Concatenate inline text/code/link-children content into a flat string.
-///
-/// Delegates to [`crate::heading::text::inlines_to_text`] — the crate's one
-/// inline→plain-text policy. This function used to be a byte-identical copy
-/// of that walker in a second file, and the copy is what made the P1 math
-/// fix a two-site edit: the `Inline::Other` math-recovery arm had to be
-/// hand-mirrored here, or the homepage-hero rung of the description chain
-/// shipped a `<meta name="description">` with a hole where the equation was.
-fn inlines_plain_text(inlines: &[Inline]) -> String {
-    let mut out = String::new();
-    crate::heading::text::inlines_to_text(inlines, &mut out);
-    out
 }
 
 #[cfg(test)]

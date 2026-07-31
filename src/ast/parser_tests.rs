@@ -890,7 +890,61 @@ fn duplicate_suffix_descends_into_blockquote() {
     assert_eq!(found_ids, vec!["notes".to_string(), "notes-1".to_string()]);
 }
 
+#[test]
+fn duplicate_suffix_descends_into_footnote_definition() {
+    // A heading inside a footnote definition renders into the endnote
+    // section of the SAME document, so it must share the id counter —
+    // otherwise the page carries two `id="notes"` and the endnote heading's
+    // permalink resolves to the body heading.
+    let md = "## Notes\n\nX[^h].\n\n[^h]: body\n\n    ## Notes\n";
+    let doc = parse(md);
+    let mut found_ids: Vec<String> = Vec::new();
+    collect_heading_ids_recursive(&doc.blocks, &mut found_ids);
+    assert_eq!(found_ids, vec!["notes".to_string(), "notes-1".to_string()]);
+}
+
+#[test]
+fn duplicate_suffix_descends_into_grid_cells() {
+    // A `:::grid` cell is parsed by a RECURSIVE `parse_with_config` with a
+    // fresh id counter, so every cell heading arrives holding an
+    // un-disambiguated base slug. The cell renders into the same page as the
+    // body, so without a descent here the page carries two `id="notes"` and
+    // `#notes` resolves to the grid card — never the author's section.
+    let doc = parse(":::grid\n### Notes\n:::\n\n## Notes\n");
+    let mut found_ids: Vec<String> = Vec::new();
+    collect_heading_ids_recursive(&doc.blocks, &mut found_ids);
+    assert_eq!(found_ids, vec!["notes".to_string(), "notes-1".to_string()]);
+}
+
+#[test]
+fn duplicate_suffix_dedups_two_cells_of_one_grid() {
+    // The intra-shortcode collision: no outer heading needed.
+    let doc = parse(":::grid 2\n### Team\n+++\n### Team\n:::\n");
+    let mut found_ids: Vec<String> = Vec::new();
+    collect_heading_ids_recursive(&doc.blocks, &mut found_ids);
+    assert_eq!(found_ids, vec!["team".to_string(), "team-1".to_string()]);
+}
+
+#[test]
+fn duplicate_suffix_descends_into_hero_overlay() {
+    let doc = parse(":::hero {image=a.jpg}\n### Notes\n:::\n\n## Notes\n");
+    let mut found_ids: Vec<String> = Vec::new();
+    collect_heading_ids_recursive(&doc.blocks, &mut found_ids);
+    assert_eq!(found_ids, vec!["notes".to_string(), "notes-1".to_string()]);
+}
+
+#[test]
+fn duplicate_suffix_descends_into_link_card() {
+    // The SoCiviC compound-link cell: `Block::LinkCard { children }` holds
+    // block-level content, headings included.
+    let doc = parse(":::grid\n[### Notes\n\ntext](/a)\n:::\n\n## Notes\n");
+    let mut found_ids: Vec<String> = Vec::new();
+    collect_heading_ids_recursive(&doc.blocks, &mut found_ids);
+    assert_eq!(found_ids, vec!["notes".to_string(), "notes-1".to_string()]);
+}
+
 fn collect_heading_ids_recursive(blocks: &[Block], out: &mut Vec<String>) {
+    use super::super::shortcode::Shortcode;
     for b in blocks {
         match b {
             Block::Heading { id, .. } => {
@@ -898,13 +952,24 @@ fn collect_heading_ids_recursive(blocks: &[Block], out: &mut Vec<String>) {
                     out.push(s.clone());
                 }
             }
-            Block::BlockQuote(children) | Block::Callout { children, .. } => {
+            Block::BlockQuote(children)
+            | Block::Callout { children, .. }
+            | Block::LinkCard { children, .. }
+            | Block::FootnoteDefinition { children, .. } => {
                 collect_heading_ids_recursive(children, out);
             }
             Block::List { items, .. } => {
                 for item in items {
                     collect_heading_ids_recursive(item, out);
                 }
+            }
+            Block::Shortcode(Shortcode::Grid(args)) => {
+                for cell in &args.cells {
+                    collect_heading_ids_recursive(cell, out);
+                }
+            }
+            Block::Shortcode(Shortcode::Hero(args)) => {
+                collect_heading_ids_recursive(&args.overlay, out);
             }
             _ => {}
         }
@@ -1219,6 +1284,7 @@ fn parse_with_source_lines_assigns_1_based_line_numbers() {
         implicit_figure: true,
         source_line_offset: 0,
         math: false,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config(md, &config);
     // Expected blocks: H1, P, H2, P (4 blocks).
@@ -1243,6 +1309,7 @@ fn source_line_offset_is_applied_additively() {
         implicit_figure: true,
         source_line_offset: 7,
         math: false,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config(md, &config);
     assert_eq!(
@@ -1271,6 +1338,7 @@ fn source_lines_not_collapsed_across_multiline_shortcode() {
         implicit_figure: true,
         source_line_offset: 0,
         math: false,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config(md, &config);
     // Blocks: H1 (line 1), Shortcode grid (line 3), H2 "After" (line 13).
@@ -1294,6 +1362,7 @@ fn parse_with_source_lines_lists_and_blockquotes() {
         implicit_figure: true,
         source_line_offset: 0,
         math: false,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config(md, &config);
     assert_eq!(doc.blocks.len(), 2);
@@ -1316,6 +1385,7 @@ fn parse_with_source_lines_populates_item_lines_on_list() {
         implicit_figure: true,
         source_line_offset: 0,
         math: false,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config(md, &config);
     assert_eq!(doc.blocks.len(), 1);
@@ -1371,6 +1441,7 @@ fn parse_with_source_lines_populates_row_lines_on_table() {
         implicit_figure: true,
         source_line_offset: 0,
         math: false,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config(md, &config);
     assert_eq!(doc.blocks.len(), 1);
@@ -1549,6 +1620,7 @@ fn parse_with_source_lines_handles_list_after_blank_line_offset() {
         implicit_figure: true,
         source_line_offset: 0,
         math: false,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config(md, &config);
     assert_eq!(doc.blocks.len(), 2);
@@ -1583,6 +1655,7 @@ fn parse_implicit_figure_off_leaves_image_paragraph_unpromoted() {
         implicit_figure: false,
         source_line_offset: 0,
         math: false,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config("![alt](photo.jpg)\n", &config);
     assert_eq!(doc.blocks.len(), 1);
@@ -1592,6 +1665,47 @@ fn parse_implicit_figure_off_leaves_image_paragraph_unpromoted() {
         }
         other => panic!("expected Paragraph with image, got {other:?}"),
     }
+}
+
+/// `[site].implicit_figure = false` is a whole-document opt-out, so the
+/// unwrap walk has to reach every container the parser can put an
+/// image-only paragraph inside. A footnote definition is the newest one,
+/// and the walker's `_ => {}` catch-all is exactly why turning footnotes on
+/// did not make the compiler say so: an opted-out site went on publishing a
+/// `<figcaption>` in its endnotes.
+#[test]
+fn parse_implicit_figure_off_leaves_a_footnote_definition_image_unpromoted() {
+    fn holds_figure(blocks: &[Block]) -> bool {
+        blocks.iter().any(|block| match block {
+            Block::Figure { .. } => true,
+            Block::FootnoteDefinition { children, .. }
+            | Block::BlockQuote(children)
+            | Block::Callout { children, .. }
+            | Block::LinkCard { children, .. } => holds_figure(children),
+            Block::List { items, .. } => items.iter().any(|item| holds_figure(item)),
+            _ => false,
+        })
+    }
+
+    let config = ParseConfig {
+        implicit_figure: false,
+        ..ParseConfig::default()
+    };
+    let doc = parse_with_config("See [^a]\n\n[^a]: ![Cover](c.jpg)\n", &config);
+    assert!(
+        !holds_figure(&doc.blocks),
+        "implicit_figure=false must reach inside a footnote definition, got {:?}",
+        doc.blocks
+    );
+
+    // The default still promotes there, so the assertion above is testing
+    // the opt-out and not an unrelated parse failure.
+    let doc = parse("See [^a]\n\n[^a]: ![Cover](c.jpg)\n");
+    assert!(
+        holds_figure(&doc.blocks),
+        "default config must still promote inside a footnote definition, got {:?}",
+        doc.blocks
+    );
 }
 
 // -----------------------------------------------------------------
@@ -1648,6 +1762,7 @@ fn implicit_figure_caption_carries_link_and_math_nodes() {
         implicit_figure: true,
         source_line_offset: 0,
         math: true,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config("![a [link](/x) and $x^2$ end](img.png)\n", &config);
     match doc.blocks.into_iter().next().expect("one block") {
@@ -1687,6 +1802,7 @@ fn implicit_figure_caption_only_math_is_a_math_node() {
         implicit_figure: true,
         source_line_offset: 0,
         math: true,
+        hard_line_breaks: false,
     };
     let doc = parse_with_config("![$E=mc^2$](img.png)\n", &config);
     match doc.blocks.into_iter().next().expect("one block") {
@@ -1871,4 +1987,149 @@ fn wikilink_uppercase_image_ext_still_promotes() {
         matches!(block, Block::Figure { .. }),
         "expected Figure, got {block:?}"
     );
+}
+
+// -----------------------------------------------------------------
+// Image alt: a line break inside alt is a space
+// -----------------------------------------------------------------
+//
+// `alt` is an attribute AND (via the implicit-figure path) the visible
+// `<figcaption>`, and Obsidian authors soft-wrap prose. Dropping the break
+// ran the two lines together (`a\nb` → `ab`). The email walker adopted the
+// browser/Obsidian rule in `infra/newsletter.rs` (a break inside alt is a
+// space); these pin the same rule on the web side.
+
+#[test]
+fn image_alt_soft_break_becomes_a_space() {
+    for hard_line_breaks in [false, true] {
+        let config = ParseConfig {
+            hard_line_breaks,
+            ..ParseConfig::default()
+        };
+        let doc = parse_with_config("![Cover art\nby Jane](c.jpg)\n", &config);
+        match doc.blocks.first().expect("one block") {
+            Block::Figure { image, caption, .. } => {
+                match image {
+                    Inline::Image { alt, .. } => assert_eq!(
+                        alt, "Cover art by Jane",
+                        "soft-wrapped alt lines ran together (hard_line_breaks={hard_line_breaks})"
+                    ),
+                    other => panic!("expected Image, got {other:?}"),
+                }
+                let cap = caption.as_ref().expect("caption from alt text");
+                assert!(
+                    matches!(cap.as_slice(), [Inline::Text(t)] if t == "Cover art by Jane"),
+                    "figcaption disagrees with alt: {cap:?}"
+                );
+            }
+            other => panic!("expected Figure, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn image_alt_hard_break_becomes_a_space_while_caption_keeps_the_break() {
+    // The one legal flattening inside an attribute is a space; a `<br>` is
+    // legal inside a `<figcaption>`, so the two surfaces differ ON PURPOSE
+    // for an EXPLICIT break. They must never differ on the text itself.
+    let doc = parse("![one\\\ntwo](a.jpg)\n");
+    match doc.blocks.first().expect("one block") {
+        Block::Figure { image, caption, .. } => {
+            match image {
+                Inline::Image { alt, .. } => assert_eq!(alt, "one two"),
+                other => panic!("expected Image, got {other:?}"),
+            }
+            let cap = caption.as_ref().expect("caption");
+            assert!(
+                matches!(cap.as_slice(), [Inline::Text(a), Inline::LineBreak, Inline::Text(b)] if a == "one" && b == "two"),
+                "explicit break should survive in the caption: {cap:?}"
+            );
+        }
+        other => panic!("expected Figure, got {other:?}"),
+    }
+}
+
+#[test]
+fn image_alt_break_does_not_double_the_space() {
+    // pulldown hands the trailing spaces of a wrapped line to the preceding
+    // Text run, so a naive `push(' ')` would emit two.
+    let doc = parse("![Cover art \nby Jane](c.jpg)\n");
+    match doc.blocks.first().expect("one block") {
+        Block::Figure { image, .. } => match image {
+            Inline::Image { alt, .. } => assert_eq!(alt, "Cover art by Jane"),
+            other => panic!("expected Image, got {other:?}"),
+        },
+        other => panic!("expected Figure, got {other:?}"),
+    }
+}
+
+#[test]
+fn nested_image_alt_folds_trailing_text_instead_of_leaking_as_body_prose() {
+    // `![a ![b](inner.png) c](outer.png)` is valid CommonMark: the whole
+    // span is ONE Image, and per the image-alt-flattening rule a nested
+    // image's own text folds into the outer alt. Without depth-tracking,
+    // the alt-collection loop stops at the INNER image's End(Image),
+    // truncating alt to "a b" and leaking " c" out as sibling paragraph
+    // prose instead of into the outer alt -- a different image than the
+    // one the reader sees would be described, and body text would appear
+    // that the author never wrote outside the image.
+    match first_block("before ![a ![b](inner.png) c](outer.png) after\n") {
+        Block::Paragraph(children) => {
+            let images: Vec<&Inline> = children
+                .iter()
+                .filter(|i| matches!(i, Inline::Image { .. }))
+                .collect();
+            assert_eq!(images.len(), 1, "expected exactly one Image inline: {children:?}");
+            match images[0] {
+                Inline::Image { alt, .. } => assert_eq!(
+                    alt, "a b c",
+                    "the outer alt lost the inner image's trailing text: {children:?}"
+                ),
+                _ => unreachable!(),
+            }
+            let stray_text: String = children
+                .iter()
+                .filter_map(|i| match i {
+                    Inline::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                stray_text, "before  after",
+                "the inner image's trailing text leaked into sibling paragraph prose: {children:?}"
+            );
+        }
+        other => panic!("expected Paragraph, got {other:?}"),
+    }
+}
+
+#[test]
+fn nested_image_alone_in_a_paragraph_promotes_to_a_figure_with_a_real_nested_image_in_its_caption() {
+    // `nested_image_alt_folds_trailing_text_instead_of_leaking_as_body_prose`
+    // above only exercises the Paragraph case (surrounding "before"/"after"
+    // text blocks promotion). When the SAME nested image is the paragraph's
+    // only content, the promotion invariant promotes it to a Figure, and
+    // `build_caption_inlines` re-parses the (depth-tracked) alt span through
+    // the same inline machinery as body text -- so the figcaption must carry
+    // a real `Inline::Image` for the inner image, not just its flattened
+    // alt text folded into a single `Inline::Text` run.
+    match first_block("![a ![b](inner.png) c](outer.png)\n") {
+        Block::Figure { caption, image, .. } => {
+            let cap = caption.expect("caption must be present");
+            match cap.iter().find(|i| matches!(i, Inline::Image { .. })) {
+                Some(Inline::Image { alt: inner_alt, .. }) => {
+                    assert_eq!(inner_alt, "b", "nested image's own alt should survive in the caption");
+                }
+                other => panic!("caption must carry a real nested Image node, got {cap:?} ({other:?})"),
+            }
+            match image {
+                Inline::Image { alt, .. } => assert_eq!(
+                    alt, "a b c",
+                    "outer alt must stay flat text even though the caption has a real nested Image"
+                ),
+                other => panic!("expected Image, got {other:?}"),
+            }
+        }
+        other => panic!("expected Figure, got {other:?}"),
+    }
 }
