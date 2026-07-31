@@ -322,7 +322,9 @@ mod tests {
         // redesign — the composer's editable fields superseded them.)
         // (`unlisted` removed 2026-06 — redundant with `draft`.)
         // (`listed` added 2026-06 — off-feed-but-indexable axis, orthogonal to `draft`.)
-        assert_eq!(schema.frontmatter.fields.len(), 35);
+        // (`layout` un-hidden 2026-07-31 — it was mismarked skip_schema, which
+        // hid it from the editor chip bar despite being a real per-page control.)
+        assert_eq!(schema.frontmatter.fields.len(), 36);
     }
 
     #[test]

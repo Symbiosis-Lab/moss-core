@@ -393,6 +393,19 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         ..FIELD_DEFAULTS
     },
     BuiltinField {
+        name: "layout",
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["page", "article"]),
+        // Frequency=2, Importance=2 → score=80
+        score: 80,
+        description: "Template layout override (page or article). On a folder-index page with a cover, \"article\" also swaps the book-open cover row for a full-width stacked hero banner",
+        label: Some("Layout"),
+        label_key: "chip.layout.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
         name: "translationKey",
         field_type: FieldType::String,
         widget: Widget::TextInput,
@@ -654,15 +667,6 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         skip_schema: true, // auto-generated, not user-editable
         ..FIELD_DEFAULTS
     },
-    BuiltinField {
-        name: "layout",
-        field_type: FieldType::String,
-        widget: Widget::Select,
-        enum_values: Some(&["page", "article"]),
-        description: "Template layout override (page or article). On a folder-index page with a cover, \"article\" also swaps the book-open cover row for a full-width stacked hero banner",
-        skip_schema: true, // build-only, not an editor form field
-        ..FIELD_DEFAULTS
-    },
 ];
 
 #[cfg(test)]
@@ -758,6 +762,40 @@ mod tests {
                 assert!(
                     field.score > 0,
                     "non-skip field '{}' has score=0; set a score >= 1",
+                    field.name
+                );
+            }
+        }
+    }
+
+    /// `skip_schema: true` hides a field from the editor chip bar entirely (see
+    /// module docs). A field with `enum_values`/a form widget looks like a
+    /// user-facing control, so marking one `skip_schema` is very likely a
+    /// miscategorization (this happened to `layout`: it shipped skip_schema
+    /// and was invisible in the chip bar for its whole life, caught only when
+    /// a user asked why it didn't show up). Fields that are genuinely
+    /// build-only/auto-generated/site-level must be named here explicitly, so
+    /// adding a new one to that set is a deliberate, reviewable change instead
+    /// of just placing an entry under a comment header.
+    const INTENTIONALLY_SKIP_SCHEMA: &[&str] = &[
+        "home",
+        "analytics",
+        "uid",
+        "cover_type",
+        "children_source",
+        "_from_sidebar_alias",
+    ];
+
+    #[test]
+    fn test_skip_schema_fields_are_on_the_allowlist() {
+        for field in BUILTIN_FIELDS {
+            if field.skip_schema {
+                assert!(
+                    INTENTIONALLY_SKIP_SCHEMA.contains(&field.name),
+                    "field '{}' is skip_schema=true but not in INTENTIONALLY_SKIP_SCHEMA — \
+                     if it's a real per-page/site control (has enum_values, a widget, a \
+                     user-facing description) it should be skip_schema=false with a group \
+                     instead; if it's genuinely internal, add its name to the allowlist",
                     field.name
                 );
             }
