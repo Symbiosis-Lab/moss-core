@@ -184,12 +184,15 @@ pub struct FrontMatter {
     /// Explicit cover type override: "image", "video", or "iframe"
     pub cover_type: Option<String>,
     /// Whether to show in navigation
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub nav: Option<bool>,
     /// Explicit folder-home marker: this file is its folder's home page,
     /// regardless of filename. Written by moss on homes it creates; survives rename.
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub home: Option<bool>,
     /// Draft: rendered and published at its direct URL, but hidden from all
     /// listings, feeds, sitemap, and navigation (and marked `noindex`).
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub draft: Option<bool>,
     /// Listed: when `false`, the page is hidden from moss's auto-generated
     /// surfaces (home feed, recent, folder embeds, RSS, llms.txt, sitemap, and
@@ -198,6 +201,7 @@ pub struct FrontMatter {
     /// `draft` adds `noindex` and drops the share card; `listed: false` does
     /// neither. Nav bar / footer link placement (explicit `nav:` / `footer:`)
     /// are independent of this flag.
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub listed: Option<bool>,
     /// Page description for SEO and list previews
     pub description: Option<String>,
@@ -264,6 +268,7 @@ pub struct FrontMatter {
     #[serde(rename = "translationKey")]
     pub translation_key: Option<String>,
     /// Whether to show comments on this page (default: true)
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub comments: Option<bool>,
     /// Durable page identity: 8 RANDOM hex chars minted at first build — never derivable, never changed once published (docs/reference/social-data-standard.md)
     #[serde(default, deserialize_with = "deserialize_string_lenient")]
@@ -1059,6 +1064,38 @@ mod tests {
         assert_eq!(on.listed, Some(true));
         let absent: FrontMatter = serde_yaml::from_str("title: X\n").expect("parse");
         assert_eq!(absent.listed, None);
+    }
+
+    #[test]
+    fn quoted_nav_string_coerces_instead_of_vanishing() {
+        // Regression for #925: `nav: 'true'` (quoted YAML string) must not
+        // silently drop the field. Every Option<bool> field shares the same
+        // lenient deserializer, so this is a single behavior, not per-field.
+        let fm: FrontMatter = serde_yaml::from_str("nav: 'true'\n").expect("parse");
+        assert_eq!(fm.nav, Some(true), "quoted 'true' coerces to Some(true), not None");
+
+        let fm: FrontMatter = serde_yaml::from_str("nav: 'false'\n").expect("parse");
+        assert_eq!(fm.nav, Some(false));
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("nav".into()),
+            serde_yaml::Value::String("true".into()),
+        );
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.nav, Some(true));
+        assert!(warnings.is_empty(), "coerced bool must not warn as dropped");
+    }
+
+    #[test]
+    fn quoted_bool_strings_coerce_for_every_option_bool_field() {
+        // home/draft/listed/comments had the same gap as nav; close it uniformly.
+        let yaml = "home: 'true'\ndraft: 'false'\nlisted: 'true'\ncomments: 'false'\n";
+        let fm: FrontMatter = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(fm.home, Some(true));
+        assert_eq!(fm.draft, Some(false));
+        assert_eq!(fm.listed, Some(true));
+        assert_eq!(fm.comments, Some(false));
     }
 
     #[test]
