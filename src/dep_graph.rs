@@ -16,6 +16,7 @@
 //! use ObjectStore" section of
 //! `docs/archive/2026-07-31-incremental-build-facade-diff.md`.
 
+use crate::resolve::embeds::MAX_EMBED_DEPTH;
 use crate::resolve::{LinkType, OutgoingLink};
 use std::collections::HashMap;
 
@@ -71,6 +72,77 @@ impl DepGraph {
             }
         }
         graph
+    }
+
+    /// Fold in transclusion edges recorded by the resolve phase (moss#922
+    /// Stage 7).
+    ///
+    /// `pairs` are `(target, immediate_embedder)` — exactly the shape
+    /// `ResolveResult::embed_deps` produces (`resolve/embeds.rs`), i.e. DIRECT
+    /// one-hop edges: for `index.md` embedding `a.md` embedding `b.md` the
+    /// resolver reports `[("a.md", "index.md"), ("b.md", "a.md")]`. The second
+    /// element is the file the marker was found in, NOT the top-level page
+    /// being resolved, so grouping by it yields a correct adjacency list and
+    /// multi-hop chains are answered by [`Self::embed_closure`], never by
+    /// filtering pairs on the page under test (which would silently miss
+    /// `b.md` as a dependency of `index.md`).
+    ///
+    /// This exists as a separate builder step, `ContentGraph::with_output_overrides`
+    /// style, because these edges are produced by a different phase than
+    /// `outgoing_links`: transclusion is spliced from disk bytes during resolve,
+    /// before the AST dispatcher that populates `outgoing_links` ever runs, so
+    /// no page→page `LinkType::Embed` link exists to carry them.
+    ///
+    /// Duplicate edges (the same nested pair is reported once per ancestor that
+    /// transitively embeds it) are collapsed.
+    pub fn with_embed_pairs<'a, I>(mut self, pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        for (target, embedder) in pairs {
+            let forward = self.forward_embeds.entry(embedder.to_string()).or_default();
+            if !forward.iter().any(|t| t == target) {
+                forward.push(target.to_string());
+            }
+            let back = self.back_embeds.entry(target.to_string()).or_default();
+            if !back.iter().any(|s| s == embedder) {
+                back.push(embedder.to_string());
+            }
+        }
+        self
+    }
+
+    /// Every file whose bytes are spliced into `path`'s markdown, transitively.
+    ///
+    /// A breadth-first walk of `forward_embeds` from `path`, excluding `path`
+    /// itself, bounded by [`MAX_EMBED_DEPTH`] — the same limit
+    /// `resolve_embeds_inner` stops recursing at, so the closure never claims a
+    /// dependency on content the resolver refused to splice. Cycles terminate
+    /// on the visited set.
+    ///
+    /// This is the parse cache's validity input (moss#922 Stage 7): `path`'s
+    /// cached `ParsedDocument` is only reusable if every member of this set
+    /// still hashes to what it hashed to when the entry was written.
+    pub fn embed_closure(&self, path: &str) -> Vec<String> {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut closure: Vec<String> = Vec::new();
+        let mut frontier: Vec<String> = vec![path.to_string()];
+        for _ in 0..MAX_EMBED_DEPTH {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next: Vec<String> = Vec::new();
+            for node in &frontier {
+                for target in self.forward_embeds(node) {
+                    if target != path && seen.insert(target.clone()) {
+                        closure.push(target.clone());
+                        next.push(target.clone());
+                    }
+                }
+            }
+            frontier = next;
+        }
+        closure
     }
 
     /// Pages `path` links to (any `LinkType`), in resolution order. Empty if
@@ -146,6 +218,75 @@ mod tests {
             ("b.md", b_links.as_slice()),
         ]);
         assert_eq!(graph.backlinks("shared.md"), ["a.md", "b.md"]);
+    }
+
+    #[test]
+    fn embed_pairs_group_by_their_immediate_embedder() {
+        // `resolve_embeds` reports the file the MARKER was found in, so a
+        // nested chain arrives as two one-hop edges, not two edges from the
+        // top-level page.
+        let graph = DepGraph::default()
+            .with_embed_pairs([("a.md", "index.md"), ("b.md", "a.md")]);
+        assert_eq!(graph.forward_embeds("index.md"), ["a.md"]);
+        assert_eq!(graph.forward_embeds("a.md"), ["b.md"]);
+        assert_eq!(graph.back_embeds("b.md"), ["a.md"]);
+    }
+
+    #[test]
+    fn embed_closure_follows_multiple_hops() {
+        // THE regression this design exists for: index.md embeds a.md embeds
+        // b.md. A flat filter over `embed_deps` pairs whose source is
+        // "index.md" would return only a.md and leave index.md silently stale
+        // when b.md is edited.
+        let graph = DepGraph::default()
+            .with_embed_pairs([("a.md", "index.md"), ("b.md", "a.md"), ("c.md", "b.md")]);
+        let mut closure = graph.embed_closure("index.md");
+        closure.sort();
+        assert_eq!(closure, ["a.md", "b.md", "c.md"]);
+        assert_eq!(graph.embed_closure("b.md"), ["c.md"]);
+        assert!(graph.embed_closure("c.md").is_empty());
+    }
+
+    #[test]
+    fn embed_closure_terminates_on_a_cycle() {
+        let graph = DepGraph::default().with_embed_pairs([("b.md", "a.md"), ("a.md", "b.md")]);
+        let mut closure = graph.embed_closure("a.md");
+        closure.sort();
+        // `a.md` itself is never reported as its own dependency.
+        assert_eq!(closure, ["b.md"]);
+    }
+
+    #[test]
+    fn embed_closure_stops_at_the_resolver_depth_limit() {
+        // A chain longer than MAX_EMBED_DEPTH: the resolver refuses to splice
+        // past the limit, so the closure must not claim a dependency there.
+        let names: Vec<String> = (0..MAX_EMBED_DEPTH + 5).map(|i| format!("{i}.md")).collect();
+        let pairs: Vec<(&str, &str)> = names
+            .windows(2)
+            .map(|w| (w[1].as_str(), w[0].as_str()))
+            .collect();
+        let graph = DepGraph::default().with_embed_pairs(pairs);
+        assert_eq!(graph.embed_closure("0.md").len(), MAX_EMBED_DEPTH);
+    }
+
+    #[test]
+    fn duplicate_embed_pairs_are_collapsed() {
+        // The same nested pair is reported once per ancestor that transitively
+        // embeds it, so the raw input is full of duplicates.
+        let graph = DepGraph::default()
+            .with_embed_pairs([("b.md", "a.md"), ("b.md", "a.md"), ("b.md", "a.md")]);
+        assert_eq!(graph.forward_embeds("a.md"), ["b.md"]);
+        assert_eq!(graph.back_embeds("b.md"), ["a.md"]);
+    }
+
+    #[test]
+    fn embed_pairs_compose_with_link_edges() {
+        let a_links = [link("b.md", LinkType::Wikilink)];
+        let graph = DepGraph::build([("a.md", a_links.as_slice())])
+            .with_embed_pairs([("c.md", "a.md")]);
+        assert_eq!(graph.forward_links("a.md"), ["b.md"]);
+        assert_eq!(graph.forward_embeds("a.md"), ["c.md"]);
+        assert_eq!(graph.back_embeds("c.md"), ["a.md"]);
     }
 
     #[test]

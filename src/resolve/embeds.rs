@@ -14,7 +14,13 @@ use crate::heading::anchor::obsidian_heading_anchor;
 use super::Diagnostic;
 
 /// Maximum recursion depth for nested embeds.
-const MAX_EMBED_DEPTH: usize = 10;
+///
+/// Public because every consumer that walks the embed relation has to stop at
+/// the same depth the resolver itself stopped at — notably
+/// [`crate::dep_graph::DepGraph::embed_closure`], which bounds its traversal by
+/// this constant rather than inventing a second limit that could disagree
+/// (moss#922 Stage 7).
+pub const MAX_EMBED_DEPTH: usize = 10;
 
 /// Prefix for resolved embed markers.
 const EMBED_PREFIX: &str = "<!-- moss-embed:";
