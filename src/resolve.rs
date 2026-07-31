@@ -684,8 +684,6 @@ mod tests {
         b.add_file("note.md", "note");
         b.add_file("disclaimer.md", "disclaimer");
         b.add_file("assets/photo.jpg", "photo");
-        b.add_headings("guide.md", vec![("Setup".into(), "setup".into())]);
-        b.add_blocks("guide.md", vec!["key-point".into()]);
         b.build()
     }
 
@@ -1078,8 +1076,6 @@ mod tests {
         b.add_file("guide.md", "guide");
         b.add_file("note.md", "note");
         b.add_file("assets/photo.jpg", "photo");
-        b.add_headings("guide.md", vec![("Setup".into(), "setup".into())]);
-        b.add_blocks("guide.md", vec!["key-point".into()]);
         let graph = b.build();
         let files = HashMap::new();
 
