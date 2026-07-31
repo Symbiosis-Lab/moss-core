@@ -1,4 +1,4 @@
-//! In-memory index of content files, headings, and block IDs.
+//! In-memory index of content files for fuzzy path resolution.
 //!
 //! `ContentGraph` is the read-only query structure built by `ContentGraphBuilder`.
 //! It supports Obsidian-style fuzzy path resolution: exact path, filename-only,
@@ -193,7 +193,7 @@ fn sanitize_slug_segment(segment: &str) -> String {
 // ContentGraph — the immutable, queryable index
 // ---------------------------------------------------------------------------
 
-/// An in-memory index of all content files, headings, and block IDs.
+/// An in-memory index of all content files.
 ///
 /// Created via [`ContentGraphBuilder::build`]. All lookups are
 /// case-insensitive (NFC-normalized, lowercased).
@@ -210,12 +210,6 @@ pub struct ContentGraph {
 
     /// Normalized full path -> slug.
     slug_map: HashMap<String, String>,
-
-    /// Normalized full path -> Vec<(heading_text, anchor_id)>.
-    headings: HashMap<String, Vec<(String, String)>>,
-
-    /// Normalized full path -> Vec<block_id>.
-    blocks: HashMap<String, Vec<String>>,
 
     /// Exact-case asset index: original-case paths for O(1) membership checks.
     asset_exact: HashSet<String>,
@@ -474,24 +468,6 @@ impl ContentGraph {
         None
     }
 
-    /// Check whether the file at `path` has a heading with the given `anchor`.
-    pub fn has_heading(&self, path: &str, anchor: &str) -> bool {
-        let norm = normalize_path(path);
-        let anchor_lower = normalize_component(anchor);
-        self.headings
-            .get(&norm)
-            .map_or(false, |hs| hs.iter().any(|(_, a)| *a == anchor_lower))
-    }
-
-    /// Check whether the file at `path` has a block with the given `block_id`.
-    pub fn has_block(&self, path: &str, block_id: &str) -> bool {
-        let norm = normalize_path(path);
-        let id_lower = normalize_component(block_id);
-        self.blocks
-            .get(&norm)
-            .map_or(false, |bs| bs.iter().any(|b| *b == id_lower))
-    }
-
     /// Return the slug for the given path, if registered.
     pub fn get_slug(&self, path: &str) -> Option<&str> {
         let norm = normalize_path(path);
@@ -553,16 +529,14 @@ impl ContentGraph {
 
 /// Incrementally builds a [`ContentGraph`].
 ///
-/// Call `add_file`, `add_headings`, `add_blocks` as content is scanned,
-/// then `build()` to obtain the immutable graph.
+/// Call `add_file` as content is scanned, then `build()` to obtain the
+/// immutable graph.
 #[derive(Debug, Default)]
 pub struct ContentGraphBuilder {
     files: Vec<String>,
     filename_index: HashMap<String, Vec<usize>>,
     path_index: HashMap<String, usize>,
     slug_map: HashMap<String, String>,
-    headings: HashMap<String, Vec<(String, String)>>,
-    blocks: HashMap<String, Vec<String>>,
     asset_exact: HashSet<String>,
     asset_ci: HashMap<String, Vec<String>>,
 }
@@ -609,23 +583,6 @@ impl ContentGraphBuilder {
             .push(relative_path.to_string());
     }
 
-    /// Register headings for a file. Each entry is `(heading_text, anchor_id)`.
-    pub fn add_headings(&mut self, relative_path: &str, entries: Vec<(String, String)>) {
-        let norm = normalize_path(relative_path);
-        let normalized_entries = entries
-            .into_iter()
-            .map(|(text, anchor)| (text, normalize_component(&anchor)))
-            .collect();
-        self.headings.insert(norm, normalized_entries);
-    }
-
-    /// Register block IDs for a file.
-    pub fn add_blocks(&mut self, relative_path: &str, ids: Vec<String>) {
-        let norm = normalize_path(relative_path);
-        let normalized_ids = ids.into_iter().map(|id| normalize_component(&id)).collect();
-        self.blocks.insert(norm, normalized_ids);
-    }
-
     /// Consume the builder and produce an immutable [`ContentGraph`].
     pub fn build(self) -> ContentGraph {
         ContentGraph {
@@ -633,8 +590,6 @@ impl ContentGraphBuilder {
             filename_index: self.filename_index,
             path_index: self.path_index,
             slug_map: self.slug_map,
-            headings: self.headings,
-            blocks: self.blocks,
             asset_exact: self.asset_exact,
             asset_ci: self.asset_ci,
             // Installed by the host via `with_output_overrides` once the build's
@@ -660,17 +615,6 @@ mod tests {
         b.add_file("guides/hello.md", "/guides/hello");
         b.add_file("projects/index.md", "/projects");
         b.add_file("notes/daily/daily.md", "/notes/daily");
-        b.add_headings(
-            "posts/hello.md",
-            vec![
-                ("Introduction".into(), "introduction".into()),
-                ("Getting Started".into(), "getting-started".into()),
-            ],
-        );
-        b.add_blocks(
-            "posts/hello.md",
-            vec!["abc123".into(), "def456".into()],
-        );
         b.build()
     }
 
@@ -739,36 +683,6 @@ mod tests {
             g.resolve_path("hello", "guides/other.md"),
             Some("guides/hello.md".into())
         );
-    }
-
-    // 5. Heading query
-    #[test]
-    fn test_headings_registered() {
-        let g = sample_graph();
-
-        assert!(g.has_heading("posts/hello.md", "introduction"));
-        assert!(g.has_heading("posts/hello.md", "getting-started"));
-        // Case-insensitive
-        assert!(g.has_heading("posts/hello.md", "Introduction"));
-        // Non-existent heading
-        assert!(!g.has_heading("posts/hello.md", "nonexistent"));
-        // Non-existent file
-        assert!(!g.has_heading("nope.md", "introduction"));
-    }
-
-    // 6. Block ID query
-    #[test]
-    fn test_blocks_registered() {
-        let g = sample_graph();
-
-        assert!(g.has_block("posts/hello.md", "abc123"));
-        assert!(g.has_block("posts/hello.md", "def456"));
-        // Case-insensitive
-        assert!(g.has_block("posts/hello.md", "ABC123"));
-        // Non-existent block
-        assert!(!g.has_block("posts/hello.md", "zzz"));
-        // Non-existent file
-        assert!(!g.has_block("nope.md", "abc123"));
     }
 
     // 7. Folder note resolution: [[projects]] -> projects/index.md
