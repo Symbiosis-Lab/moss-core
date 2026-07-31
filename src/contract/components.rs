@@ -2183,6 +2183,35 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Center-aligned table cell (`<th>`/`<td>`). Applied to a whole column the author center-aligned in GFM (`|:-:|`).",
     },
     ComponentEntry {
+        class: "moss-search",
+        kind: "chrome",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-search" id="moss-search" hidden>
+  <div class="moss-search__backdrop"></div>
+  <div class="moss-search__panel" role="dialog" aria-modal="true" aria-label="Search">
+    <div class="moss-search__field"><input class="moss-search__input" role="combobox"></div>
+    <div class="moss-search__progress" hidden></div>
+    <div class="moss-search__seam"></div>
+    <div class="moss-search__body">
+      <p class="moss-search__status" role="status">Type to search this site.</p>
+      <ul class="moss-search__results" role="listbox">
+        <li class="moss-search__row">
+          <a class="moss-search__link" role="option" href="/posts/foo/">
+            <span class="moss-search__title">Title</span>
+            <span class="moss-search__excerpt">…a <mark>match</mark>…</span>
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+</div>"#,
+        example_markdown: "",
+        status: Status::Emerging,
+        since: "1",
+        description: "Site-search overlay. Not emitted by the build — the client runtime (`_moss/js/search.<hash>.js`, shipped only when the build wrote a Pagefind index) constructs this subtree lazily on the first open, so a reader who never searches downloads no index and materializes no DOM. Opened by the nav's `.nav-search-btn`, by `/`, or by ⌘K/Ctrl+K. BEM children carry the interior: `__backdrop` (translucent page-coloured scrim, not an opaque modal takeover), `__panel` (top-anchored at 18vh, fixed 18px radius at any height), `__field`/`__input`, `__progress` (1px accent hairline, delayed 200ms so fast queries never flash it), `__seam` (hairline inset by the corner radius), `__status` (idle / no-matches line, sharing one vertical slot with the results so the panel never jumps), `__results`/`__row`/`__link`/`__title`/`__excerpt`. Selection is a 2px `--moss-color-ui-accent` left border plus a ~4% accent tint — never a solid fill block. `<mark>` inside `__excerpt` is Pagefind's own term highlighting, restyled to colour emphasis rather than a highlighter box.",
+    },
+    ComponentEntry {
         class: "moss-footnotes",
         kind: "container",
         parent: "",
