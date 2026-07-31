@@ -29,8 +29,8 @@
 //! for the full research synthesis and [typed-body-ast.md](../../../../docs/reference/typed-body-ast.md)
 //! for the design intent + 7 principles.
 
-use super::node::Block;
-use super::shortcode::Shortcode;
+use super::grid_parts::GridParts;
+use super::shortcode::{GridShortcode, Shortcode};
 use super::url::{ResolvedUrl, UrlKind};
 
 /// Per-node-type HTML emission hooks. All methods have default
@@ -548,80 +548,9 @@ pub trait RenderHooks {
                 out.push_str("</section>");
             }
             Shortcode::Grid(args) => {
-                // Test-harness skeleton; the production renderer in
-                // src-tauri's PipelineHooks runs each cell through the
-                // markdown pipeline (including nested typed shortcodes).
-                // This default emits a minimal `<div class="moss-grid">`
-                // wrapper with each cell's raw text inside a
-                // `.moss-grid-card` div so unit tests can pattern-match.
-                let mut class_attr = String::from("moss-grid");
-                if !args.classes.is_empty() {
-                    class_attr.push(' ');
-                    class_attr.push_str(&args.classes);
-                }
-                let style_attr = match &args.ratio {
-                    Some(r) => {
-                        let cols = r
-                            .split(':')
-                            .map(|n| format!("{}fr", n.trim()))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        format!(r#" style="grid-template-columns:{}""#, cols)
-                    }
-                    None => String::new(),
-                };
-                out.push_str(r#"<div class=""#);
-                out.push_str(&escape_attr(&class_attr));
-                out.push_str(r#"" data-columns=""#);
-                out.push_str(&args.columns.to_string());
-                out.push_str("\"");
-                out.push_str(&style_attr);
-                if let Some(w) = &args.width {
-                    out.push_str(r#" data-width=""#);
-                    out.push_str(w);
-                    out.push('"');
-                }
-                // Click-to-source: emit a point source range on the Grid's
-                // outermost element so the bridge's `resolveSourceTarget`
-                // (`data-source-range`) routes a click back to the `:::grid`
-                // line. Same start/end = point range.
-                if let Some(n) = source_line {
-                    out.push_str(r#" data-source-range=""#);
-                    out.push_str(&n.to_string());
-                    out.push('-');
-                    out.push_str(&n.to_string());
-                    out.push('"');
-                }
-                out.push('>');
-                // Phase 4 PR4.5 (2026-05-28): cells are now typed
-                // `Vec<Block>`. Each cell renders into its own scratch
-                // buffer, gets tag-adjacent newlines collapsed (so the
-                // byte shape matches pulldown-cmark's `push_html`), then
-                // gets wrapped (or not, for `Block::LinkCard`) in the
-                // canonical card chrome. Cells are joined with `\n` to
-                // match production's `cards_html.join("\n")` from the
-                // (now-deleted) `render_grid_html_typed` byte shape.
-                let mut card_htmls: Vec<String> = Vec::with_capacity(args.cells.len());
-                // Scope image sizes= to the cell track while cells render
-                // (begin/end pair; see begin_grid_cells docs).
-                self.begin_grid_cells(args.columns, args.width.as_deref());
-                for cell_blocks in &args.cells {
-                    let mut cell_html = String::new();
-                    super::render::render_blocks(self, &mut cell_html, cell_blocks);
-                    let collapsed = collapse_tag_adjacent_newlines(&cell_html);
-                    let trimmed = collapsed.trim();
-                    let wrapped = if let [Block::LinkCard { .. }] = cell_blocks.as_slice() {
-                        // LinkCard renders its own wrapping <a> tag; no
-                        // outer <div>.
-                        trimmed.to_string()
-                    } else {
-                        format!(r#"<div class="moss-grid-card">{}</div>"#, trimmed)
-                    };
-                    card_htmls.push(wrapped);
-                }
-                self.end_grid_cells();
-                out.push_str(&card_htmls.join("\n"));
-                out.push_str("</div>");
+                // ONE grid byte shape: the flat form is the split form
+                // re-assembled. See [`RenderHooks::render_grid_parts`].
+                out.push_str(&self.render_grid_parts(args, source_line).to_html());
             }
             Shortcode::Recent(_args) => {
                 // Test-harness skeleton; the production renderer in
@@ -650,6 +579,45 @@ pub trait RenderHooks {
                 out.push_str("</div>");
             }
         }
+    }
+
+    /// Serialize a `:::grid` into its structural pieces — the opening `<div>`
+    /// tag and one HTML string per cell — rather than one flat string.
+    ///
+    /// [`render_shortcode`](RenderHooks::render_shortcode)'s `Grid` arm is
+    /// `self.render_grid_parts(..).to_html()`, so overriding this method (or
+    /// leaving the default) changes both forms together and they cannot
+    /// diverge.
+    ///
+    /// A host that must replace individual cells with markup derived from
+    /// whole-build state (folder cards, external link previews) pairs these
+    /// strings with `args.cells` and decides per cell from the typed blocks.
+    /// That is the whole point: the *decision* is made on the same typed data
+    /// the emission was made from, so the two can never drift — unlike the
+    /// regex-over-emitted-HTML pass this replaced (ADR-034).
+    ///
+    /// Impls that delegate `render_shortcode`'s `Grid` arm to a *different*
+    /// hooks value (src-tauri's `PipelineHooks` delegates to a
+    /// [`DefaultHooks`] bound to its asset snapshot, so grid-cell images get
+    /// the snapshot-aware `sizes=` ladder) must override this method the same
+    /// way, or the split form will render cells through the wrong hooks.
+    fn render_grid_parts(&self, args: &GridShortcode, source_line: Option<usize>) -> GridParts {
+        super::grid_parts::render_grid_parts(self, args, source_line)
+    }
+
+    /// Whether in-body footnote markers and the endnote section carry
+    /// `id="fnref-…"` / `href="#fn-…"` anchors.
+    ///
+    /// Default `true` — byte-identical to before this method existed.
+    /// `crate` (src-tauri)'s `EmailHooks` overrides to `false`: ADR-035 fixes
+    /// "email emits no anchors" as the target behavior (an in-body fragment
+    /// link is dead weight in a mail client, and a stray `id=` surviving a
+    /// client's HTML sanitizer is noise), but the marker's visible number and
+    /// the endnote's `[N]` still render — only the linking apparatus is
+    /// suppressed. See `ast::footnotes::render_marker` / `render_section`,
+    /// the two call sites this gates.
+    fn emit_footnote_anchors(&self) -> bool {
+        true
     }
 
     /// The localized `aria-label` for the per-heading permalink anchor

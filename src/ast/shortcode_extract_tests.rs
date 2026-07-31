@@ -1783,3 +1783,241 @@ fn extracts_recent_end_to_end_with_sentinel() {
         .markdown_with_placeholders
         .contains(&placeholder_for(&result.nonce, 0)));
 }
+
+// ── Inert regions: `:::` that is not live syntax (moss#903 bug 2) ──────
+
+/// Parse + render the way the build does, so these tests pin the OUTPUT,
+/// not just the extraction bookkeeping.
+fn render_markdown(md: &str) -> String {
+    let doc = crate::ast::parse_with_config(md, &ParseConfig::default());
+    super::super::render::render_document(&doc, &super::super::hooks::DefaultHooks::new())
+}
+
+#[test]
+fn shortcode_inside_an_html_comment_is_not_extracted() {
+    // moss#903 bug 2, verbatim from the report: a frontlinefellowship page
+    // parked a gallery inside a TODO comment. The extractor knew about code
+    // fences and nothing else, so it extracted the `:::gallery`, replaced
+    // lines 2-4 of the comment with a sentinel, and left the comment's own
+    // `-->` stranded — pulldown-cmark then read the following prose as part
+    // of the unterminated HTML block and the rest of the page vanished.
+    let md = "\
+# Owner page
+
+<!-- TODO owner assets:
+     :::gallery 8
+     some-image.jpg
+     ::: -->
+
+Real content after the comment.
+";
+    let result = extract_shortcodes(md);
+
+    // Nothing extracted, and the source round-trips byte-for-byte: the
+    // comment still carries its own opener and closer.
+    assert!(
+        result.extracted.is_empty(),
+        "commented-out shortcode must not be extracted, got {:?}",
+        result.extracted
+    );
+    assert_eq!(
+        result.markdown_with_placeholders, md,
+        "an all-inert `:::` block must round-trip the source unchanged"
+    );
+
+    let html = render_markdown(md);
+
+    // (a) no gallery is emitted.
+    assert!(
+        !html.contains("moss-gallery"),
+        "a commented-out `:::gallery` must not render a gallery:\n{html}"
+    );
+    // (b) the comment structure survives intact — opener, body and closer.
+    assert!(
+        html.contains("<!-- TODO owner assets:"),
+        "comment opener must survive:\n{html}"
+    );
+    assert!(
+        html.contains("::: -->"),
+        "comment closer must survive — this is the byte the sentinel \
+         splice destroyed:\n{html}"
+    );
+    // (c) the production symptom: content after the comment still renders.
+    assert!(
+        html.contains("Real content after the comment."),
+        "content after the comment must still render:\n{html}"
+    );
+    assert!(
+        html.contains("<h1"),
+        "content before the comment must still render:\n{html}"
+    );
+}
+
+#[test]
+fn commented_out_shortcode_does_not_corrupt_the_comment_it_lives_in() {
+    // The same page, written with the closer on its own line — the variant
+    // that actually corrupted output before this fix (with `::: -->` on one
+    // line the extractor found no closer and bailed to verbatim; with the
+    // closer alone it extracted, and the damage was visible in the page).
+    //
+    // Measured pre-fix output for this input:
+    //
+    //     <!-- TODO owner assets:
+    //     <!--MOSS_SC_d12e59ff_0-->
+    //     <p>--&gt;</p>
+    //
+    // Three separate failures in three lines: the sentinel's own `-->`
+    // closed the author's comment early, so (1) the gallery sentinel was
+    // swallowed as comment text and `substitute_shortcode_placeholders`
+    // never saw it — the whole block silently disappeared; (2) the author's
+    // real `-->` leaked into the page as visible text; (3) everything the
+    // now-mispaired comment covers goes with it.
+    let md = "\
+# Owner page
+
+<!-- TODO owner assets:
+     :::gallery 8
+     some-image.jpg
+     :::
+-->
+
+Real content after the comment.
+";
+    let result = extract_shortcodes(md);
+    assert!(
+        result.extracted.is_empty(),
+        "commented-out shortcode must not be extracted, got {:?}",
+        result.extracted
+    );
+    assert_eq!(
+        result.markdown_with_placeholders, md,
+        "no sentinel may be spliced into an authored comment"
+    );
+
+    let html = render_markdown(md);
+    assert!(!html.contains("moss-gallery"), "(a) no gallery:\n{html}");
+    // (b) the comment round-trips whole, opener through closer.
+    assert!(
+        html.contains(
+            "<!-- TODO owner assets:\n     :::gallery 8\n     some-image.jpg\n     :::\n-->"
+        ),
+        "(b) the comment must round-trip byte-for-byte:\n{html}"
+    );
+    assert!(
+        !html.contains("MOSS_SC"),
+        "(b) no extraction sentinel may leak into the page:\n{html}"
+    );
+    assert!(
+        !html.contains("--&gt;"),
+        "(b) the author's `-->` must stay part of the comment, not become \
+         escaped body text:\n{html}"
+    );
+    // (c) the production symptom: content after the comment still renders.
+    assert!(
+        html.contains("<p>Real content after the comment.</p>"),
+        "(c) content after the comment must still render:\n{html}"
+    );
+}
+
+#[test]
+fn shortcode_outside_a_comment_still_extracts_normally() {
+    // The other half of the fix: inertness must be scoped to the comment.
+    // A live `:::grid` on the same page as a commented-out one still works.
+    let md = "\
+<!-- TODO: :::gallery 4 -->
+
+:::grid 2
+A
++++
+B
+:::
+
+after
+";
+    let result = extract_shortcodes(md);
+    assert_eq!(
+        result.extracted.len(),
+        1,
+        "exactly the live grid extracts, got {:?}",
+        result.extracted
+    );
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => assert_eq!(grid.cells.len(), 2),
+        other => panic!("expected Grid, got {other:?}"),
+    }
+    let html = render_markdown(md);
+    assert!(html.contains("moss-grid"), "live grid must render:\n{html}");
+    assert!(
+        !html.contains("moss-gallery"),
+        "commented gallery must not render:\n{html}"
+    );
+    assert!(
+        html.contains("after"),
+        "trailing content must render:\n{html}"
+    );
+}
+
+#[test]
+fn shortcode_in_an_indented_code_block_is_not_extracted() {
+    let md = "How to write a grid:\n\n    :::grid 2\n    A\n    :::\n\nafter\n";
+    let result = extract_shortcodes(md);
+    assert!(result.extracted.is_empty(), "indented code is not syntax");
+    assert_eq!(result.markdown_with_placeholders, md);
+}
+
+#[test]
+fn shortcode_in_an_inline_code_span_is_not_extracted() {
+    let md = "Type `:::grid 2` to open a grid, then `:::` to close it.\n";
+    let result = extract_shortcodes(md);
+    assert!(result.extracted.is_empty(), "inline code is not syntax");
+    assert_eq!(result.markdown_with_placeholders, md);
+}
+
+#[test]
+fn indented_shortcode_under_a_list_item_still_extracts() {
+    // The false positive that would have been worse than the bug: list-item
+    // content is indented, and indenting a shortcode under a bullet must
+    // not silently delete it.
+    let md = "- intro\n\n    :::buttons\n    [a](/b/)\n    :::\n";
+    let result = extract_shortcodes(md);
+    assert_eq!(
+        result.extracted.len(),
+        1,
+        "a shortcode indented under a list item is live, got {:?}",
+        result.extracted
+    );
+}
+
+#[test]
+fn commented_close_fence_does_not_end_a_live_shortcode() {
+    // The closer search consults the same inert map: a `:::` parked in a
+    // comment inside the body used to close the block early, stranding the
+    // rest of the shortcode as prose.
+    let md = ":::grid 2\nA\n<!--\n:::\n-->\n+++\nB\n:::\n";
+    let result = extract_shortcodes(md);
+    assert_eq!(result.extracted.len(), 1);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => assert_eq!(
+            grid.cells.len(),
+            2,
+            "both cells belong to the grid; the commented `:::` is not a closer"
+        ),
+        other => panic!("expected Grid, got {other:?}"),
+    }
+}
+
+#[test]
+fn everything_after_an_unterminated_html_comment_is_inert() {
+    // The one input shape this series changes behavior for. Per CommonMark an
+    // unclosed `<!--` runs to end-of-input, so the page tail is comment text —
+    // where before, an extraction sentinel's own `-->` could accidentally
+    // rescue it. Correct, but silent, so the host warns: see
+    // `pipeline::unterminated_comment_warning`.
+    let md = "intro\n\n<!-- TODO owner assets\n\n:::grid 2\nA\n:::\n";
+    let result = extract_shortcodes(md);
+    assert!(
+        result.extracted.is_empty(),
+        "everything after the unclosed comment is comment text"
+    );
+    assert_eq!(result.markdown_with_placeholders, md);
+}

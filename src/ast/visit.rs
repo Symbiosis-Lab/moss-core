@@ -48,7 +48,7 @@ where
                 visit_urls_in_inline(inline, callback);
             }
         }
-        Block::Callout { children, .. } => {
+        Block::Callout { children, .. } | Block::FootnoteDefinition { children, .. } => {
             for nested in children {
                 visit_urls_in_block(nested, callback);
             }
@@ -170,12 +170,17 @@ where
         Inline::Image { src, .. } => {
             callback(src);
         }
-        Inline::Emphasis(children) | Inline::Strong(children) => {
+        Inline::Emphasis(children) | Inline::Strong(children) | Inline::Strikethrough(children) => {
             for nested in children {
                 visit_urls_in_inline(nested, callback);
             }
         }
-        Inline::Text(_) | Inline::Code(_) | Inline::LineBreak | Inline::Other(_) => {}
+        Inline::Text(_)
+        | Inline::Code(_)
+        | Inline::LineBreak
+        | Inline::FootnoteRef(_)
+        | Inline::TaskMarker(_)
+        | Inline::Other(_) => {}
     }
 }
 
@@ -205,7 +210,14 @@ where
         return false;
     }
     match block {
-        Block::Callout { children, .. } | Block::BlockQuote(children) => {
+        Block::Callout { children, .. }
+        | Block::BlockQuote(children)
+        // A footnote definition is a block container like any other. It is
+        // listed here rather than left to the catch-all because the catch-all
+        // is for blocks with no block children at all, and a walk that skipped
+        // a note's body would answer "does any block …?" with a No that only
+        // means "not anywhere I looked".
+        | Block::FootnoteDefinition { children, .. } => {
             for nested in children {
                 if !visit_block(nested, callback) {
                     return false;
@@ -256,6 +268,10 @@ where
         // variants, thematic breaks, figures, raw HTML — terminal at the
         // block level. Inline children of headings/paragraphs are visited
         // by inline visitors, not block visitors.
+        //
+        // Every variant that OWNS a `Vec<Block>` must be named above, not
+        // left to fall through here: this arm reads as "no block children",
+        // and a container that lands in it is skipped in silence.
         _ => {}
     }
     true
@@ -293,6 +309,43 @@ mod tests {
             children: vec![Inline::Text("t".into())],
             is_wikilink: false,
         }])
+    }
+
+    /// `visit_blocks` promises "every block (top-level + nested)". A footnote
+    /// definition owns a `Vec<Block>`, so a walk that stops at the definition
+    /// node answers a "does any block …?" query with a No that only means "not
+    /// anywhere I looked" — the failure mode is a silent wrong answer, not an
+    /// error. The blockquote control is what proves the miss is specific to
+    /// this container rather than to nesting in general.
+    #[test]
+    fn visit_blocks_descends_into_a_footnote_definition_body() {
+        let inner = Block::Paragraph(vec![Inline::Text("inside the note".into())]);
+        let doc = Document::from_blocks(vec![Block::FootnoteDefinition {
+            label: "a".into(),
+            children: vec![inner.clone()],
+        }]);
+
+        let mut seen = 0usize;
+        visit_blocks(&doc, |b| {
+            if matches!(b, Block::Paragraph(_)) {
+                seen += 1;
+            }
+            true
+        });
+        assert_eq!(
+            seen, 1,
+            "the note's body block was never visited — the catch-all swallowed it"
+        );
+
+        let control = Document::from_blocks(vec![Block::BlockQuote(vec![inner])]);
+        let mut seen_control = 0usize;
+        visit_blocks(&control, |b| {
+            if matches!(b, Block::Paragraph(_)) {
+                seen_control += 1;
+            }
+            true
+        });
+        assert_eq!(seen, seen_control, "identical content, different container");
     }
 
     #[test]

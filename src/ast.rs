@@ -36,30 +36,38 @@ pub mod dispatch_wikilink_embeds;
 pub mod document;
 pub mod editor_scan;
 pub mod extract_hero;
+pub mod footnotes;
+pub mod grid_parts;
+pub mod line_breaks;
 pub mod hooks;
 pub mod math_text;
 pub mod node;
 pub mod parser;
+pub mod plain_text;
 pub mod query;
 pub mod render;
 pub mod resolve_urls;
 pub mod shortcode;
 pub mod shortcode_extract;
+pub mod tags;
 pub mod url;
 pub mod visit;
 
 pub use dispatch_wikilink_embeds::{dispatch_wikilink_embeds, WikilinkDispatchResult};
 pub use document::{BlockMeta, Document};
 pub use extract_hero::{extract_hero, HeroExtraction};
+pub use grid_parts::{render_grid_parts, GridCellParts, GridParts};
 pub use hooks::{DefaultHooks, HeroOverlayHooks, RenderHooks};
 pub use node::{Block, CalloutKind, Fold, Inline};
 pub use parser::{parse, parse_with_config, parser_options, ParseConfig};
+pub use plain_text::{inlines_to_plain_text, render_plain_text};
 pub use query::find_first_block_image;
-pub use render::render_document;
-pub use resolve_urls::{classify_remaining_urls, resolve_urls, GraphAssetIndex};
+pub use render::{render_block_with_meta, render_blocks, render_document};
+pub use resolve_urls::{classify_remaining_urls, resolve_urls, GraphAssetIndex, UrlResolution};
 pub use shortcode::{
     ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode, HeroShortcode,
     RecentShortcode, Shortcode, ShortcodeKind, SubscribeShortcode,
 };
+pub use tags::extract_inline_tags;
 pub use url::{ResolvedUrl, Url, UrlKind};
 pub use visit::{has_shortcode_recursive, visit_blocks, visit_urls_mut};

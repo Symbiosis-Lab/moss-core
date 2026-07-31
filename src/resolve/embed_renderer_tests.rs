@@ -18,6 +18,7 @@ fn test_dummy_renderer_trait_surface() {
     let embed = ParsedEmbed {
         resolved_path: "a.xyz",
         from_path: "post.md",
+        pinned_url: "a.xyz",
         query: None,
         section: None,
         alias: None,
@@ -38,6 +39,7 @@ fn test_markdown_embed_renderer_no_section() {
     let embed = ParsedEmbed {
         resolved_path: "posts/intro.md",
         from_path: "index.md",
+        pinned_url: "posts/intro.md",
         query: None,
         section: None,
         alias: None,
@@ -58,6 +60,7 @@ fn test_markdown_embed_renderer_heading_section() {
     let embed = ParsedEmbed {
         resolved_path: "guide.md",
         from_path: "index.md",
+        pinned_url: "guide.md",
         query: None,
         section: Some("Getting Started"),
         alias: None,
@@ -78,6 +81,7 @@ fn test_markdown_embed_renderer_block_ref_section() {
     let embed = ParsedEmbed {
         resolved_path: "guide.md",
         from_path: "index.md",
+        pinned_url: "guide.md",
         query: None,
         section: Some("^block-xyz"),
         alias: None,
@@ -271,6 +275,7 @@ fn stage1_iframe_basic_is_bare_link() {
     let out = iframe_md(&ParsedEmbed {
         resolved_path: "widget.html",
         from_path: "post.md",
+        pinned_url: "widget.html",
         query: None,
         section: None,
         alias: None,
@@ -287,6 +292,7 @@ fn stage1_iframe_with_query_emits_bare_link() {
     let out = iframe_md(&ParsedEmbed {
         resolved_path: "scale.html",
         from_path: "post.md",
+        pinned_url: "scale.html",
         query: Some("a=major,minor&r=D"),
         section: None,
         alias: None,
@@ -301,6 +307,7 @@ fn stage1_iframe_with_sizing_alias_emits_bare_link() {
     let out = iframe_md(&ParsedEmbed {
         resolved_path: "widget.html",
         from_path: "post.md",
+        pinned_url: "widget.html",
         query: None,
         section: None,
         alias: Some("100%x600"),
@@ -315,6 +322,7 @@ fn stage1_iframe_text_alias_emits_bare_link() {
     let out = iframe_md(&ParsedEmbed {
         resolved_path: "widget.html",
         from_path: "post.md",
+        pinned_url: "widget.html",
         query: None,
         section: None,
         alias: Some("My cool widget"),
@@ -329,6 +337,7 @@ fn stage1_iframe_with_fragment_emits_bare_link() {
     let out = iframe_md(&ParsedEmbed {
         resolved_path: "doc.html",
         from_path: "post.md",
+        pinned_url: "doc.html",
         query: Some("x=1"),
         section: Some("section2"),
         alias: None,
@@ -343,6 +352,7 @@ fn stage1_iframe_with_canonical_width_emits_bare_link() {
     let out = iframe_md(&ParsedEmbed {
         resolved_path: "widget.html",
         from_path: "post.md",
+        pinned_url: "widget.html",
         query: None,
         section: None,
         alias: None,
@@ -368,6 +378,7 @@ fn stage1_iframe_malformed_sizing_emits_bare_link() {
     let out = iframe_md(&ParsedEmbed {
         resolved_path: "widget.html",
         from_path: "post.md",
+        pinned_url: "widget.html",
         query: None,
         section: None,
         alias: Some("100xbad"),
@@ -396,6 +407,7 @@ fn stage1_pdf_basic_is_bare_link() {
     let out = pdf_md(&ParsedEmbed {
         resolved_path: "report.pdf",
         from_path: "post.md",
+        pinned_url: "report.pdf",
         query: None,
         section: None,
         alias: None,
@@ -410,6 +422,7 @@ fn stage1_pdf_with_page_fragment_emits_bare_link() {
     let out = pdf_md(&ParsedEmbed {
         resolved_path: "doc.pdf",
         from_path: "post.md",
+        pinned_url: "doc.pdf",
         query: None,
         section: Some("page=5"),
         alias: None,
@@ -424,6 +437,7 @@ fn stage1_pdf_with_sizing_emits_bare_link() {
     let out = pdf_md(&ParsedEmbed {
         resolved_path: "doc.pdf",
         from_path: "post.md",
+        pinned_url: "doc.pdf",
         query: None,
         section: None,
         alias: Some("100%x800"),
@@ -456,6 +470,7 @@ fn stage1_audio_basic_is_bare_link() {
     let out = audio_md(&ParsedEmbed {
         resolved_path: "song.mp3",
         from_path: "post.md",
+        pinned_url: "song.mp3",
         query: None,
         section: None,
         alias: None,
@@ -475,6 +490,7 @@ fn stage1_audio_each_extension_emits_bare_link() {
         let out = audio_md(&ParsedEmbed {
             resolved_path: &path,
             from_path: "post.md",
+            pinned_url: &path,
             query: None,
             section: None,
             alias: None,
@@ -508,6 +524,7 @@ fn stage1_video_basic_is_bare_link() {
     let out = video_md(&ParsedEmbed {
         resolved_path: "trailer.mp4",
         from_path: "post.md",
+        pinned_url: "trailer.mp4",
         query: None,
         section: None,
         alias: None,
@@ -527,6 +544,7 @@ fn stage1_video_emits_original_extension_in_url() {
         let out = video_md(&ParsedEmbed {
             resolved_path: &path,
             from_path: "post.md",
+            pinned_url: &path,
             query: None,
             section: None,
             alias: None,
@@ -542,6 +560,7 @@ fn stage1_video_with_sizing_emits_bare_link() {
     let out = video_md(&ParsedEmbed {
         resolved_path: "clip.mp4",
         from_path: "post.md",
+        pinned_url: "clip.mp4",
         query: None,
         section: None,
         alias: Some("640x360"),
@@ -563,6 +582,7 @@ fn test_notebook_renderer_basic() {
     let embed = ParsedEmbed {
         resolved_path: "resources/habitable-zone.ipynb",
         from_path: "posts/hello.md",
+        pinned_url: "resources/habitable-zone.ipynb",
         query: None,
         section: None,
         alias: None,
@@ -583,6 +603,7 @@ fn test_notebook_renderer_with_query() {
     let embed = ParsedEmbed {
         resolved_path: "nb.ipynb",
         from_path: "post.md",
+        pinned_url: "nb.ipynb",
         query: Some("cells=1-5"),
         section: None,
         alias: None,
@@ -624,6 +645,7 @@ fn stage1_model_viewer_basic_is_bare_link() {
     let out = mv_md(&ParsedEmbed {
         resolved_path: "teapot.glb",
         from_path: "post.md",
+        pinned_url: "teapot.glb",
         query: None,
         section: None,
         alias: None,
@@ -638,6 +660,7 @@ fn stage1_model_viewer_with_sizing_emits_bare_link() {
     let out = mv_md(&ParsedEmbed {
         resolved_path: "m.glb",
         from_path: "post.md",
+        pinned_url: "m.glb",
         query: None,
         section: None,
         alias: Some("400x400"),
@@ -669,6 +692,7 @@ fn test_table_renderer_emits_deferred() {
     let embed = ParsedEmbed {
         resolved_path: "data/stars.csv",
         from_path: "post.md",
+        pinned_url: "data/stars.csv",
         query: None,
         section: None,
         alias: None,
@@ -691,6 +715,7 @@ fn embed_with_width<'a>(resolved_path: &'a str, width: &'static str) -> ParsedEm
     ParsedEmbed {
         resolved_path,
         from_path: "post.md",
+        pinned_url: resolved_path,
         query: None,
         section: None,
         alias: None,
@@ -714,6 +739,7 @@ fn stage1_iframe_no_width_emits_bare_link() {
     let out = iframe_md(&ParsedEmbed {
         resolved_path: "widget.html",
         from_path: "post.md",
+        pinned_url: "widget.html",
         query: None,
         section: None,
         alias: None,
@@ -748,6 +774,7 @@ fn stage1_video_no_width_emits_bare_link() {
     let out = video_md(&ParsedEmbed {
         resolved_path: "clip.mp4",
         from_path: "post.md",
+        pinned_url: "clip.mp4",
         query: None,
         section: None,
         alias: None,

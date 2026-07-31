@@ -417,7 +417,7 @@ fn dispatch_video_extension_routes_to_synth() {
     match emit.output {
         EmitKind::Html(s) => {
             assert!(s.contains("<video"), "expected <video>, got: {}", s);
-            assert!(s.contains(r#"src="clip.mp4""#), "expected src=, got: {}", s);
+            assert!(s.contains(r#"src="/clip.mp4""#), "expected src=, got: {}", s);
             assert!(s.contains("moss-embed-video"), "expected class, got: {}", s);
         }
         other => panic!("expected Html, got: {:?}", other),
@@ -441,7 +441,7 @@ fn dispatch_pdf_extension_routes_to_synth() {
         EmitKind::Html(s) => {
             assert!(s.contains("<object"), "expected <object>, got: {}", s);
             assert!(
-                s.contains(r#"data="report.pdf""#),
+                s.contains(r#"data="/report.pdf""#),
                 "expected data=, got: {}",
                 s
             );
@@ -469,7 +469,7 @@ fn dispatch_audio_extension_routes_to_synth() {
     match emit.output {
         EmitKind::Html(s) => {
             assert!(s.contains("<audio"), "expected <audio>, got: {}", s);
-            assert!(s.contains(r#"src="song.mp3""#), "expected src=, got: {}", s);
+            assert!(s.contains(r#"src="/song.mp3""#), "expected src=, got: {}", s);
             assert!(
                 s.contains(r#"type="audio/mpeg""#),
                 "expected MIME, got: {}",
@@ -495,7 +495,7 @@ fn dispatch_iframe_extension_routes_to_synth() {
         EmitKind::Html(s) => {
             assert!(s.contains("<iframe"), "expected <iframe>, got: {}", s);
             assert!(
-                s.contains(r#"src="widget.html""#),
+                s.contains(r#"src="/widget.html""#),
                 "expected src=, got: {}",
                 s
             );
@@ -523,7 +523,7 @@ fn dispatch_model_extension_routes_to_synth() {
                 s
             );
             assert!(
-                s.contains(r#"src="scene.glb""#),
+                s.contains(r#"src="/scene.glb""#),
                 "expected src=, got: {}",
                 s
             );

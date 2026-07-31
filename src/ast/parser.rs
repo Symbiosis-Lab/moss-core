@@ -18,13 +18,15 @@
 //! applies duplicate-suffix numbering (`{slug}-1`, `-2`, …) matching the
 //! `id_counts` HashMap behavior at `pipeline.rs:1798`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::document::{BlockMeta, Document};
+use super::footnotes::FootnoteIndex;
 use super::math_text::{math_inline, math_source};
 use super::node::{Block, CalloutKind, ColumnAlignment, Fold, Inline};
+use super::shortcode::Shortcode;
 use super::shortcode_extract::{extract_shortcodes_with_config, parse_placeholder, ExtractedShortcode};
 use super::url::Url;
 use crate::heading::anchor::obsidian_heading_anchor;
@@ -91,6 +93,17 @@ pub struct ParseConfig {
     /// default on), which is where the "is `$5` currency or an unclosed
     /// equation?" judgment belongs.
     pub math: bool,
+
+    /// When true, a single newline inside a paragraph renders as `<br>`,
+    /// matching Obsidian's default (`strictLineBreaks = false`, i.e. remark
+    /// `breaks: true`). When false, CommonMark applies and the newline is a
+    /// space.
+    ///
+    /// Default is `false` for the same reason `math` is: it changes what the
+    /// author's *characters* mean, so every in-crate `parse()` caller and
+    /// every committed fixture keeps today's behavior until a site opts in.
+    /// Production wires it from `site_config.hard_line_breaks`.
+    pub hard_line_breaks: bool,
 }
 
 impl Default for ParseConfig {
@@ -106,6 +119,9 @@ impl Default for ParseConfig {
             // committed snapshot fixture are untouched by math landing.
             // Production opts in via `[site].math`.
             math: false,
+            // Off by default so in-crate callers and committed fixtures keep
+            // CommonMark's "newline is a space". Production opts in.
+            hard_line_breaks: false,
         }
     }
 }
@@ -117,11 +133,13 @@ impl Default for ParseConfig {
 /// `Options` blocks (typed AST, newsletter ×2, `llms_txt`, the markdown
 /// pipeline), and each one that drifted became a surface where the same
 /// document parsed differently depending on which output it was headed for.
-/// A site that legitimately needs a different set (the newsletter walker
-/// deliberately omits `ENABLE_FOOTNOTES`, because footnote backlinks are
-/// meaningless in an inbox) calls this and then removes the one option, so
-/// the divergence reads as an explicit delta at the call site instead of
-/// being invisibly re-hand-rolled.
+/// A site that legitimately needs a different set calls this and then adjusts
+/// the one option, so the divergence reads as an explicit delta at the call
+/// site instead of being invisibly re-hand-rolled. There is no such delta
+/// today: this comment used to cite the newsletter walker omitting
+/// `ENABLE_FOOTNOTES`, which stopped being true when email gained footnote
+/// arms — with the bit off, CommonMark reads `[^x]: <url>` as a link reference
+/// definition and deletes the note outright.
 ///
 /// `math` gates `ENABLE_MATH` (`$…$` / `$$…$$` → [`Event::InlineMath`] /
 /// [`Event::DisplayMath`]). It is a parameter rather than part of the base
@@ -135,11 +153,20 @@ impl Default for ParseConfig {
 /// every equation in the document (measured: `Energy $E = mc^2$.` →
 /// `<p>Energy .</p>`). See `src-tauri/tests/math_wiring_invariant_test.rs`,
 /// which fails any site that turns math on without arms in the same walker.
+///
+/// `ENABLE_TASKLISTS` carries the same obligation, and it is met by
+/// [`Inline::TaskMarker`]: the flag makes pulldown emit
+/// `Event::TaskListMarker` as the first event inside `Tag::Item`, and both
+/// the leaf arm in `parse_inline` and the whitelist in `parse_inline_event`
+/// model it. Turning the flag on WITHOUT those arms silently deletes the
+/// checkbox — measured on `- [ ] todo\n- [x] done`, which rendered
+/// `<ul><li>todo</li><li>done</li></ul>`. See ADR-035 § Task lists.
 pub fn parser_options(math: bool) -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_TASKLISTS);
     // Phase 3 PR2: pulldown-cmark emits `LinkType::WikiLink` events for
     // `[[…]]` / `![[…]]` natively. The typed-AST parser preserves them as
     // `Inline::Link`/`Inline::Image` with `Url::Unresolved`; resolution
@@ -191,6 +218,39 @@ pub fn parse(markdown: &str) -> Document {
 /// of its first event; a [`LineLookup`] converts the offset to a 1-based
 /// line number stored in [`BlockMeta::source_line`].
 pub fn parse_with_config(markdown: &str, config: &ParseConfig) -> Document {
+    parse_document(markdown, config, HeadingIds::Number)
+}
+
+/// Parse a FRAGMENT that will be embedded in some other document's tree —
+/// a `:::grid` cell, a compound-link card's inner blocks, a `:::hero`
+/// overlay — and leave its heading ids holding their bare base slugs.
+///
+/// Duplicate-id numbering is a whole-PAGE decision: the fragment renders into
+/// the same document as the body, so the only counter that can keep every
+/// `id=` unique is the outer parse's. Numbering here as well suffixed twice —
+/// a cell holding two `## Notes` arrived as `notes` / `notes-1`, and the outer
+/// walk then bumped the first to `notes-1` (colliding with the second) and the
+/// second to `notes-1-1`, a shape no slug rule can produce.
+///
+/// The outer [`assign_heading_id_suffixes`] reaches every fragment:
+/// [`collect_heading_id_slots`] is exhaustive over `Block` and descends into
+/// grid cells, hero overlays and link cards. Nested fragments inherit this
+/// entry point, because [`super::shortcode_extract::parse_cell_to_blocks`] is
+/// the only way a cell is parsed at any depth.
+pub(super) fn parse_fragment_with_config(markdown: &str, config: &ParseConfig) -> Document {
+    parse_document(markdown, config, HeadingIds::LeaveBare)
+}
+
+/// Whether a parse owns duplicate-heading-id numbering for its blocks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeadingIds {
+    /// Top-level document parse: number every id in render order.
+    Number,
+    /// Embedded fragment: the enclosing document's parse numbers these.
+    LeaveBare,
+}
+
+fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds) -> Document {
     let extraction = extract_shortcodes_with_config(markdown, config);
 
     let options = parser_options(config.math);
@@ -295,18 +355,43 @@ pub fn parse_with_config(markdown: &str, config: &ParseConfig) -> Document {
     // Each Tag::Heading arm computes the base slug; this pass disambiguates
     // collisions across the whole document, matching production's id_counts
     // HashMap behavior in pipeline.rs::transform_events.
-    assign_heading_id_suffixes(&mut blocks);
+    //
+    // Skipped for embedded fragments — see [`parse_fragment_with_config`].
+    // The page that hosts them owns the one counter that can keep every id
+    // on the rendered page unique.
+    if heading_ids == HeadingIds::Number {
+        assign_heading_id_suffixes(&mut blocks);
+    }
 
-    Document::from_blocks_with_meta(blocks, block_meta)
+    let mut doc = Document::from_blocks_with_meta(blocks, block_meta);
+
+    // Obsidian parity: a single newline inside a paragraph becomes `<br>`.
+    // Runs last, over the finished tree, because pulldown-cmark 0.13 has no
+    // hard-break option — see `ast/line_breaks.rs` for why a post-parse
+    // transform is the only mechanism and why it is exact.
+    if config.hard_line_breaks {
+        super::line_breaks::apply(&mut doc);
+    }
+
+    doc
 }
 
 /// Recursively undo implicit-figure promotion in `block` and its children.
 ///
 /// Called when `ParseConfig::implicit_figure` is false. Walks the block
 /// tree (descending into containers — `BlockQuote`, `Callout`, `List`,
-/// `LinkCard`) and rewrites any `Block::Figure` back to
-/// `Block::Paragraph(vec![image])` with the original alt text preserved.
+/// `LinkCard`, `FootnoteDefinition`) and rewrites any `Block::Figure` back
+/// to `Block::Paragraph(vec![image])` with the original alt text preserved.
 /// The caption is discarded (matches the legacy bare-`<img>` shape).
+///
+/// The opt-out is a whole-document setting, so a container that holds
+/// blocks and is NOT listed here silently keeps promoting — the `_ => {}`
+/// below is why adding `Block::FootnoteDefinition` compiled fine while an
+/// opted-out site published a `<figcaption>` in its endnotes. Deliberately
+/// excluded: `Block::Shortcode` (a cell is its own parse and runs this walk
+/// itself) and `Block::Table` (cells are `Vec<Inline>`, never blocks, so
+/// nothing there can be a `Figure`). Every other block-holding variant
+/// belongs in the arm below.
 fn unwrap_implicit_figure(block: &mut Block) {
     // Replace this block if it's a Figure.
     if let Block::Figure { image, .. } = block {
@@ -319,12 +404,10 @@ fn unwrap_implicit_figure(block: &mut Block) {
     }
     // Recurse into containers.
     match block {
-        Block::BlockQuote(children) => {
-            for child in children.iter_mut() {
-                unwrap_implicit_figure(child);
-            }
-        }
-        Block::Callout { children, .. } => {
+        Block::BlockQuote(children)
+        | Block::Callout { children, .. }
+        | Block::LinkCard { children, .. }
+        | Block::FootnoteDefinition { children, .. } => {
             for child in children.iter_mut() {
                 unwrap_implicit_figure(child);
             }
@@ -334,11 +417,6 @@ fn unwrap_implicit_figure(block: &mut Block) {
                 for child in item.iter_mut() {
                     unwrap_implicit_figure(child);
                 }
-            }
-        }
-        Block::LinkCard { children, .. } => {
-            for child in children.iter_mut() {
-                unwrap_implicit_figure(child);
             }
         }
         _ => {}
@@ -763,6 +841,20 @@ fn parse_block_with_tag(
             }
             (Some(Block::Other(html)), i - start + 1)
         }
+        // `[^label]: body`. pulldown emits this wherever the author wrote it,
+        // including nested inside a blockquote or list item, so this arm is
+        // reached from every block collector. Hoisting to the endnote section
+        // is the renderer's job (ADR-035).
+        Tag::FootnoteDefinition(label) => {
+            let (children, end) = collect_blocks_until(events, start + 1, line_ctx, |e| {
+                matches!(e, Event::End(TagEnd::FootnoteDefinition))
+            });
+            let label = label.to_string();
+            (
+                Some(Block::FootnoteDefinition { label, children }),
+                end - start + 1,
+            )
+        }
         // Unmodeled containers: skip to End and emit nothing. The events
         // inside are dropped — anything moss cares about should be modeled
         // explicitly.
@@ -1001,10 +1093,19 @@ fn build_caption_inlines(
 
     // Locate the image's own event span inside the paragraph:
     // Start(Tag::Image) … End(TagEnd::Image). The promotion invariant
-    // guarantees exactly one image among the paragraph's inlines; scanning
-    // for the FIRST Start(Tag::Image) and stopping at the FIRST
-    // End(TagEnd::Image) matches the alt-flattening loop in `parse_inline`
-    // (Tag::Image arm), so both surfaces agree on the span.
+    // guarantees exactly one image among the paragraph's inlines, so the
+    // FIRST Start(Tag::Image) after `para_start` is that image's own start.
+    //
+    // Below, `collect_inlines_until` stops at the first End(TagEnd::Image)
+    // its `is_end` check observes — but for a nested image
+    // (`![a ![b](inner.png) c](outer.png)`, valid CommonMark) that is never
+    // the inner image's own End: `parse_inline`'s `Tag::Image` arm
+    // depth-tracks and fully consumes a nested inner image — including its
+    // matching End — before returning control to this loop, the same way it
+    // builds the depth-tracked `Inline::Image.alt` string. So the first End
+    // this loop's `is_end` check actually sees is the OUTER image's own
+    // close, and both surfaces (the flat alt string and this re-parsed
+    // caption) agree on the span.
     let mut img_children_start: Option<usize> = None;
     let mut i = para_start + 1;
     while i < events.len() {
@@ -1121,6 +1222,16 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
         // is a semver one-way door).
         Event::InlineMath(tex) => (Some(math_inline(tex, false)), 1),
         Event::DisplayMath(tex) => (Some(math_inline(tex, true)), 1),
+        // `[^label]`. A LEAF event, same hazard as math: without this arm the
+        // catch-all deletes the marker and the reader loses the pointer to
+        // the note. pulldown only emits it when a matching definition exists,
+        // so a bare `[^abc]` in prose stays literal text.
+        Event::FootnoteReference(label) => (Some(Inline::FootnoteRef(label.to_string())), 1),
+        // `[ ]` / `[x]` at the head of a task-list item. Another LEAF, same
+        // hazard as the two above: no arm here and the checkbox disappears
+        // while the item text survives, so the list silently loses its
+        // meaning rather than looking broken.
+        Event::TaskListMarker(checked) => (Some(Inline::TaskMarker(*checked)), 1),
         Event::Start(tag) => match tag {
             Tag::Emphasis => {
                 let (children, end) = collect_inlines_until(events, start + 1, |e| {
@@ -1133,6 +1244,12 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                     matches!(e, Event::End(TagEnd::Strong))
                 });
                 (Some(Inline::Strong(children)), end - start + 1)
+            }
+            Tag::Strikethrough => {
+                let (children, end) = collect_inlines_until(events, start + 1, |e| {
+                    matches!(e, Event::End(TagEnd::Strikethrough))
+                });
+                (Some(Inline::Strikethrough(children)), end - start + 1)
             }
             Tag::Link {
                 link_type,
@@ -1169,12 +1286,27 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                 title,
                 ..
             } => {
-                // Collect alt text from text events between Start/End.
+                // Collect alt text from text events between Start/End. A
+                // nested image (`![a ![b](inner.png) c](outer.png)`, valid
+                // CommonMark) emits its own Start/End(Image) pair inside this
+                // span — depth-track so only the OUTER's own matching End
+                // stops the loop; otherwise trailing content after the inner
+                // image (here " c") escapes as a sibling paragraph inline
+                // instead of folding into the outer alt, matching
+                // `infra/newsletter.rs`'s `image_depth` counter on the email
+                // side.
                 let mut alt = String::new();
                 let mut i = start + 1;
+                let mut depth: u32 = 1;
                 while i < events.len() {
                     match &events[i] {
-                        Event::End(TagEnd::Image) => break,
+                        Event::Start(Tag::Image { .. }) => depth += 1,
+                        Event::End(TagEnd::Image) => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
                         Event::Text(t) => alt.push_str(t),
                         Event::Code(c) => alt.push_str(c),
                         // `alt` is a plain-text attribute AND (via the
@@ -1184,6 +1316,21 @@ fn parse_inline(events: &[Event<'_>], start: usize) -> (Option<Inline>, usize) {
                         // equation from both surfaces.
                         Event::InlineMath(t) => alt.push_str(&math_source(t, false)),
                         Event::DisplayMath(t) => alt.push_str(&math_source(t, true)),
+                        // A line break inside alt is a SPACE — how browsers
+                        // and Obsidian flatten it, and the rule
+                        // `infra/newsletter.rs` already applies on the email
+                        // side. Dropping the break ran a soft-wrapped
+                        // sentence together (`Cover art\nby Jane` →
+                        // `Cover artby Jane`) in the `alt=` attribute and, via
+                        // the implicit-figure path, in the visible
+                        // `<figcaption>`. pulldown hands the wrapped line's
+                        // trailing spaces to the preceding Text run, so guard
+                        // against emitting a second one.
+                        Event::SoftBreak | Event::HardBreak => {
+                            if !alt.is_empty() && !alt.ends_with(' ') {
+                                alt.push(' ');
+                            }
+                        }
                         _ => {}
                     }
                     i += 1;
@@ -1608,17 +1755,30 @@ fn parse_inline_event(events: &[Event<'_>], i: usize) -> Option<(Option<Inline>,
         | Event::InlineHtml(_)
         | Event::SoftBreak
         | Event::HardBreak
-        // Math events are inline leaves. This whitelist is the ONLY way they
-        // reach `parse_inline` from `collect_item_blocks` (its sole caller),
-        // so omitting them deletes math in LIST ITEMS while paragraph math
-        // still looks fine — a wiring failure a mechanism test cannot see.
-        // Table cells/blockquotes take other routes (tests/math_parsing.rs).
+        // Math and footnote markers are inline LEAVES. This whitelist is the
+        // ONLY way they reach `parse_inline` from `collect_item_blocks` (its
+        // sole caller), so omitting one deletes it in LIST ITEMS while the
+        // same construct in a paragraph still looks fine — a wiring failure a
+        // mechanism test cannot see. Table cells/blockquotes take other
+        // routes (tests/math_parsing.rs). The Start-tag arm below carries the
+        // same obligation for inline CONTAINERS, where a miss does worse than
+        // delete: the unknown tag flushes the pending inlines, splitting one
+        // item into two paragraphs (measured on `- ~~gone~~ stays`, which
+        // rendered `<li><p>gone</p><p> stays</p></li>`).
         | Event::InlineMath(_)
-        | Event::DisplayMath(_) => Some(parse_inline(events, i)),
+        | Event::DisplayMath(_)
+        | Event::FootnoteReference(_)
+        // Task markers reach the AST ONLY through this arm — they occur
+        // exclusively inside `Tag::Item`, whose content is collected by
+        // `collect_item_blocks`, whose sole inline route is this function.
+        // Omitting it deletes every checkbox in the document.
+        | Event::TaskListMarker(_) => Some(parse_inline(events, i)),
         Event::Start(tag) => match tag {
-            Tag::Emphasis | Tag::Strong | Tag::Link { .. } | Tag::Image { .. } => {
-                Some(parse_inline(events, i))
-            }
+            Tag::Emphasis
+            | Tag::Strong
+            | Tag::Strikethrough
+            | Tag::Link { .. }
+            | Tag::Image { .. } => Some(parse_inline(events, i)),
             _ => None,
         },
         _ => None,
@@ -1633,9 +1793,8 @@ fn flush_pending_paragraph(out: &mut Vec<Block>, pending_inlines: &mut Vec<Inlin
     }
 }
 
-/// Post-parse pass: walk every heading in document order (recursively
-/// descending into BlockQuote, List items, and Callout children) and
-/// disambiguate duplicate IDs by appending `-1`, `-2`, … to the slug.
+/// Post-parse pass: disambiguate duplicate heading IDs by appending `-1`,
+/// `-2`, … to the slug, in the order the headings will appear ON THE PAGE.
 ///
 /// Mirrors the `id_counts: HashMap<String, usize>` behavior at
 /// `src-tauri/src/build/markdown/pipeline.rs:1798-1805`:
@@ -1644,40 +1803,206 @@ fn flush_pending_paragraph(out: &mut Vec<Block>, pending_inlines: &mut Vec<Inlin
 /// - Second occurrence becomes `foo-1`; counter becomes 2.
 /// - Third occurrence becomes `foo-2`; counter becomes 3.
 ///
+/// **Render order, not source order.** [`super::render::render_document`]
+/// emits the body first — the FIRST definition of every footnote label
+/// emitting nothing, because [`super::footnotes::render_section`] hoists it
+/// to the end of the page — and then the endnote section, in first-reference
+/// order (a third ordering, agreeing with neither of the other two).
+/// Numbering in source order therefore handed the bare slug to a heading
+/// that renders LAST: `[^a]: ## Notes` written above a body `## Notes`
+/// published `id="notes"` inside the endnote list and `id="notes-1"` on the
+/// visible section, while `[[Note#Notes]]` — slugged from heading text with
+/// no counter — kept pointing at `#notes`.
+///
 /// Headings whose base slug is `None` (shouldn't happen post-PR2, but
 /// safe-guarded) are left untouched.
 fn assign_heading_id_suffixes(blocks: &mut [Block]) {
+    // Built BEFORE the mutable walk: `entries()` is the order
+    // `render_section` emits the `<li id="fn-N">`s, and it needs a shared
+    // borrow of the same tree.
+    let note_order: Vec<String> = FootnoteIndex::build(blocks)
+        .entries()
+        .iter()
+        .map(|(_, label)| label.clone())
+        .collect();
+
+    let mut body: Vec<&mut Option<String>> = Vec::new();
+    let mut notes: Vec<(String, Vec<&mut Option<String>>)> = Vec::new();
+    let mut hoisted: HashSet<String> = HashSet::new();
+    let scope = HoistScope {
+        document_notes: &note_order,
+        in_shortcode: false,
+    };
+    collect_heading_id_slots(blocks, &mut body, &mut hoisted, &mut notes, scope);
+
+    // Stable sort into endnote order. A label the index doesn't own is
+    // impossible today (every defined label is numbered); if one ever
+    // appears it keeps its document position, at the end.
+    notes.sort_by_key(|(label, _)| {
+        note_order
+            .iter()
+            .position(|l| l == label)
+            .unwrap_or(usize::MAX)
+    });
+
     let mut id_counts: HashMap<String, usize> = HashMap::new();
-    assign_heading_id_suffixes_walk(blocks, &mut id_counts);
+    for slot in body {
+        disambiguate_heading_id(slot, &mut id_counts);
+    }
+    for (_, slots) in notes {
+        for slot in slots {
+            disambiguate_heading_id(slot, &mut id_counts);
+        }
+    }
 }
 
-fn assign_heading_id_suffixes_walk(blocks: &mut [Block], id_counts: &mut HashMap<String, usize>) {
+/// Apply the `-N` suffix rule to one heading id slot.
+fn disambiguate_heading_id(id: &mut Option<String>, id_counts: &mut HashMap<String, usize>) {
+    let Some(slug) = id else { return };
+    let count = *id_counts.entry(slug.clone()).or_insert(0);
+    id_counts.insert(slug.clone(), count + 1);
+    if count > 0 {
+        let suffixed = format!("{slug}-{count}");
+        *id = Some(suffixed);
+    }
+}
+
+/// Collect a mutable handle to every heading id in the tree, bucketed by
+/// WHERE the renderer puts it: `body` in document order, and one bucket per
+/// hoisted footnote definition so the caller can order those the way
+/// `render_section` emits them.
+///
+/// `hoisted` records which labels have had their first definition seen, in
+/// document order — the same rule [`super::footnotes::FootnoteIndex::definition`]
+/// uses to pick the definition whose body the endnote renders. A REPEAT
+/// definition of a label is not hoisted (it renders in place), so its
+/// headings stay in the surrounding bucket.
+/// Where the walk currently is, for deciding whether a footnote definition
+/// will be HOISTED to the endnote section (so its headings are numbered after
+/// the whole body) or rendered IN PLACE (so they are numbered where they sit).
+///
+/// Two independent reasons a definition is not hoisted, and both must be
+/// checked or the id order inverts against the DOM:
+///
+/// 1. The document index doesn't own the label. `footnotes::is_hoisted`
+///    answers from a map built only from the index's entries, and that index
+///    is exactly `document_notes`. A repeat definition of an already-defined
+///    label is left in place by the renderer.
+/// 2. The walk is inside a shortcode body. `footnotes::collect_definitions`
+///    stops at shortcode bodies, so a `[^x]: …` written inside a `:::grid`
+///    cell is never collected, never numbered, and never hoisted — it renders
+///    in the cell. Bucketing it as an endnote numbered a grid heading after
+///    the body even though it renders before it.
+#[derive(Clone, Copy)]
+struct HoistScope<'a> {
+    /// Labels the document's `FootnoteIndex` owns, in endnote order.
+    document_notes: &'a [String],
+    /// Whether the walk is inside a `:::grid` cell or `:::hero` overlay.
+    in_shortcode: bool,
+}
+
+impl HoistScope<'_> {
+    /// Whether a definition of `label` here becomes an endnote. Consumes the
+    /// first-wins claim on `hoisted` only when it genuinely hoists, so a
+    /// repeat definition later in the body is still judged on its own terms.
+    fn hoists(&self, label: &str, hoisted: &mut HashSet<String>) -> bool {
+        if self.in_shortcode {
+            return false;
+        }
+        if !self.document_notes.iter().any(|l| l == label) {
+            return false;
+        }
+        hoisted.insert(label.to_string())
+    }
+
+    /// The same scope, entering a shortcode body.
+    fn inside_shortcode(self) -> Self {
+        Self {
+            in_shortcode: true,
+            ..self
+        }
+    }
+}
+
+fn collect_heading_id_slots<'a>(
+    blocks: &'a mut [Block],
+    sink: &mut Vec<&'a mut Option<String>>,
+    hoisted: &mut HashSet<String>,
+    notes: &mut Vec<(String, Vec<&'a mut Option<String>>)>,
+    scope: HoistScope<'_>,
+) {
     for block in blocks.iter_mut() {
         match block {
-            Block::Heading { id, .. } => {
-                if let Some(slug) = id {
-                    let count_entry = id_counts.entry(slug.clone()).or_insert(0);
-                    let count = *count_entry;
-                    if count > 0 {
-                        *id = Some(format!("{}-{}", slug, count));
-                    }
-                    *count_entry = count + 1;
+            Block::Heading { id, .. } => sink.push(id),
+            Block::FootnoteDefinition { label, children } => {
+                let label = label.clone();
+                // A definition is bucketed as an endnote only when the
+                // renderer will actually hoist it — `footnotes::is_hoisted`
+                // only ever hoists labels the document index owns, and the
+                // index is exactly `document_notes`. Deciding from `hoisted` alone put
+                // a definition the renderer leaves IN PLACE into a bucket
+                // that is numbered after the whole body, so a heading that
+                // renders first was numbered last.
+                if scope.hoists(&label, hoisted) {
+                    let mut note_sink: Vec<&'a mut Option<String>> = Vec::new();
+                    collect_heading_id_slots(children, &mut note_sink, hoisted, notes, scope);
+                    notes.push((label, note_sink));
+                } else {
+                    collect_heading_id_slots(children, sink, hoisted, notes, scope);
                 }
             }
-            Block::BlockQuote(children) | Block::Callout { children, .. } => {
-                assign_heading_id_suffixes_walk(children, id_counts);
+            // Every container whose children render into the SAME page
+            // shares one id counter, or the page emits duplicate DOM ids and
+            // `#slug` resolves to whichever copy the browser meets first.
+            // LinkCard counts: it is the compound-link grid cell, and its
+            // children include headings.
+            Block::BlockQuote(children)
+            | Block::Callout { children, .. }
+            | Block::LinkCard { children, .. } => {
+                collect_heading_id_slots(children, sink, hoisted, notes, scope);
             }
             Block::List { items, .. } => {
                 for item in items.iter_mut() {
-                    assign_heading_id_suffixes_walk(item, id_counts);
+                    collect_heading_id_slots(item, sink, hoisted, notes, scope);
                 }
             }
-            // Tables/CodeBlocks/Shortcodes/Paragraphs/ThematicBreak/Other
-            // cannot contain block-level headings — nothing to descend
-            // into. Shortcode bodies (Hero overlay, Grid cells) currently
-            // carry their content as String (pre-PR4.5); once promoted to
-            // Vec<Block>, this walker will need to descend there too.
-            _ => {}
+            Block::Shortcode(sc) => match sc {
+                // Grid cells and the Hero overlay are typed `Vec<Block>`
+                // (PR4.5) rendered into this page. Each is parsed by a
+                // RECURSIVE `parse_fragment_with_config`, which is told to
+                // skip `assign_heading_id_suffixes` precisely so they arrive
+                // here holding un-disambiguated base slugs — this walk is the
+                // page's only numbering pass. When the nested parse numbered
+                // too, a cell with two `## Notes` arrived as `notes` /
+                // `notes-1` and got suffixed a second time, yielding a
+                // duplicate `notes-1` and an impossible `notes-1-1`.
+                Shortcode::Grid(args) => {
+                    for cell in args.cells.iter_mut() {
+                        collect_heading_id_slots(cell, sink, hoisted, notes, scope.inside_shortcode());
+                    }
+                }
+                Shortcode::Hero(args) => {
+                    collect_heading_id_slots(&mut args.overlay, sink, hoisted, notes, scope.inside_shortcode());
+                }
+                // No block children: Subscribe/Apply bodies must be empty,
+                // Buttons/Gallery carry typed item lists, and Recent's
+                // fallback is unparsed markdown.
+                Shortcode::Subscribe(_)
+                | Shortcode::Buttons(_)
+                | Shortcode::Gallery(_)
+                | Shortcode::Recent(_)
+                | Shortcode::Apply(_) => {}
+            },
+            // Deliberately exhaustive, no `_` arm: these carry no block
+            // children, and the next `Block` variant that gains a
+            // `Vec<Block>` must fail to compile HERE rather than silently
+            // leak duplicate ids onto the page.
+            Block::Paragraph(_)
+            | Block::CodeBlock { .. }
+            | Block::Table { .. }
+            | Block::ThematicBreak
+            | Block::Figure { .. }
+            | Block::Other(_) => {}
         }
     }
 }

@@ -6,7 +6,7 @@
 //! | walker | input | when | consumer |
 //! |---|---|---|---|
 //! | [`events_to_text`] | `&[pulldown_cmark::Event]` | during parse, before the AST exists | the `<hN id>` slug |
-//! | [`inlines_to_text`] | `&[Inline]` | after parse | [`super::extract`]'s autocomplete label |
+//! | [`crate::ast::plain_text::inlines_to_plain_text`] | `&[Inline]` | after parse | [`super::extract`]'s autocomplete label |
 //!
 //! What they must NOT do is disagree about what a piece of content looks
 //! like as text. They did: `collect_heading_text` in `ast/parser.rs` and
@@ -15,12 +15,20 @@
 //! label could drift apart — which is exactly what the July 2026 math
 //! cluster found (`$f*g$` came out of one and `$fg$` out of the other).
 //!
-//! So: **one policy, two adapters.** [`TextAtom`] is the vocabulary the
-//! policy speaks; [`push_atom`] IS the policy and is the only place that
-//! decides what an atom's text is; each walker's job is reduced to
-//! classifying its own node type into an atom. Changing what math (or a
-//! line break, or code) looks like in plain text is a one-line edit in one
-//! function, and both surfaces move together by construction.
+//! So: **one policy, two adapters.** [`crate::ast::plain_text::TextAtom`] is
+//! the vocabulary the policy speaks; `push_atom` IS the policy and is the
+//! only place that decides what an atom's text is; each walker's job is
+//! reduced to classifying its own node type into an atom. Changing what math
+//! (or a line break, or code) looks like in plain text is a one-line edit in
+//! one function, and both surfaces move together by construction.
+//!
+//! The `&[Inline]` half of the policy (and its adapter,
+//! [`crate::ast::plain_text::inlines_to_plain_text`]) moved to
+//! `ast/plain_text.rs` (ADR-036) once a third non-heading consumer
+//! (`build::page::meta::extract_description`) appeared — exactly the
+//! trigger that module's promotion doc comment named in advance. This
+//! module keeps only [`events_to_text`], the mid-parse event-stream half
+//! that has no AST to walk yet.
 //!
 //! ## The one difference that remains, and why it is not a bug to fix here
 //!
@@ -36,44 +44,9 @@
 
 use std::borrow::Cow;
 
-use crate::ast::math_text::{math_source, math_source_from_other};
-use crate::ast::node::Inline;
+use crate::ast::math_text::math_source;
+use crate::ast::plain_text::{push_atom, TextAtom};
 use pulldown_cmark::Event;
-
-/// The vocabulary [`push_atom`] speaks — every distinguishable kind of
-/// content a heading walker can encounter, independent of whether it was
-/// found as a parser event or as an AST node.
-pub(crate) enum TextAtom<'a> {
-    /// Author text or code-span content. Reproduced verbatim: a code span's
-    /// backticks are markup, its contents are prose.
-    Verbatim(&'a str),
-    /// An equation, already in **delimited markdown-source** form
-    /// (`$…$` / `$$…$$`). See [`crate::ast::math_text`] for why plain-text
-    /// contexts get the source rather than the bare TeX — in short, it is
-    /// what keeps the slug byte-identical across `[site].math` on/off and
-    /// in agreement with the raw-line slugger in `build/scan/scan.rs`.
-    Math(Cow<'a, str>),
-    /// An explicit line break inside the heading.
-    Break,
-}
-
-impl<'a> TextAtom<'a> {
-    /// Build a [`TextAtom::Math`] from the inner TeX pulldown hands a
-    /// walker (delimiters stripped) plus its display flag.
-    fn from_tex(tex: &str, display: bool) -> TextAtom<'a> {
-        TextAtom::Math(Cow::Owned(math_source(tex, display)))
-    }
-}
-
-/// **THE policy.** The single place that decides what each kind of content
-/// contributes to a heading's plain text. Both walkers funnel through it.
-fn push_atom(out: &mut String, atom: TextAtom<'_>) {
-    match atom {
-        TextAtom::Verbatim(t) => out.push_str(t),
-        TextAtom::Math(src) => out.push_str(&src),
-        TextAtom::Break => out.push(' '),
-    }
-}
 
 /// Flatten the parser events in `events[start..end]` to plain text.
 ///
@@ -96,8 +69,8 @@ pub(crate) fn events_to_text(events: &[Event<'_>], start: usize, end: usize) -> 
         match event {
             Event::Text(t) => push_atom(&mut out, TextAtom::Verbatim(t)),
             Event::Code(c) => push_atom(&mut out, TextAtom::Verbatim(c)),
-            Event::InlineMath(t) => push_atom(&mut out, TextAtom::from_tex(t, false)),
-            Event::DisplayMath(t) => push_atom(&mut out, TextAtom::from_tex(t, true)),
+            Event::InlineMath(t) => push_atom(&mut out, math_atom(t, false)),
+            Event::DisplayMath(t) => push_atom(&mut out, math_atom(t, true)),
             // Start/End tags carry no text of their own; their contents
             // arrive as their own Text events (image `alt` included).
             // Soft/HardBreak deliberately contribute nothing — see the
@@ -108,37 +81,13 @@ pub(crate) fn events_to_text(events: &[Event<'_>], start: usize, end: usize) -> 
     out
 }
 
-/// Flatten an inline slice to plain text, appending to `out`.
-///
-/// Runs after the parse, on the typed AST. Descends through inline
-/// containers so nested emphasis/links contribute their contents.
-///
-/// **Second consumer, deliberately.** `ast::extract_hero` calls this for the
-/// hero-overlay rung of the description chain; its private copy was
-/// byte-identical, and keeping the copy is what forced the P1 math arm to be
-/// written twice. If a THIRD non-heading consumer appears, that is the signal
-/// to promote this walker to its own `ast/plain_text.rs` and leave `heading/`
-/// owning only the slug — the falsifier for keeping it here.
-pub(crate) fn inlines_to_text(inlines: &[Inline], out: &mut String) {
-    for inline in inlines {
-        match inline {
-            Inline::Text(t) => push_atom(out, TextAtom::Verbatim(t)),
-            Inline::Code(c) => push_atom(out, TextAtom::Verbatim(c)),
-            Inline::Emphasis(children) | Inline::Strong(children) => inlines_to_text(children, out),
-            Inline::Link { children, .. } => inlines_to_text(children, out),
-            Inline::Image { alt, .. } => push_atom(out, TextAtom::Verbatim(alt)),
-            Inline::LineBreak => push_atom(out, TextAtom::Break),
-            // A math fallback node is raw HTML, but it is the only
-            // `Inline::Other` that carries author text. The AST walker has
-            // no access to the original event, so the source is recovered
-            // from the node — see `ast::math_text::math_source_from_other`.
-            Inline::Other(html) => {
-                if let Some(src) = math_source_from_other(html) {
-                    push_atom(out, TextAtom::Math(Cow::Owned(src)));
-                }
-            }
-        }
-    }
+/// Build a [`TextAtom::Math`] from the inner TeX pulldown hands this
+/// walker (delimiters stripped) plus its display flag. `events_to_text`'s
+/// own convenience — the `&[Inline]` walker recovers math from
+/// `Inline::Other` via `math_source_from_other` instead, since it has no
+/// original event to read the display flag from.
+fn math_atom(tex: &str, display: bool) -> TextAtom<'static> {
+    TextAtom::Math(Cow::Owned(math_source(tex, display)))
 }
 
 #[cfg(test)]
@@ -172,8 +121,7 @@ mod tests {
                 let Block::Heading { children, id, .. } = &doc.blocks[0] else {
                     panic!("expected a heading for {md:?}");
                 };
-                let mut label = String::new();
-                inlines_to_text(children, &mut label);
+                let label = crate::ast::plain_text::inlines_to_plain_text(children);
                 // `id` was produced by `events_to_text` during the parse.
                 assert_eq!(
                     id.as_deref().expect("heading must have an id"),
@@ -196,8 +144,7 @@ mod tests {
         let Block::Heading { children, id, .. } = &doc.blocks[0] else {
             panic!("expected a setext heading, got {:?}", doc.blocks[0]);
         };
-        let mut label = String::new();
-        inlines_to_text(children, &mut label);
+        let label = crate::ast::plain_text::inlines_to_plain_text(children);
         assert_eq!(label, "foo\nbar", "AST keeps the SoftBreak as a newline");
         assert_eq!(id.as_deref(), Some("foobar"), "the event walk drops it");
     }
@@ -207,8 +154,8 @@ mod tests {
         let mut out = String::new();
         push_atom(&mut out, TextAtom::Verbatim("a"));
         push_atom(&mut out, TextAtom::Break);
-        push_atom(&mut out, TextAtom::from_tex("x^2", false));
-        push_atom(&mut out, TextAtom::from_tex("y", true));
+        push_atom(&mut out, math_atom("x^2", false));
+        push_atom(&mut out, math_atom("y", true));
         assert_eq!(out, "a $x^2$$$y$$");
     }
 }
