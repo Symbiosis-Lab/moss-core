@@ -719,14 +719,24 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                         frontmatter.tags = Some(items);
                     }
                 }
-                // Handle boolean with explicit value
-                "nav" => frontmatter.nav = Some(value == "true" || value.is_empty()),
-                "home" => frontmatter.home = Some(value == "true" || value.is_empty()),
-                "draft" => frontmatter.draft = Some(value == "true" || value.is_empty()),
-                "listed" => frontmatter.listed = Some(value == "true" || value.is_empty()),
-                "breadcrumb" => frontmatter.breadcrumb = Some(value == "true" || value.is_empty()),
-                "footer" => frontmatter.footer = Some(value == "true" || value.is_empty()),
-                "comments" => frontmatter.comments = Some(value == "true" || value.is_empty()),
+                // Handle boolean with explicit value. Strip quotes first: authors
+                // copying YAML habits into simplified frontmatter (`nav: 'true'`)
+                // would otherwise compare "'true'" != "true" and silently land on
+                // `false` — a worse variant of #925 (miscoercion, not just drop).
+                "nav" | "home" | "draft" | "listed" | "breadcrumb" | "footer" | "comments" => {
+                    let unquoted = value.trim_matches(|c| c == '\'' || c == '"');
+                    let flag = Some(unquoted == "true" || unquoted.is_empty());
+                    match key {
+                        "nav" => frontmatter.nav = flag,
+                        "home" => frontmatter.home = flag,
+                        "draft" => frontmatter.draft = flag,
+                        "listed" => frontmatter.listed = flag,
+                        "breadcrumb" => frontmatter.breadcrumb = flag,
+                        "footer" => frontmatter.footer = flag,
+                        "comments" => frontmatter.comments = flag,
+                        _ => unreachable!(),
+                    }
+                }
                 "slot" => {
                     if !value.is_empty() {
                         // Validation against known slot names happens at
@@ -1096,6 +1106,31 @@ mod tests {
         assert_eq!(fm.draft, Some(false));
         assert_eq!(fm.listed, Some(true));
         assert_eq!(fm.comments, Some(false));
+    }
+
+    #[test]
+    fn invalid_bool_string_still_drops_with_warning() {
+        // A genuinely invalid bool string (not "true"/"false") must still warn
+        // and drop, not be silently accepted as truthy.
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("nav".into()),
+            serde_yaml::Value::String("yes".into()),
+        );
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.nav, None, "invalid bool string is dropped, not coerced");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].key, "nav");
+    }
+
+    #[test]
+    fn simplified_frontmatter_strips_quotes_from_bool_value() {
+        // Regression: authors copying YAML habits into simplified frontmatter
+        // (`nav: 'true'`) must not have the quotes poison the `== "true"`
+        // comparison and silently land on `false`.
+        let (fm, _) = parse_simplified_frontmatter("nav: 'true'\nhome: \"false\"\n---\nbody\n");
+        assert_eq!(fm.nav, Some(true));
+        assert_eq!(fm.home, Some(false));
     }
 
     #[test]

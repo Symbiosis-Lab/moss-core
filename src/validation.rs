@@ -182,7 +182,12 @@ fn value_matches_def(value: &serde_yaml::Value, def: &crate::schema::FieldDefini
 fn value_matches_type(value: &serde_yaml::Value, expected: &FieldType) -> bool {
     match expected {
         FieldType::String => value.is_string(),
-        FieldType::Boolean => value.is_bool(),
+        // Mirrors deserialize_bool_lenient in frontmatter_typed.rs: the typed
+        // build path coerces "true"/"false" strings, so this diagnostic must
+        // accept them too or it'll flag a value the build path already fixed.
+        FieldType::Boolean => {
+            value.is_bool() || matches!(value.as_str(), Some("true") | Some("false"))
+        }
         FieldType::Integer => {
             // Accept both i64 and u64.
             value.is_i64() || value.is_u64()
@@ -363,6 +368,26 @@ mod tests {
             .collect();
         assert_eq!(type_errs.len(), 1);
         assert!(type_errs[0].message.contains("draft"));
+    }
+
+    #[test]
+    fn test_quoted_true_false_strings_accepted_for_boolean() {
+        // #925: the typed build path (deserialize_bool_lenient) coerces
+        // "true"/"false" strings for bool fields; this diagnostic must agree,
+        // or the editor would show a fresh "wrong type" error for a value the
+        // build path already accepts.
+        let schema = builtin_schema();
+        let fm = make_fm(&[
+            ("title", str_val("Test")),
+            ("draft", str_val("true")),
+        ]);
+
+        let diags = validate_frontmatter(&fm, &schema);
+        let type_errs: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == Severity::Error && d.message.contains("wrong type"))
+            .collect();
+        assert!(type_errs.is_empty(), "quoted \"true\" must not be flagged: {:?}", type_errs);
     }
 
     #[test]
