@@ -725,7 +725,21 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                 // `false` — a worse variant of #925 (miscoercion, not just drop).
                 "nav" | "home" | "draft" | "listed" | "breadcrumb" | "footer" | "comments" => {
                     let unquoted = value.trim_matches(|c| c == '\'' || c == '"');
-                    let flag = Some(unquoted == "true" || unquoted.is_empty());
+                    // Anything other than "true"/"false" is a likely typo (e.g.
+                    // "yes", "Ture"); warn rather than silently defaulting to
+                    // false — the same #925 failure mode in this hand-rolled
+                    // parser, mirroring the "children"/"children_in" warnings above.
+                    let flag = match unquoted {
+                        "true" | "" => Some(true),
+                        "false" => Some(false),
+                        _ => {
+                            eprintln!(
+                                "Warning: {}: \"{}\" is not valid. Use true or false.",
+                                key, value
+                            );
+                            None
+                        }
+                    };
                     match key {
                         "nav" => frontmatter.nav = flag,
                         "home" => frontmatter.home = flag,
@@ -1131,6 +1145,16 @@ mod tests {
         let (fm, _) = parse_simplified_frontmatter("nav: 'true'\nhome: \"false\"\n---\nbody\n");
         assert_eq!(fm.nav, Some(true));
         assert_eq!(fm.home, Some(false));
+    }
+
+    #[test]
+    fn simplified_frontmatter_invalid_bool_value_is_unset_not_false() {
+        // A typo'd bool value (not "true"/"false") must not silently become
+        // `Some(false)` — that's the same #925 failure mode (a page author
+        // writes `nav: yes` expecting it to show, and it silently doesn't)
+        // in this parser's own hand-rolled bool matching.
+        let (fm, _) = parse_simplified_frontmatter("nav: yes\n---\nbody\n");
+        assert_eq!(fm.nav, None);
     }
 
     #[test]
