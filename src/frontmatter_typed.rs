@@ -184,12 +184,15 @@ pub struct FrontMatter {
     /// Explicit cover type override: "image", "video", or "iframe"
     pub cover_type: Option<String>,
     /// Whether to show in navigation
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub nav: Option<bool>,
     /// Explicit folder-home marker: this file is its folder's home page,
     /// regardless of filename. Written by moss on homes it creates; survives rename.
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub home: Option<bool>,
     /// Draft: rendered and published at its direct URL, but hidden from all
     /// listings, feeds, sitemap, and navigation (and marked `noindex`).
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub draft: Option<bool>,
     /// Listed: when `false`, the page is hidden from moss's auto-generated
     /// surfaces (home feed, recent, folder embeds, RSS, llms.txt, sitemap, and
@@ -198,6 +201,7 @@ pub struct FrontMatter {
     /// `draft` adds `noindex` and drops the share card; `listed: false` does
     /// neither. Nav bar / footer link placement (explicit `nav:` / `footer:`)
     /// are independent of this flag.
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub listed: Option<bool>,
     /// Page description for SEO and list previews
     pub description: Option<String>,
@@ -264,6 +268,7 @@ pub struct FrontMatter {
     #[serde(rename = "translationKey")]
     pub translation_key: Option<String>,
     /// Whether to show comments on this page (default: true)
+    #[serde(default, deserialize_with = "deserialize_bool_lenient")]
     pub comments: Option<bool>,
     /// Durable page identity: 8 RANDOM hex chars minted at first build — never derivable, never changed once published (docs/reference/social-data-standard.md)
     #[serde(default, deserialize_with = "deserialize_string_lenient")]
@@ -714,14 +719,38 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                         frontmatter.tags = Some(items);
                     }
                 }
-                // Handle boolean with explicit value
-                "nav" => frontmatter.nav = Some(value == "true" || value.is_empty()),
-                "home" => frontmatter.home = Some(value == "true" || value.is_empty()),
-                "draft" => frontmatter.draft = Some(value == "true" || value.is_empty()),
-                "listed" => frontmatter.listed = Some(value == "true" || value.is_empty()),
-                "breadcrumb" => frontmatter.breadcrumb = Some(value == "true" || value.is_empty()),
-                "footer" => frontmatter.footer = Some(value == "true" || value.is_empty()),
-                "comments" => frontmatter.comments = Some(value == "true" || value.is_empty()),
+                // Handle boolean with explicit value. Strip quotes first: authors
+                // copying YAML habits into simplified frontmatter (`nav: 'true'`)
+                // would otherwise compare "'true'" != "true" and silently land on
+                // `false` — a worse variant of #925 (miscoercion, not just drop).
+                "nav" | "home" | "draft" | "listed" | "breadcrumb" | "footer" | "comments" => {
+                    let unquoted = value.trim_matches(|c| c == '\'' || c == '"');
+                    // Anything other than "true"/"false" is a likely typo (e.g.
+                    // "yes", "Ture"); warn rather than silently defaulting to
+                    // false — the same #925 failure mode in this hand-rolled
+                    // parser, mirroring the "children"/"children_in" warnings above.
+                    let flag = match unquoted {
+                        "true" | "" => Some(true),
+                        "false" => Some(false),
+                        _ => {
+                            eprintln!(
+                                "Warning: {}: \"{}\" is not valid. Use true or false.",
+                                key, value
+                            );
+                            None
+                        }
+                    };
+                    match key {
+                        "nav" => frontmatter.nav = flag,
+                        "home" => frontmatter.home = flag,
+                        "draft" => frontmatter.draft = flag,
+                        "listed" => frontmatter.listed = flag,
+                        "breadcrumb" => frontmatter.breadcrumb = flag,
+                        "footer" => frontmatter.footer = flag,
+                        "comments" => frontmatter.comments = flag,
+                        _ => unreachable!(),
+                    }
+                }
                 "slot" => {
                     if !value.is_empty() {
                         // Validation against known slot names happens at
@@ -1059,6 +1088,73 @@ mod tests {
         assert_eq!(on.listed, Some(true));
         let absent: FrontMatter = serde_yaml::from_str("title: X\n").expect("parse");
         assert_eq!(absent.listed, None);
+    }
+
+    #[test]
+    fn quoted_nav_string_coerces_instead_of_vanishing() {
+        // Regression for #925: `nav: 'true'` (quoted YAML string) must not
+        // silently drop the field. Every Option<bool> field shares the same
+        // lenient deserializer, so this is a single behavior, not per-field.
+        let fm: FrontMatter = serde_yaml::from_str("nav: 'true'\n").expect("parse");
+        assert_eq!(fm.nav, Some(true), "quoted 'true' coerces to Some(true), not None");
+
+        let fm: FrontMatter = serde_yaml::from_str("nav: 'false'\n").expect("parse");
+        assert_eq!(fm.nav, Some(false));
+
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("nav".into()),
+            serde_yaml::Value::String("true".into()),
+        );
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.nav, Some(true));
+        assert!(warnings.is_empty(), "coerced bool must not warn as dropped");
+    }
+
+    #[test]
+    fn quoted_bool_strings_coerce_for_every_option_bool_field() {
+        // home/draft/listed/comments had the same gap as nav; close it uniformly.
+        let yaml = "home: 'true'\ndraft: 'false'\nlisted: 'true'\ncomments: 'false'\n";
+        let fm: FrontMatter = serde_yaml::from_str(yaml).expect("parse");
+        assert_eq!(fm.home, Some(true));
+        assert_eq!(fm.draft, Some(false));
+        assert_eq!(fm.listed, Some(true));
+        assert_eq!(fm.comments, Some(false));
+    }
+
+    #[test]
+    fn invalid_bool_string_still_drops_with_warning() {
+        // A genuinely invalid bool string (not "true"/"false") must still warn
+        // and drop, not be silently accepted as truthy.
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("nav".into()),
+            serde_yaml::Value::String("yes".into()),
+        );
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.nav, None, "invalid bool string is dropped, not coerced");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].key, "nav");
+    }
+
+    #[test]
+    fn simplified_frontmatter_strips_quotes_from_bool_value() {
+        // Regression: authors copying YAML habits into simplified frontmatter
+        // (`nav: 'true'`) must not have the quotes poison the `== "true"`
+        // comparison and silently land on `false`.
+        let (fm, _) = parse_simplified_frontmatter("nav: 'true'\nhome: \"false\"\n---\nbody\n");
+        assert_eq!(fm.nav, Some(true));
+        assert_eq!(fm.home, Some(false));
+    }
+
+    #[test]
+    fn simplified_frontmatter_invalid_bool_value_is_unset_not_false() {
+        // A typo'd bool value (not "true"/"false") must not silently become
+        // `Some(false)` — that's the same #925 failure mode (a page author
+        // writes `nav: yes` expecting it to show, and it silently doesn't)
+        // in this parser's own hand-rolled bool matching.
+        let (fm, _) = parse_simplified_frontmatter("nav: yes\n---\nbody\n");
+        assert_eq!(fm.nav, None);
     }
 
     #[test]
