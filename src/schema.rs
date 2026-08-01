@@ -111,6 +111,12 @@ pub struct FieldDefinition {
     /// `None` for plugin-contributed fields (shown in "Other" group).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// For `Widget::FilePicker` fields, the extension kinds the picker should
+    /// restrict search results to (e.g. `cover` -> image/video, `logo` ->
+    /// image only). `None` means unrestricted. Mirrors
+    /// `schema_fields::BuiltinField::file_kinds` — see that field's doc comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_kinds: Option<Vec<crate::resolve::ext_kind::ExtKind>>,
 }
 
 /// Supported field types.
@@ -216,6 +222,7 @@ fn materialize_field(bf: &BuiltinField) -> FieldDefinition {
             score: 0,
             source: None,
             group: None,
+            file_kinds: None,
         })
     });
 
@@ -251,6 +258,7 @@ fn materialize_field(bf: &BuiltinField) -> FieldDefinition {
         score: bf.score,
         source: None,
         group: if bf.group.is_empty() { None } else { Some(bf.group.to_string()) },
+        file_kinds: bf.file_kinds.map(|kinds| kinds.to_vec()),
     }
 }
 

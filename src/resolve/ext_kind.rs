@@ -2,8 +2,11 @@
 //! Pure; shared by build + editor. Replaces the duplication flagged at
 //! `wikilink_dispatch.rs` (synth_kind_for_ext tables vs EmbedRenderer::extensions()).
 
+use serde::{Deserialize, Serialize};
+
 /// The render family a non-folder, non-link target belongs to, by extension.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum ExtKind {
     Image,
     Iframe,

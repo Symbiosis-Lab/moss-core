@@ -42,6 +42,7 @@
 //! and the minimum is 100 - (5*6 + 5*4) = 0 (Frequency=5, Importance=5).
 //! A lower score sorts earlier (more prominent position).
 
+use crate::resolve::ext_kind::ExtKind;
 use crate::schema::{FieldType, Widget};
 
 /// A builtin frontmatter field definition.
@@ -102,6 +103,11 @@ pub struct BuiltinField {
     /// One of: "This Page", "Child Pages", "Child Styles", "Whole Site".
     /// The "Other" group is handled entirely on the TS side for unknown fields.
     pub group: &'static str,
+    /// For `Widget::FilePicker` fields, the extension kinds the picker should
+    /// restrict search results to (e.g. `cover` → image or video; `logo` →
+    /// image only). `None` means unrestricted. This is the schema-side SSOT
+    /// the chip bar reads instead of hardcoding a `key -> ExtKind[]` switch.
+    pub file_kinds: Option<&'static [ExtKind]>,
 }
 
 /// Default values for optional `BuiltinField` fields. Used with struct update
@@ -122,6 +128,7 @@ const FIELD_DEFAULTS: BuiltinField = BuiltinField {
     score: 0,
     skip_schema: false,
     group: "",
+    file_kinds: None,
 };
 
 /// Union members for `children`: a boolean toggle OR a single wikilink/path
@@ -243,6 +250,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         description: "Cover image path",
         label_key: "chip.cover.label",
         group: "This Page",
+        file_kinds: Some(&[ExtKind::Image, ExtKind::Video]),
         ..FIELD_DEFAULTS
     },
     BuiltinField {
@@ -610,6 +618,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         description: "Site logo image path (rendered before site name in nav)",
         label_key: "chip.logo.label",
         group: "Whole Site",
+        file_kinds: Some(&[ExtKind::Image]),
         ..FIELD_DEFAULTS
     },
     BuiltinField {
