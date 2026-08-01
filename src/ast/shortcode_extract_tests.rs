@@ -601,6 +601,62 @@ fn extracts_gallery_with_pipe_attrs() {
 }
 
 #[test]
+fn extracts_gallery_with_wikilink_embed_syntax() {
+    // The insert-bar's picker-driven gallery builder emits `![[name]]` (the
+    // same wikilink form the hero shortcode already accepts) — the gallery
+    // parser must accept it too, or a picker-inserted gallery renders a
+    // literal "![[name]]" as its image src.
+    let md = ":::gallery\n![[photo1.jpg]]\n![[photo2.png]]\n:::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Gallery(args) => {
+            assert_eq!(args.items.len(), 2);
+            for (item, expected) in args.items.iter().zip(["photo1.jpg", "photo2.png"]) {
+                match &item.src {
+                    Url::Unresolved(s) => assert_eq!(s, expected),
+                    _ => panic!("expected Unresolved"),
+                }
+            }
+        }
+        _ => panic!("expected Gallery"),
+    }
+}
+
+#[test]
+fn extracts_gallery_wikilink_with_attrs() {
+    let md = ":::gallery\n![[photo.jpg|cover top]]\n:::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Gallery(args) => {
+            assert_eq!(args.items[0].attrs, "cover top");
+            match &args.items[0].src {
+                Url::Unresolved(s) => assert_eq!(s, "photo.jpg"),
+                _ => panic!("expected Unresolved"),
+            }
+        }
+        _ => panic!("expected Gallery"),
+    }
+}
+
+#[test]
+fn extracts_gallery_wikilink_with_parens_and_space_in_filename() {
+    // Regression guard: `parse_markdown_image` rejects a path containing
+    // `(` (shortcode_extract.rs:939-941), which is why the gallery fix
+    // lives in the wikilink branch rather than switching the insert-bar to
+    // emit `![](name)` — a name like "photo (1).jpg" (common duplicate-file
+    // naming) would still break under that alternative.
+    let md = ":::gallery\n![[photo (1).jpg]]\n:::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Gallery(args) => match &args.items[0].src {
+            Url::Unresolved(s) => assert_eq!(s, "photo (1).jpg"),
+            _ => panic!("expected Unresolved"),
+        },
+        _ => panic!("expected Gallery"),
+    }
+}
+
+#[test]
 fn gallery_skips_blank_lines() {
     let md = ":::gallery\n\na.jpg\n\nb.jpg\n\n:::\n";
     let result = extract_shortcodes(md);

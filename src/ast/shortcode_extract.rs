@@ -803,6 +803,19 @@ fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
         if trimmed.is_empty() {
             continue;
         }
+        // Wikilink embed: ![[path|attrs]] — checked BEFORE the generic pipe
+        // split below, mirroring `parse_hero_media_line`'s ordering (the
+        // wikilink's own `|` separates path from attrs and must be split on
+        // the INNER content, not the whole `![[...]]` line).
+        if let Some(inner) = trimmed.strip_prefix("![[").and_then(|s| s.strip_suffix("]]")) {
+            let (src_raw, attrs) = split_pipe(inner);
+            items.push(GalleryItem {
+                src: Url::unresolved(src_raw.trim().to_string()),
+                alt: String::new(),
+                attrs: attrs.to_string(),
+            });
+            continue;
+        }
         // Each line: `path|attrs`, `![alt](path)|attrs`, or bare `path`.
         // The pipe split (if any) is BEFORE the markdown-image pattern check.
         let (src_raw, attrs) = split_pipe(trimmed);
