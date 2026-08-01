@@ -243,13 +243,16 @@ fn parse_grid(args: &str, body: &str, config: &ParseConfig) -> (GridShortcode, b
 /// Parse one grid cell's raw markdown source into a `Vec<Block>`.
 ///
 /// Phase 4 PR4.5 (2026-05-28): detects the compound-link shape first
-/// (`[inner](url)` wrapping the entire trimmed cell content). On match,
-/// emits a single-element `vec![Block::LinkCard { url, children }]` where
-/// `children` is the inner parsed as blocks. On no match, parses the cell
-/// directly via [`super::parser::parse`].
+/// (`[inner](url)` wrapping the entire trimmed cell content, optionally
+/// followed by blank-line-separated caption paragraphs for an image-link
+/// cell). On match, emits `vec![Block::LinkCard { url, children }, ...]`
+/// where `children` is the inner parsed as blocks and any trailing caption
+/// content is appended as sibling blocks after the card. On no match,
+/// parses the cell directly via [`super::parser::parse`].
 fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
-    if let Some((url, inner)) = detect_compound_link(raw) {
+    if let Some((url, inner, trailing)) = detect_compound_link(raw) {
         let inner_trimmed = inner.trim();
+        let trailing_trimmed = trailing.trim();
         // Simple compound-link special case: when the inner content is
         // plain phrasing text (no images, no nested links, no
         // block-level markdown) AND the URL is external, fall through
@@ -275,10 +278,15 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
             return parse_fragment_with_config(&linkified, config).blocks;
         }
         let inner_doc = parse_fragment_with_config(inner_trimmed, config);
-        return vec![Block::LinkCard {
+        let mut blocks = vec![Block::LinkCard {
             url: Url::unresolved(url),
             children: inner_doc.blocks,
         }];
+        if !trailing_trimmed.is_empty() {
+            let trailing_doc = parse_fragment_with_config(trailing_trimmed, config);
+            blocks.extend(trailing_doc.blocks);
+        }
+        return blocks;
     }
     // Phase 4 PR4.5 (2026-05-28): bare-URL cell auto-promotion. When the
     // entire cell content is a single bare URL on its own line (no
@@ -328,12 +336,15 @@ fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
 
 /// Detect the compound-link shape in a grid cell's markdown content.
 ///
-/// Matches cells whose entire content (after trimming whitespace) begins
-/// with `[` and ends with `](url)`. The inner content may span blank lines
-/// and contain any markdown block syntax (headings, images, paragraphs,
-/// lists, emphasis).
+/// Matches cells whose content (after trimming whitespace) begins with `[`
+/// and, after balanced-bracket scanning, `](url)`. The inner content may
+/// span blank lines and contain any markdown block syntax (headings,
+/// images, paragraphs, lists, emphasis).
 ///
-/// Returns `Some((url, inner_content))` on a match, `None` otherwise.
+/// Returns `Some((url, inner_content, trailing_content))` on a match,
+/// `None` otherwise. `trailing_content` is non-empty only for the
+/// image-link-plus-caption shape described below; it is `""` for the
+/// classic whole-cell-is-the-link shape.
 ///
 /// Ported from src-tauri's `crate::build::markdown::typed_renderers::
 /// detect_compound_link` (Phase 4 PR4.5, 2026-05-28) — the AST-level
@@ -345,17 +356,30 @@ fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
 /// - Cell content starts with a backtick (inline code on first line).
 /// - The outer `[…](url)` shape cannot be confirmed by bracket-balance
 ///   scanning (multiple top-level links, bare `]` / `(` without a pair).
-/// - There is non-whitespace content after the closing `)`.
+/// - There is content after the closing `)` that continues the SAME
+///   paragraph (no blank line before it) — CommonMark already renders
+///   `[Link](url) more text` correctly as one inline paragraph, and
+///   hijacking it into a card would change ordinary link cells.
+/// - There is content after the closing `)`, separated by a blank line,
+///   but the inner content does not lead with a WIKILINK image (`![[`).
+///   Trailing caption paragraphs are only recognized for this exact shape
+///   — the one pulldown-cmark cannot represent at all, a wikilink image
+///   nested inside a standard link (see moss#928-adjacent). A cell led by
+///   an ordinary markdown image (`![alt](src)`) is deliberately excluded:
+///   pulldown-cmark parses `![alt](src)` fine on its own, so
+///   `[![alt](src)](url)\n\ncaption` already reaches the plain block
+///   parser and comes out as `Paragraph([Link([Image])])` +
+///   `Paragraph([caption])` — exactly the shape the host's grid-cell
+///   classifier (`build/render/grid_cells.rs`) needs to recognize an
+///   external link preview. Widening this gate to any `!` would silently
+///   swallow that into a `LinkCard` and drop the preview chrome.
 ///
 /// Detection uses bracket balancing so nested `](` sequences inside images
 /// (`![alt](src)`) or inline code do NOT prematurely end the outer link.
-pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String)> {
+pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String, String)> {
     let stripped = cell_text.trim();
 
     if !stripped.starts_with('[') {
-        return None;
-    }
-    if !stripped.ends_with(')') {
         return None;
     }
     if stripped.len() > 1 && stripped.as_bytes()[1] == b'`' {
@@ -450,14 +474,36 @@ pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String)> 
 
     let close_paren = paren_close?;
 
-    // Phase 3: after `)`, only whitespace/blank lines.
+    // Phase 3: after `)`, either nothing/whitespace (classic shape), or a
+    // blank-line-separated caption for an image-link cell (see doc comment).
     let tail = stripped.get(close_paren + 1..)?;
-    if !tail.chars().all(|c| c.is_whitespace()) {
-        return None;
-    }
+    let inner = stripped.get(1..close_bracket)?;
+    let trailing = if tail.chars().all(char::is_whitespace) {
+        ""
+    } else {
+        let blank_line_before_trailing = {
+            let mut newlines = 0;
+            for c in tail.chars() {
+                if c == '\n' {
+                    newlines += 1;
+                } else if !c.is_whitespace() {
+                    break;
+                }
+            }
+            newlines >= 2
+        };
+        let candidate = tail.trim();
+        // Scoped to the wikilink-image shape only (see doc comment): an
+        // ordinary `![alt](src)` inner already reaches the plain block
+        // parser and renders correctly on its own, so it's excluded here
+        // rather than swallowed into a LinkCard.
+        if !blank_line_before_trailing || !inner.trim_start().starts_with("![[") {
+            return None;
+        }
+        candidate
+    };
 
     // Phase 4: validate inner content.
-    let inner = stripped.get(1..close_bracket)?;
     if inner.trim().is_empty() {
         return None;
     }
@@ -515,7 +561,7 @@ pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String)> 
     }
 
     let url = stripped.get(close_bracket + 2..close_paren)?;
-    Some((url.to_string(), inner.to_string()))
+    Some((url.to_string(), inner.to_string(), trailing.to_string()))
 }
 
 /// Split a grid body into cells on lines containing only `+++` (new
@@ -801,6 +847,19 @@ fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
     for line in body.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            continue;
+        }
+        // Wikilink embed: ![[path|attrs]] — checked BEFORE the generic pipe
+        // split below, mirroring `parse_hero_media_line`'s ordering (the
+        // wikilink's own `|` separates path from attrs and must be split on
+        // the INNER content, not the whole `![[...]]` line).
+        if let Some(inner) = trimmed.strip_prefix("![[").and_then(|s| s.strip_suffix("]]")) {
+            let (src_raw, attrs) = split_pipe(inner);
+            items.push(GalleryItem {
+                src: Url::unresolved(src_raw.trim().to_string()),
+                alt: String::new(),
+                attrs: attrs.to_string(),
+            });
             continue;
         }
         // Each line: `path|attrs`, `![alt](path)|attrs`, or bare `path`.

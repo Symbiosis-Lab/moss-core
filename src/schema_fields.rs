@@ -407,7 +407,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         enum_values: Some(&["page", "article"]),
         // Frequency=2, Importance=2 → score=80
         score: 80,
-        description: "Template layout override (page or article). On a folder-index page with a cover, \"article\" also swaps the book-open cover row for a full-width stacked hero banner",
+        description: "Template layout override (page or article). On a folder-index page, \"article\" suppresses the auto-inserted cover entirely, even when \"cover\" is set — the body owns its own imagery",
         label: Some("Layout"),
         label_key: "chip.layout.label",
         group: "This Page",
