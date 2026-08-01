@@ -1126,7 +1126,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
             },
         ],
         example_html: r#"<div class="moss-gallery" data-width="page">
-  <figure class="moss-gallery-item">...</figure>
+  <div class="moss-gallery-item">...</div>
 </div>"#,
         example_markdown: ":::gallery\nphoto.jpg\n:::\n",
         status: Status::Confirmed,
@@ -1138,7 +1138,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         kind: "instance",
         parent: "moss-gallery",
         data_attrs: &[],
-        example_html: r#"<figure class="moss-gallery-item"><img src="..." /></figure>"#,
+        example_html: r#"<div class="moss-gallery-item"><img src="..." /></div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
@@ -1550,17 +1550,6 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Emerging,
         since: "0",
         description: "Body content slot inside `.moss-collection-cover`.",
-    },
-    ComponentEntry {
-        class: "moss-collection-hero",
-        kind: "standalone",
-        parent: "",
-        data_attrs: &[],
-        example_html: r#"<div class="moss-collection-hero"><img src="cover.jpg" alt="" /></div>"#,
-        example_markdown: "",
-        status: Status::Emerging,
-        since: "0",
-        description: "Full-width stacked hero banner on a `layout: article` folder-index page with a cover (moss#912) — alternative to `.moss-collection-cover-row` for long-form article bodies.",
     },
     // -------------------------------------------------------------------
     // Form primitives (input, label, field, link).

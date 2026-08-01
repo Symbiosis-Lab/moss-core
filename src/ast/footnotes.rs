@@ -370,7 +370,7 @@ pub(super) fn is_hoisted_in(
 /// marker (`[^1]: see [^2]`), so every body must render before ANY back-link
 /// list is written — otherwise a marker emitted late would have no matching
 /// back-link and the `fnref` ids would dangle.
-pub(super) fn render_section<H: RenderHooks + ?Sized>(
+pub fn render_section<H: RenderHooks + ?Sized>(
     hooks: &H,
     out: &mut String,
     blocks: &[Block],

@@ -972,6 +972,168 @@ fn extracts_grid_with_compound_link_cell_typed_as_link_card() {
     }
 }
 
+#[test]
+fn compound_link_image_cell_with_caption_paragraphs_becomes_card_plus_siblings() {
+    // Real-world shape from frontline's "翻譯 · 得獎作品" grid: an
+    // image wrapped in a link, followed (after a blank line) by caption
+    // paragraphs. Before this fix, `detect_compound_link` required the
+    // cell to literally END in `)`, so this cell fell through to the
+    // plain CommonMark parser — which cannot represent a wikilink image
+    // nested inside a standard link and produced corrupted output (a
+    // literal `[` leaking as text, `src` set to the link's own href).
+    let md = ":::grid 2\n\
+              [![[poster.png]]](/awards/one/)\n\n\
+              **A Title**\n\n\
+              Some caption text.\n\
+              :::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => {
+            assert_eq!(grid.cells.len(), 1);
+            let cell = &grid.cells[0];
+            match &cell[0] {
+                Block::LinkCard { url, children } => {
+                    match url {
+                        Url::Unresolved(u) => assert_eq!(u, "/awards/one/"),
+                        _ => panic!("expected Unresolved /awards/one/"),
+                    }
+                    assert!(!children.is_empty(), "image-link card should have children");
+                }
+                other => panic!("expected LinkCard as first cell block, got {other:?}"),
+            }
+            // The caption paragraphs are appended as siblings AFTER the
+            // card, in source order — not lost, not folded into
+            // `children`, not reordered.
+            assert_eq!(cell.len(), 3, "expected card + 2 caption paragraphs, got {cell:?}");
+            assert!(
+                matches!(&cell[1], Block::Paragraph(spans) if format!("{spans:?}").contains("A Title")),
+                "expected the bold title as the first caption paragraph, got {:?}", cell[1]
+            );
+            assert!(
+                matches!(&cell[2], Block::Paragraph(spans) if format!("{spans:?}").contains("Some caption text")),
+                "expected the second caption paragraph after it, got {:?}", cell[2]
+            );
+        }
+        other => panic!("expected Grid, got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_link_wikilink_image_cell_with_linked_caption_still_becomes_card_plus_siblings() {
+    // A caption that itself contains a link (e.g. a translator credit)
+    // must NOT fall back to the plain parser — that's exactly the shape
+    // that corrupts (see the module doc comment on `detect_compound_link`
+    // and moss#928-adjacent): pulldown-cmark cannot represent a wikilink
+    // image nested inside a link no matter what follows it.
+    let md = ":::grid 1\n\
+              [![[poster.png]]](/awards/one/)\n\n\
+              Translated by [Yo-Ling Chen](/people/yo-ling-chen/).\n\
+              :::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => {
+            let cell = &grid.cells[0];
+            assert!(
+                matches!(&cell[0], Block::LinkCard { .. }),
+                "expected LinkCard as first cell block even with a linked caption, got {cell:?}"
+            );
+            assert_eq!(cell.len(), 2, "expected card + one caption paragraph, got {cell:?}");
+        }
+        other => panic!("expected Grid, got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_link_text_cell_followed_by_prose_stays_inline() {
+    // `[Link](url) more text on the same line` is ordinary CommonMark —
+    // a paragraph containing an inline link. It must NOT be hijacked
+    // into a LinkCard, since that would change how a common, benign
+    // grid-cell pattern renders.
+    let md = ":::grid 1\n[Link](/url) and some more text.\n:::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => {
+            assert_eq!(grid.cells.len(), 1);
+            for block in &grid.cells[0] {
+                assert!(
+                    !matches!(block, Block::LinkCard { .. }),
+                    "same-paragraph continuation must not become a LinkCard, got {block:?}"
+                );
+            }
+        }
+        other => panic!("expected Grid, got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_link_wikilink_image_cell_followed_by_prose_on_same_line_stays_inline() {
+    // Load-bearing for the blank-line gate specifically (not just the
+    // image-vs-text gate): an image-led inner with trailing content on
+    // the SAME line, no blank line, must still be rejected.
+    let md = ":::grid 1\n[![[poster.png]]](/url) trailing text\n:::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => {
+            for block in &grid.cells[0] {
+                assert!(
+                    !matches!(block, Block::LinkCard { .. }),
+                    "same-line trailing content must not become a LinkCard, got {block:?}"
+                );
+            }
+        }
+        other => panic!("expected Grid, got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_link_text_cell_with_trailing_caption_stays_uncarded() {
+    // A blank-line-separated caption after a plain TEXT link (not an
+    // image link) should not be swept into the new caption behavior —
+    // that special case is scoped to image-link cells only.
+    let md = ":::grid 1\n[Text link](/url)\n\nA following paragraph.\n:::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => {
+            assert_eq!(grid.cells.len(), 1);
+            for block in &grid.cells[0] {
+                assert!(
+                    !matches!(block, Block::LinkCard { .. }),
+                    "text-only link with trailing caption must not become a LinkCard, got {block:?}"
+                );
+            }
+        }
+        other => panic!("expected Grid, got {other:?}"),
+    }
+}
+
+#[test]
+fn compound_link_markdown_image_cell_with_caption_stays_uncarded() {
+    // moss#928-adjacent review finding: an ORDINARY markdown image link
+    // (not a wikilink embed) followed by a caption must NOT become a
+    // LinkCard — pulldown-cmark already parses `![alt](src)` fine on its
+    // own, so this cell reaches the plain block parser as
+    // `Paragraph([Link([Image])])` + `Paragraph([caption])`, which is
+    // exactly the shape `grid_cells.rs`'s classifier needs to recognize
+    // an external link preview. Widening the gate to any `!` would
+    // silently swallow this into a LinkCard and drop the preview chrome.
+    let md = ":::grid 1\n\
+              [![Poster](poster.png)](https://example.com/show)\n\n\
+              A short prose caption.\n\
+              :::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => {
+            for block in &grid.cells[0] {
+                assert!(
+                    !matches!(block, Block::LinkCard { .. }),
+                    "ordinary markdown image link + caption must not become a LinkCard, got {block:?}"
+                );
+            }
+        }
+        other => panic!("expected Grid, got {other:?}"),
+    }
+}
+
 // Hero left LEGACY_PASSTHROUGH in Step 2 — it's now a typed variant.
 // The replacement test (`extracts_hero_block_with_no_image`) lives in
 // the Hero section above.
