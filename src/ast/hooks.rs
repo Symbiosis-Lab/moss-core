@@ -791,6 +791,18 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
         !self.suppress_heading_anchors
     }
 
+    fn begin_grid_cells(&self, columns: u32, data_width: Option<&str>) {
+        self.grid_cell_sizes
+            .borrow_mut()
+            .push(crate::contract::sizes::sizes_for_grid_cell(
+                columns, data_width,
+            ));
+    }
+
+    fn end_grid_cells(&self) {
+        self.grid_cell_sizes.borrow_mut().pop();
+    }
+
     /// Phase 4 PR1 (2026-05-27): when the impl carries an `AssetSnapshot`
     /// (production path via [`DefaultHooks::with_snapshot`]), route the
     /// inline `Inline::Image` emission through
@@ -813,29 +825,15 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
     /// `MarkdownInline` here; let PR3's `Block::Figure` own the figure
     /// wrap for the legitimate image-only-paragraph case.
     ///
-    /// Without a snapshot, fall back to the trait's default bare-`<img>`
-    /// emission (test / fragment-render paths). The fallback is the only
-    /// documented bare-`<img>` exit from the renderer after Phase 4 —
-    /// production consumers (`PipelineHooks`) always provide a populated
-    /// snapshot.
+    /// Without a snapshot, fall back to [`push_bare_img`] — the same shape
+    /// the trait default emits (test / fragment-render paths). Production
+    /// consumers (`PipelineHooks`) always provide a populated snapshot.
     ///
     /// `title` is the CommonMark image title — emitted as a `title=""`
     /// HTML attribute on the rendered `<img>` (or `<picture>`'s inner
     /// `<img>`). Per cross-SSG research (2026-05-27), every AST-bearing
     /// SSG carries title through to the renderer; dropping = Gatsby's
     /// mistake.
-    fn begin_grid_cells(&self, columns: u32, data_width: Option<&str>) {
-        self.grid_cell_sizes
-            .borrow_mut()
-            .push(crate::contract::sizes::sizes_for_grid_cell(
-                columns, data_width,
-            ));
-    }
-
-    fn end_grid_cells(&self) {
-        self.grid_cell_sizes.borrow_mut().pop();
-    }
-
     /// Snapshot-aware figure-inner image. `img_style` (fit/position from a
     /// parameterized wikilink embed) flows through
     /// `ImageRenderOptions.extra_attrs` onto the inner `<img>`; the
@@ -902,11 +900,16 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
 // Internal escape helpers used by both DefaultHooks and the renderer.
 // ---------------------------------------------------------------------------
 
-/// The bare `<img>` shape — the single formatting point for every
-/// snapshot-less image exit from the renderer (the [`RenderHooks`] trait
-/// default and [`DefaultHooks`]'s no-snapshot fallback), so the two can never
-/// drift. Snapshot-aware impls emit a `<picture>` ladder instead and do not
-/// call this.
+/// The bare `<img>` shape — the single formatting point for the two
+/// snapshot-less [`RenderHooks`] image exits (the trait default and
+/// [`DefaultHooks`]'s no-snapshot fallback), so those two can never drift.
+///
+/// It is NOT every bare `<img>` in the tree: `ast::render`'s two
+/// `Url::Unresolved` arms hand-roll their own, deliberately — they are
+/// `debug_assert!`-guarded corruption paths that fire only when
+/// `visit_urls_mut` has failed to run, and they have no resolved URL to hand
+/// this function. Snapshot-aware impls emit a `<picture>` ladder instead and
+/// do not call this either.
 fn push_bare_img(
     out: &mut String,
     src: &ResolvedUrl,
@@ -1761,6 +1764,31 @@ mod tests {
     }
 
     #[test]
+    fn trait_default_render_image_carries_img_style() {
+        // Both in-workspace impls override `render_image`, so the trait's own
+        // default body is reachable only by a downstream crate — nothing here
+        // exercises it. It used to drop `img_style` on the floor, which is
+        // half of what made moss#754 possible, so pin it directly via a
+        // minimal impl rather than leaving the claim untested.
+        use crate::ast::{ResolvedUrl, UrlKind};
+        struct BareHooks;
+        impl RenderHooks for BareHooks {}
+        let mut out = String::new();
+        BareHooks.render_image(
+            &mut out,
+            &ResolvedUrl::new("cat.jpg", UrlKind::Asset),
+            "A cat",
+            None,
+            Some("object-fit:cover"),
+            None,
+        );
+        assert_eq!(
+            out,
+            r#"<img src="cat.jpg" alt="A cat" style="object-fit:cover" />"#
+        );
+    }
+
+    #[test]
     fn hero_overlay_figure_keeps_embed_img_style() {
         // moss#754: `![[photo.jpg|cover left]]` inside a :::hero overlay lost
         // its `object-fit`/`object-position` while the identical embed rendered
@@ -1799,12 +1827,17 @@ mod tests {
     }
 
     #[test]
-    fn hero_overlay_grid_scopes_image_sizes_like_a_bare_grid() {
-        // Companion invariant to `hero_overlay_figure_keeps_embed_img_style`:
-        // a hero overlay must not change how anything inside it renders except
-        // heading anchors. Grid-cell `sizes=` scoping (begin_grid_cells /
-        // end_grid_cells) is the hook a partially-delegating wrapper would
-        // drop next, so pin the parity directly.
+    fn hero_overlay_inherits_snapshot_and_grid_cell_sizes_scope() {
+        // A hero overlay must not change how anything inside it renders
+        // except heading anchors. Two things have to hold, and a bare
+        // hero-vs-body parity assertion catches neither on its own:
+        //
+        //  1. the caller's AssetSnapshot reaches the overlay at all (without
+        //     it there is no srcset ladder and so no `sizes=`);
+        //  2. `begin_grid_cells`/`end_grid_cells` still scope `sizes=` to the
+        //     CELL. A parity-only assertion misses this — gut both hooks and
+        //     hero and body degrade to the same content-column default, so
+        //     they stay equal while both are wrong. Hence the literal.
         use crate::ast::shortcode::{GridShortcode, HeroShortcode, Shortcode};
         use crate::ast::{Block, Inline, ResolvedUrl, Url, UrlKind};
         let src = "photos/cat.jpg";
@@ -1845,15 +1878,16 @@ mod tests {
             None,
         );
 
-        let sizes_of = |html: &str| -> String {
-            let i = html.find("sizes=\"").expect("srcset ladder declares sizes=");
-            let rest = &html[i + 7..];
-            rest[..rest.find('"').unwrap()].to_string()
-        };
-        assert_eq!(
-            sizes_of(&in_hero),
-            sizes_of(&bare),
-            "grid-cell sizes= scope must survive a hero overlay; hero: {in_hero}"
+        // Three columns in the content column, so each cell gets a third of
+        // that band — NOT the whole column.
+        let cell_sizes = "(min-width: 48rem) calc(min(47.25rem, 100vw) / 3), 100vw";
+        assert!(
+            in_hero.contains(&format!(r#"sizes="{cell_sizes}""#)),
+            "grid cell inside a hero overlay must scope sizes= to the cell; got: {in_hero}"
+        );
+        assert!(
+            bare.contains(&format!(r#"sizes="{cell_sizes}""#)),
+            "same grid outside a hero must scope sizes= identically; got: {bare}"
         );
     }
 
