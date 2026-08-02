@@ -1835,7 +1835,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Emerging,
         since: "0",
-        description: "Runtime marker the preview bridge adds to `<html>` when the shell is in mobile device-preview mode; drops the titlebar-clearance padding (the phone frame sits below the titlebar).",
+        description: "Runtime marker the preview bridge adds to `<html>` when the shell is in mobile device-preview mode. Since ADR-039 the shell owns chrome clearance by insetting the preview iframe, so no CSS keys off this class and it currently has no effect; it is retained as a revert path and may be removed.",
     },
     ComponentEntry {
         class: "main-nav",
