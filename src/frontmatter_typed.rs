@@ -599,31 +599,78 @@ pub fn apply_sidebar_alias(fm: &mut FrontMatter) -> Vec<String> {
     warnings
 }
 
-/// Detects if content uses simplified frontmatter syntax.
-/// Simplified frontmatter:
-/// - Does NOT start with `---`
-/// - Has lines before a standalone `---` delimiter
-/// - Uses format: `key` (boolean) or `key: value`
+/// Whether content opens with simplified frontmatter (no leading `---`).
 pub fn is_simplified_frontmatter(content: &str) -> bool {
+    simplified_frontmatter_delimiter(content).is_some()
+}
+
+/// Byte offset of the `---` line that closes simplified frontmatter, or `None`
+/// when the file has none. `content[..offset]` is then the frontmatter and
+/// `content[offset..]` begins with the `---`.
+///
+/// Single source of truth for that judgement — yes/no callers, field-parsing
+/// callers and the caller that rewrites the file (uid stamping) share this one
+/// scan, so they cannot disagree about where, or whether, frontmatter ends.
+///
+/// **Frontmatter is a prefix**: a run of `key` / `key: value` lines starting at
+/// byte 0 and closed by a standalone `---`. The first non-field line ends the
+/// search, so a later `---` is a thematic break, a `:::grid` cell separator or
+/// a line of a quoted YAML example — never a delimiter. Asking the weaker
+/// question ("is there a `---` anywhere?") is what made this dangerous: uid
+/// stamping writes its answer back to the author's file, so a false positive
+/// splices `uid:` into the middle of their prose.
+pub fn simplified_frontmatter_delimiter(content: &str) -> Option<usize> {
     // If starts with ---, it's traditional YAML frontmatter
     if content.trim_start().starts_with("---") {
-        return false;
+        return None;
     }
-    // Check if there's a standalone --- line (not at the start)
-    // but ignore --- inside ::: directive blocks (e.g., :::grid uses --- as cell separator)
-    let mut in_directive = false;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with(":::") && trimmed.len() > 3 {
-            in_directive = true;
-        } else if trimmed == ":::" && in_directive {
-            in_directive = false;
-        } else if trimmed == "---" && !in_directive {
-            return true;
+    let mut offset = 0;
+    // `split_inclusive` keeps the terminator, so offsets stay exact under both
+    // `\n` and `\r\n`; `lines()` would silently drop the `\r` from the count.
+    for raw in content.split_inclusive('\n') {
+        let line_start = offset;
+        offset += raw.len();
+        let trimmed = raw.trim();
+        if trimmed == "---" {
+            return Some(line_start);
+        }
+        if !is_frontmatter_field_line(trimmed) {
+            return None;
         }
     }
-    false
+    None
 }
+
+/// One line of simplified frontmatter: blank, a known bare flag, or `key: value`.
+/// Prose, headings, list items, HTML and fence markers all fail it — which is
+/// the point: they mark where the body starts.
+///
+/// The halves are deliberately asymmetric. An unknown **key** is tolerated;
+/// the parser ignores keys it doesn't know and sites carry custom ones. An
+/// unknown **bare word** is not: `Introduction\n---` is CommonMark for an
+/// `<h2>`, ordinary in an Obsidian vault, and accepting it would let uid
+/// stamping rewrite that heading on disk. Strictness costs nothing here — a
+/// bare word outside [`SIMPLIFIED_BARE_FLAGS`] never meant anything anyway.
+fn is_frontmatter_field_line(trimmed: &str) -> bool {
+    match trimmed.split_once(':') {
+        None => trimmed.is_empty() || SIMPLIFIED_BARE_FLAGS.contains(&trimmed),
+        // Only the key is judged; the value is unconstrained. Lowercase initial
+        // because every `BUILTIN_FIELDS` entry has one, and it is what tells
+        // `url: x` apart from a sentence like `Note: x`.
+        Some((key, _)) => {
+            let key = key.trim_end();
+            key.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        }
+    }
+}
+
+/// Keys that may be written bare, as `nav` rather than `nav: true`. Must stay in
+/// step with the bare-flag arm of [`parse_simplified_frontmatter`];
+/// `every_bare_flag_is_recognised_by_the_parser` fails if it drifts.
+pub(crate) const SIMPLIFIED_BARE_FLAGS: [&str; 8] = [
+    "nav", "home", "draft", "listed", "breadcrumb", "footer", "comments", "children",
+];
 
 /// Parse simplified frontmatter format into FrontMatter struct.
 /// Format:
@@ -632,23 +679,20 @@ pub fn is_simplified_frontmatter(content: &str) -> bool {
 /// - Comma lists: `key: a, b, c`
 pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
     let mut frontmatter = FrontMatter::default();
-    let mut body_start = 0;
-    let in_frontmatter = true;
+    // WHERE the frontmatter ends is `simplified_frontmatter_delimiter`'s call —
+    // the same one the caller's `is_simplified_frontmatter` gate already made.
+    // Re-deriving it here (scan for the first `---`) asked a different question,
+    // and the two drifted. Cutting the body at the newline after that line is
+    // also exact under `\r\n`, where summing `lines()` lengths lost a byte each.
+    let Some(delimiter) = simplified_frontmatter_delimiter(content) else {
+        return (frontmatter, content.to_string());
+    };
+    let (fields, rest) = content.split_at(delimiter);
+    let body = rest.split_once('\n').map_or("", |(_, after)| after);
 
-    for (i, line) in content.lines().enumerate() {
+    for line in fields.lines() {
         let trimmed = line.trim();
-
-        // End of frontmatter
-        if trimmed == "---" {
-            // Calculate byte offset for the body
-            body_start = content.lines()
-                .take(i + 1)
-                .map(|l| l.len() + 1) // +1 for newline
-                .sum();
-            break;
-        }
-
-        if !in_frontmatter || trimmed.is_empty() {
+        if trimmed.is_empty() {
             continue;
         }
 
@@ -778,14 +822,7 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
         }
     }
 
-    #[allow(clippy::string_slice)] // body_start is a byte offset computed by summing line lengths + newlines (ASCII-safe)
-    let body = if body_start < content.len() {
-        content[body_start..].to_string()
-    } else {
-        String::new()
-    };
-
-    (frontmatter, body)
+    (frontmatter, body.to_string())
 }
 
 /// Compute the output URL path for a source file.
@@ -1344,5 +1381,91 @@ mod url_path_tests {
             compute_url_path("blog/index.md", true, None, "index"),
             "blog/index.html"
         );
+    }
+
+    #[test]
+    fn simplified_frontmatter_ignores_dashes_inside_a_code_fence() {
+        // Docs pages show YAML frontmatter examples inside fenced code blocks.
+        // Those `---` lines belong to the example, not to the page.
+        let content = "Intro.\n\n```yaml\n---\ntitle: Example\n---\n```\n\nOutro.";
+        assert!(!is_simplified_frontmatter(content));
+
+        let tilde = "Intro.\n\n~~~yaml\n---\ntitle: Example\n---\n~~~\n\nOutro.";
+        assert!(!is_simplified_frontmatter(tilde));
+    }
+
+    #[test]
+    fn simplified_frontmatter_ignores_dashes_inside_a_directive_block() {
+        let content = "Intro.\n\n:::grid 3\n[A](/a/)\n\n---\n\n[B](/b/)\n:::\n";
+        assert!(!is_simplified_frontmatter(content));
+    }
+
+    #[test]
+    fn simplified_frontmatter_must_be_the_files_own_first_lines() {
+        // Frontmatter is a prefix. Once a line of body has gone by — a
+        // directive, a fence, anything — a later `nav\n---` is prose that
+        // happens to sit above a thematic break, not a late frontmatter block.
+        assert!(!is_simplified_frontmatter(":::note\nhi\n:::\nnav\n---\n\n# Body"));
+        assert!(!is_simplified_frontmatter("```\ncode\n```\nnav\n---\n\n# Body"));
+        // The prefix itself still works, blank lines and all.
+        assert!(is_simplified_frontmatter("nav\ntitle: Hi\n\n---\n\n# Body"));
+    }
+
+    #[test]
+    fn simplified_frontmatter_ignores_a_setext_heading() {
+        // `Introduction\n---` is CommonMark for `<h2>Introduction</h2>`, and
+        // Obsidian vaults are full of them. Reading it as a bare flag closed by
+        // a delimiter would let uid stamping rewrite the heading on disk.
+        assert_eq!(simplified_frontmatter_delimiter("Introduction\n---\n\nText.\n"), None);
+        assert_eq!(simplified_frontmatter_delimiter("Note: this matters\n\n---\n"), None);
+        // A known flag in the same position IS frontmatter.
+        assert_eq!(simplified_frontmatter_delimiter("draft\n---\n\nText.\n"), Some(6));
+    }
+
+    #[test]
+    fn every_bare_flag_is_recognised_by_the_parser() {
+        // The predicate gates on SIMPLIFIED_BARE_FLAGS; the parser has its own
+        // match arm. If one grows a flag the other lacks, that flag either stops
+        // being detected or stops being parsed — so pin them to each other.
+        for flag in SIMPLIFIED_BARE_FLAGS {
+            let content = format!("{flag}\n---\nbody\n");
+            assert!(
+                is_simplified_frontmatter(&content),
+                "`{flag}` is listed as a bare flag but is not detected"
+            );
+            let (fm, _) = parse_simplified_frontmatter(&content);
+            assert!(
+                format!("{fm:?}").contains("Some(true)"),
+                "`{flag}` is detected but the parser sets no field from it"
+            );
+        }
+    }
+
+    #[test]
+    fn simplified_frontmatter_ignores_a_thematic_break_after_a_closed_fence() {
+        // The shape that made this urgent: uid stamping writes its answer back
+        // to disk, and nine of moss's own docs pages look exactly like this.
+        let release_notes = "# Release notes\n\n```sh\nmoss build\n```\n\nOlder:\n\n---\n\n## 0.1\n";
+        assert_eq!(simplified_frontmatter_delimiter(release_notes), None);
+    }
+
+    #[test]
+    fn simplified_frontmatter_body_split_survives_crlf() {
+        // `lines()` drops the `\r`, so summing its lengths lost a byte per line
+        // and the body came back starting mid-delimiter.
+        let (fm, body) = parse_simplified_frontmatter("nav\r\ntitle: Hi\r\n---\r\n\r\n# Body\r\n");
+        assert_eq!(fm.title.as_deref(), Some("Hi"));
+        assert_eq!(body, "\r\n# Body\r\n");
+    }
+
+    #[test]
+    fn parse_and_detect_agree_on_where_the_body_starts() {
+        // The two used to derive the split point separately. Same scan now, so
+        // the body the parser hands back always begins after the same `---`.
+        let content = "title: T\nnav\n---\nBody line\n";
+        let delimiter = simplified_frontmatter_delimiter(content).expect("frontmatter");
+        let (_, body) = parse_simplified_frontmatter(content);
+        assert_eq!(content.len() - body.len(), delimiter + "---\n".len());
+        assert_eq!(body, "Body line\n");
     }
 }
