@@ -57,7 +57,7 @@ pub use dispatch_wikilink_embeds::{dispatch_wikilink_embeds, WikilinkDispatchRes
 pub use document::{BlockMeta, Document};
 pub use extract_hero::{extract_hero, HeroExtraction};
 pub use grid_parts::{render_grid_parts, GridCellParts, GridParts};
-pub use hooks::{DefaultHooks, HeroOverlayHooks, RenderHooks};
+pub use hooks::{DefaultHooks, RenderHooks};
 pub use node::{Block, CalloutKind, Fold, Inline};
 pub use parser::{parse, parse_with_config, parser_options, ParseConfig};
 pub use plain_text::{inlines_to_plain_text, render_plain_text};

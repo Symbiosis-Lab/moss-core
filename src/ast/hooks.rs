@@ -109,33 +109,21 @@ pub trait RenderHooks {
     }
 
     /// Emit `<img src="..." alt="...">` for an image.
-    fn render_image(&self, out: &mut String, src: &ResolvedUrl, alt: &str, title: Option<&str>) {
-        out.push_str(r#"<img src=""#);
-        out.push_str(&escape_attr(&src.href));
-        out.push_str(r#"" alt=""#);
-        out.push_str(&escape_attr(alt));
-        out.push('"');
-        if let Some(t) = title {
-            out.push_str(r#" title=""#);
-            out.push_str(&escape_attr(t));
-            out.push('"');
-        }
-        out.push_str(" />");
-    }
-
-    /// Emit the inner `<img>` of a `Block::Figure`, optionally carrying an
-    /// inline `style=` fragment on the image element (fit/position from a
-    /// parameterized wikilink embed, e.g. `object-fit:cover`) and the
-    /// figure's `data-width` token (`wide|page|screen|body`, or a percent),
-    /// so snapshot-aware impls can declare an honest `sizes=` for the
-    /// escape band the figure renders in (ADR-021 Corollary 2).
     ///
-    /// Default impl ignores `img_style`/`width` and delegates to
-    /// [`render_image`], so only snapshot-aware impls that can thread them
-    /// through the synthesizer honor them. `img_style: None` MUST
-    /// produce byte-identical output to a plain `render_image` call — the
-    /// CommonMark `![](url)` figure path always passes `None`.
-    fn render_image_styled(
+    /// `img_style` is an inline `style=` fragment for the image element
+    /// (fit/position from a parameterized wikilink embed, e.g.
+    /// `object-fit:cover`); `width` is the enclosing figure's `data-width`
+    /// token (`wide|page|screen|body`, or a percent) so snapshot-aware impls
+    /// can declare an honest `sizes=` for the escape band the figure renders
+    /// in (ADR-021 Corollary 2). Both are `None` on the inline-image and
+    /// CommonMark `![](url)` figure paths, which MUST stay byte-identical to
+    /// what this trait emitted before those params existed.
+    ///
+    /// This is deliberately ONE method rather than a styled/unstyled pair:
+    /// moss#754 was a wrapper impl forwarding only the styleless half,
+    /// silently dropping embed styles inside `:::hero` overlays. With a
+    /// single entry point a delegating impl cannot forward half the concept.
+    fn render_image(
         &self,
         out: &mut String,
         src: &ResolvedUrl,
@@ -144,8 +132,10 @@ pub trait RenderHooks {
         img_style: Option<&str>,
         width: Option<&str>,
     ) {
-        let _ = (img_style, width);
-        self.render_image(out, src, alt, title);
+        // `width` only informs `sizes=` on a srcset ladder, which the bare
+        // fallback shape has no way to emit.
+        let _ = width;
+        push_bare_img(out, src, alt, title, img_style);
     }
 
     /// Scope marker: the Grid arm of [`render_shortcode`]'s default impl
@@ -537,7 +527,7 @@ pub trait RenderHooks {
                     // production (pulldown-cmark's `push_html` emits no
                     // tag-adjacent newlines).
                     //
-                    // HeroOverlayHooks wraps a DefaultHooks to suppress
+                    // `DefaultHooks::hero_overlay` suppresses
                     // moss-heading-anchor on overlay headings. We rebuild
                     // DefaultHooks from gallery_assets() rather than coercing
                     // `self` to `&dyn RenderHooks` — the coercion requires
@@ -628,6 +618,21 @@ pub trait RenderHooks {
         true
     }
 
+    /// Whether headings carry the `moss-heading-anchor` permalink.
+    ///
+    /// False for hero overlays: hero headings are display titles, not
+    /// in-page navigation landmarks, so the `#` link is visual noise. The
+    /// `id` attribute is kept regardless, so fragment links still resolve.
+    ///
+    /// A policy hook rather than a `render_heading` override (the shape
+    /// [`emit_footnote_anchors`](RenderHooks::emit_footnote_anchors) already
+    /// established) so there stays exactly ONE heading emitter — moss#754
+    /// was a second, partially-delegating hooks impl drifting from the
+    /// first.
+    fn emit_heading_anchors(&self) -> bool {
+        true
+    }
+
     /// The localized `aria-label` for the per-heading permalink anchor
     /// (`<a class="moss-heading-anchor" aria-label="…">`).
     ///
@@ -685,7 +690,7 @@ pub trait RenderHooks {
         // article-title H1 (`<h1 class="moss-article-title">`) is emitted
         // separately in src-tauri html_post.rs and never reaches this hook,
         // so it correctly gets no anchor.
-        if let Some(id) = id {
+        if let Some(id) = id.filter(|_| self.emit_heading_anchors()) {
             out.push_str(r##"<a class="moss-heading-anchor" href="#"##);
             out.push_str(&escape_attr(id));
             out.push_str(r##"" aria-label=""##);
@@ -726,6 +731,10 @@ pub struct DefaultHooks<'a> {
     /// `&self` throughout; nesting (a grid inside a grid cell) is why this
     /// is a stack and not an `Option`.
     grid_cell_sizes: std::cell::RefCell<Vec<String>>,
+    /// Hero-overlay mode: suppress the `moss-heading-anchor` permalink.
+    /// Stored negated so `#[derive(Default)]` still means "anchors on".
+    /// Set by [`DefaultHooks::hero_overlay`].
+    suppress_heading_anchors: bool,
 }
 
 impl<'a> DefaultHooks<'a> {
@@ -735,10 +744,7 @@ impl<'a> DefaultHooks<'a> {
     /// this for tests, fragment-render paths, and downstream consumers
     /// without a primed `AssetSnapshot`.
     pub fn new() -> Self {
-        Self {
-            assets: None,
-            grid_cell_sizes: std::cell::RefCell::new(Vec::new()),
-        }
+        Self::default()
     }
 
     /// Construct a `DefaultHooks` carrying an [`AssetSnapshot`] for the
@@ -750,7 +756,28 @@ impl<'a> DefaultHooks<'a> {
     pub fn with_snapshot(assets: &'a crate::asset_snapshot::AssetSnapshot) -> Self {
         Self {
             assets: Some(assets),
-            grid_cell_sizes: std::cell::RefCell::new(Vec::new()),
+            ..Self::default()
+        }
+    }
+
+    /// Hooks for rendering the blocks of a `:::hero` overlay: identical to
+    /// the normal hooks except headings carry no permalink anchor (hero
+    /// headings are display titles, not navigation landmarks).
+    ///
+    /// `assets` is the caller's snapshot, if any — the same `None`/`Some`
+    /// split as [`new`](Self::new) / [`with_snapshot`](Self::with_snapshot).
+    ///
+    /// moss#754: this replaced a `HeroOverlayHooks` wrapper that re-implemented
+    /// `RenderHooks` by forwarding to an inner impl. Forwarding was manual, so
+    /// the wrapper silently dropped every hook nobody remembered to list —
+    /// which is how image embeds inside hero overlays lost their
+    /// `object-fit`/`object-position`. A construction mode on the one impl has
+    /// no forwarding surface to get wrong.
+    pub fn hero_overlay(assets: Option<&'a crate::asset_snapshot::AssetSnapshot>) -> Self {
+        Self {
+            assets,
+            suppress_heading_anchors: true,
+            ..Self::default()
         }
     }
 }
@@ -758,6 +785,10 @@ impl<'a> DefaultHooks<'a> {
 impl<'a> RenderHooks for DefaultHooks<'a> {
     fn gallery_assets(&self) -> Option<&crate::asset_snapshot::AssetSnapshot> {
         self.assets
+    }
+
+    fn emit_heading_anchors(&self) -> bool {
+        !self.suppress_heading_anchors
     }
 
     /// Phase 4 PR1 (2026-05-27): when the impl carries an `AssetSnapshot`
@@ -793,16 +824,6 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
     /// `<img>`). Per cross-SSG research (2026-05-27), every AST-bearing
     /// SSG carries title through to the renderer; dropping = Gatsby's
     /// mistake.
-    fn render_image(
-        &self,
-        out: &mut String,
-        src: &ResolvedUrl,
-        alt: &str,
-        title: Option<&str>,
-    ) {
-        self.render_image_styled(out, src, alt, title, None, None);
-    }
-
     fn begin_grid_cells(&self, columns: u32, data_width: Option<&str>) {
         self.grid_cell_sizes
             .borrow_mut()
@@ -828,7 +849,7 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
     /// knowledge wins): the figure's own `data-width` token → the enclosing
     /// grid cell scope ([`begin_grid_cells`]) → the context default
     /// ([`crate::contract::sizes::SIZES_BODY`] via `MarkdownInline`).
-    fn render_image_styled(
+    fn render_image(
         &self,
         out: &mut String,
         src: &ResolvedUrl,
@@ -840,27 +861,12 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
         let assets = match self.assets {
             Some(a) => a,
             None => {
-                // No snapshot in scope — fall back to the trait's
-                // bare-`<img>` default. This is the test-only path; the
-                // production path always provides a snapshot via
+                // No snapshot in scope — fall back to the same bare-`<img>`
+                // shape the trait default emits. This is the test-only path;
+                // the production path always provides a snapshot via
                 // `PipelineHooks::render_image`. The style fragment, when
-                // present, still rides on the inner `<img>`.
-                out.push_str(r#"<img src=""#);
-                out.push_str(&escape_attr(&src.href));
-                out.push_str(r#"" alt=""#);
-                out.push_str(&escape_attr(alt));
-                out.push('"');
-                if let Some(t) = title {
-                    out.push_str(r#" title=""#);
-                    out.push_str(&escape_attr(t));
-                    out.push('"');
-                }
-                if let Some(style) = img_style {
-                    out.push_str(r#" style=""#);
-                    out.push_str(&escape_attr(style));
-                    out.push('"');
-                }
-                out.push_str(" />");
+                // present, still rides on the `<img>`.
+                push_bare_img(out, src, alt, title, img_style);
                 return;
             }
         };
@@ -896,8 +902,39 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
 // Internal escape helpers used by both DefaultHooks and the renderer.
 // ---------------------------------------------------------------------------
 
-/// Render hero overlay blocks into `out` using `HeroOverlayHooks` so that
-/// headings inside the overlay don't carry a `moss-heading-anchor` permalink.
+/// The bare `<img>` shape — the single formatting point for every
+/// snapshot-less image exit from the renderer (the [`RenderHooks`] trait
+/// default and [`DefaultHooks`]'s no-snapshot fallback), so the two can never
+/// drift. Snapshot-aware impls emit a `<picture>` ladder instead and do not
+/// call this.
+fn push_bare_img(
+    out: &mut String,
+    src: &ResolvedUrl,
+    alt: &str,
+    title: Option<&str>,
+    img_style: Option<&str>,
+) {
+    out.push_str(r#"<img src=""#);
+    out.push_str(&escape_attr(&src.href));
+    out.push_str(r#"" alt=""#);
+    out.push_str(&escape_attr(alt));
+    out.push('"');
+    if let Some(t) = title {
+        out.push_str(r#" title=""#);
+        out.push_str(&escape_attr(t));
+        out.push('"');
+    }
+    if let Some(s) = img_style {
+        out.push_str(r#" style=""#);
+        out.push_str(&escape_attr(s));
+        out.push('"');
+    }
+    out.push_str(" />");
+}
+
+/// Render hero overlay blocks into `out` via [`DefaultHooks::hero_overlay`]
+/// so that headings inside the overlay don't carry a `moss-heading-anchor`
+/// permalink.
 ///
 /// Accepts an optional `AssetSnapshot` reference (from the caller's
 /// `gallery_assets()`) to route inline images through the synth path when
@@ -905,29 +942,17 @@ impl<'a> RenderHooks for DefaultHooks<'a> {
 /// coercing the caller's `self` to `&dyn RenderHooks` — that coercion
 /// requires `Self: Sized`, which the trait default method cannot guarantee.
 ///
-/// **Limitation**: only `gallery_assets()` is forwarded from the caller.
-/// Any other hook overrides on the caller (`render_image`, `render_link`,
-/// etc.) are NOT propagated. The rebuilt `DefaultHooks` uses the trait
-/// default for everything except image synthesis. This is intentional for
-/// the `DefaultHooks` test-harness path; production callers (`PipelineHooks`)
-/// override `render_shortcode` entirely and never reach this function.
+/// **Limitation**: only `gallery_assets()` is carried over from the caller.
+/// Any other hook overrides on the caller (`render_link`, `render_shortcode`,
+/// etc.) are NOT propagated. This is intentional for the `DefaultHooks`
+/// test-harness path; production callers (`PipelineHooks`) override
+/// `render_shortcode` entirely and never reach this function.
 fn render_hero_overlay_blocks(
     snapshot: Option<&crate::asset_snapshot::AssetSnapshot>,
     blocks: &[super::node::Block],
     out: &mut String,
 ) {
-    match snapshot {
-        Some(snap) => {
-            let inner = DefaultHooks::with_snapshot(snap);
-            let hooks = HeroOverlayHooks::new(&inner);
-            super::render::render_blocks(&hooks, out, blocks);
-        }
-        None => {
-            let inner = DefaultHooks::new();
-            let hooks = HeroOverlayHooks::new(&inner);
-            super::render::render_blocks(&hooks, out, blocks);
-        }
-    }
+    super::render::render_blocks(&DefaultHooks::hero_overlay(snapshot), out, blocks);
 }
 
 /// Collapse `\n` that follows a heading or paragraph closing tag when the
@@ -990,87 +1015,6 @@ fn ends_with_heading_close(s: &str) -> bool {
         && bytes[n - 3] == b'h'
         && matches!(bytes[n - 2], b'1' | b'2' | b'3' | b'4' | b'5' | b'6')
         && bytes[n - 1] == b'>'
-}
-
-/// Render hooks adapter for hero overlay content.
-///
-/// Delegates every method to the wrapped `inner` hooks except
-/// `render_heading`, which suppresses the `moss-heading-anchor` permalink.
-/// Hero headings are display titles, not in-page navigation landmarks —
-/// the `#` link is visual noise. The `id` attribute is kept so fragment
-/// links pointing at the heading still resolve.
-///
-/// Used by the `Shortcode::Hero` arm of [`DefaultHooks::render_shortcode`]
-/// (the moss-core path) and by src-tauri's `render_hero_html_typed`
-/// (the current hoisted path). Both paths must agree: anchor suppression
-/// belongs here rather than in either call site.
-pub struct HeroOverlayHooks<'a> {
-    inner: &'a dyn RenderHooks,
-}
-
-impl<'a> HeroOverlayHooks<'a> {
-    pub fn new(inner: &'a dyn RenderHooks) -> Self {
-        Self { inner }
-    }
-}
-
-impl<'a> RenderHooks for HeroOverlayHooks<'a> {
-    fn render_link(
-        &self,
-        out: &mut String,
-        url: &super::url::ResolvedUrl,
-        is_wikilink: bool,
-        content: &str,
-    ) {
-        self.inner.render_link(out, url, is_wikilink, content);
-    }
-
-    fn render_image(
-        &self,
-        out: &mut String,
-        src: &super::url::ResolvedUrl,
-        alt: &str,
-        title: Option<&str>,
-    ) {
-        self.inner.render_image(out, src, alt, title);
-    }
-
-    fn gallery_assets(&self) -> Option<&crate::asset_snapshot::AssetSnapshot> {
-        self.inner.gallery_assets()
-    }
-
-    fn render_shortcode(&self, out: &mut String, sc: &Shortcode, source_line: Option<usize>) {
-        self.inner.render_shortcode(out, sc, source_line);
-    }
-
-    fn render_heading(
-        &self,
-        out: &mut String,
-        level: u8,
-        id: Option<&str>,
-        source_line: Option<usize>,
-        content: &str,
-    ) {
-        use std::fmt::Write as _;
-        out.push('<');
-        out.push('h');
-        out.push((b'0' + level) as char);
-        if let Some(id) = id {
-            out.push_str(r#" id=""#);
-            out.push_str(&escape_attr(id));
-            out.push('"');
-        }
-        if let Some(n) = source_line {
-            let _ = write!(out, r#" data-source-line="{}""#, n);
-        }
-        out.push('>');
-        out.push_str(content);
-        // Permalink anchor intentionally omitted — hero headings are
-        // visual titles, not in-page navigation landmarks.
-        out.push_str("</h");
-        out.push((b'0' + level) as char);
-        out.push('>');
-    }
 }
 
 /// True if `s` ends with `</p>` (a paragraph close tag).
@@ -1293,6 +1237,8 @@ mod tests {
             &ResolvedUrl::new("cat.jpg", UrlKind::Asset),
             "A cat",
             None,
+            None,
+            None,
         );
         assert_eq!(out, r#"<img src="cat.jpg" alt="A cat" />"#);
     }
@@ -1306,6 +1252,8 @@ mod tests {
             &ResolvedUrl::new("cat.jpg", UrlKind::Asset),
             "A cat",
             Some("Photo"),
+            None,
+            None,
         );
         assert_eq!(
             out,
@@ -1716,6 +1664,8 @@ mod tests {
             &ResolvedUrl::new(src, UrlKind::Asset),
             "A cat",
             None,
+            None,
+            None,
         );
         assert!(
             !out.contains("<figure"),
@@ -1747,6 +1697,8 @@ mod tests {
             &ResolvedUrl::new(src, UrlKind::Asset),
             "alt-text",
             Some("Photo caption"),
+            None,
+            None,
         );
         // No figure wrap; title attribute on inner <img>
         assert!(
@@ -1774,6 +1726,8 @@ mod tests {
             &ResolvedUrl::new("cat.jpg", UrlKind::Asset),
             "A cat",
             None,
+            None,
+            None,
         );
         assert_eq!(out, r#"<img src="cat.jpg" alt="A cat" />"#);
     }
@@ -1784,7 +1738,7 @@ mod tests {
         // carry moss-heading-anchor when rendered through DefaultHooks
         // (the moss-core test-harness path). The DefaultHooks::render_shortcode
         // Hero arm delegates overlay rendering to render_hero_overlay_blocks
-        // which wraps with HeroOverlayHooks. This test covers that path.
+        // which uses `DefaultHooks::hero_overlay`. This test covers that path.
         use crate::ast::shortcode::{HeroShortcode, Shortcode};
         use crate::ast::{parse, Url, UrlKind, ResolvedUrl};
         let overlay_blocks = parse("# Understanding climate extremes\n\nSubtitle.").blocks;
@@ -1803,6 +1757,103 @@ mod tests {
         assert!(
             out.contains(r#"id="understanding-climate-extremes""#),
             "hero overlay heading must still carry its id; got: {out}"
+        );
+    }
+
+    #[test]
+    fn hero_overlay_figure_keeps_embed_img_style() {
+        // moss#754: `![[photo.jpg|cover left]]` inside a :::hero overlay lost
+        // its `object-fit`/`object-position` while the identical embed rendered
+        // correctly everywhere else. The overlay renders through
+        // a hooks impl that used to be a partially-delegating wrapper: it
+        // forwarded only the styleless image entry point, so the style
+        // silently fell off at the wrapper boundary.
+        use crate::ast::shortcode::{HeroShortcode, Shortcode};
+        use crate::ast::{Block, Inline, ResolvedUrl, Url, UrlKind};
+        let overlay_blocks = vec![Block::Figure {
+            image: Inline::Image {
+                src: Url::Resolved(ResolvedUrl::new("photo.jpg", UrlKind::Asset)),
+                alt: String::new(),
+                title: None,
+                is_wikilink: true,
+                wikilink_pothole: None,
+            },
+            caption: None,
+            width: None,
+            align: None,
+            class_names: Vec::new(),
+            img_style: Some("object-fit:cover;object-position:left".into()),
+        }];
+        let sc = Shortcode::Hero(HeroShortcode {
+            overlay: overlay_blocks,
+            image: Some(Url::Resolved(ResolvedUrl::new("header.png", UrlKind::Asset))),
+            ..Default::default()
+        });
+        let hooks = DefaultHooks::new();
+        let mut out = String::new();
+        hooks.render_shortcode(&mut out, &sc, None);
+        assert!(
+            out.contains("object-fit:cover;object-position:left"),
+            "hero overlay embed must keep its sizing style; got: {out}"
+        );
+    }
+
+    #[test]
+    fn hero_overlay_grid_scopes_image_sizes_like_a_bare_grid() {
+        // Companion invariant to `hero_overlay_figure_keeps_embed_img_style`:
+        // a hero overlay must not change how anything inside it renders except
+        // heading anchors. Grid-cell `sizes=` scoping (begin_grid_cells /
+        // end_grid_cells) is the hook a partially-delegating wrapper would
+        // drop next, so pin the parity directly.
+        use crate::ast::shortcode::{GridShortcode, HeroShortcode, Shortcode};
+        use crate::ast::{Block, Inline, ResolvedUrl, Url, UrlKind};
+        let src = "photos/cat.jpg";
+        let mut snap = AssetSnapshot::new();
+        // Wide enough that `ladder_rungs` yields rungs — a srcset ladder is
+        // what carries `sizes=`.
+        snap.dimensions.insert(PathBuf::from(src), (2400, 1200));
+        snap.variants.insert(
+            PathBuf::from("photos/cat"),
+            VariantKindSet { webp: true, avif: false },
+        );
+        let grid = || {
+            Shortcode::Grid(GridShortcode {
+                columns: 3,
+                cells: vec![vec![Block::Paragraph(vec![Inline::Image {
+                    src: Url::Resolved(ResolvedUrl::new(src, UrlKind::Asset)),
+                    alt: "A cat".into(),
+                    title: None,
+                    is_wikilink: false,
+                    wikilink_pothole: None,
+                }])]],
+                ..Default::default()
+            })
+        };
+
+        let hooks = DefaultHooks::with_snapshot(&snap);
+        let mut bare = String::new();
+        hooks.render_shortcode(&mut bare, &grid(), None);
+
+        let mut in_hero = String::new();
+        hooks.render_shortcode(
+            &mut in_hero,
+            &Shortcode::Hero(HeroShortcode {
+                overlay: vec![Block::Shortcode(grid())],
+                image: Some(Url::Resolved(ResolvedUrl::new("header.png", UrlKind::Asset))),
+                ..Default::default()
+            }),
+            None,
+        );
+
+        let sizes_of = |html: &str| -> String {
+            let i = html.find("sizes=\"").expect("srcset ladder declares sizes=");
+            let rest = &html[i + 7..];
+            rest[..rest.find('"').unwrap()].to_string()
+        };
+        assert_eq!(
+            sizes_of(&in_hero),
+            sizes_of(&bare),
+            "grid-cell sizes= scope must survive a hero overlay; hero: {in_hero}"
         );
     }
 

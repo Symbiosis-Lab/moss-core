@@ -612,7 +612,7 @@ fn render_block<H: RenderHooks + ?Sized>(
                     src, alt, title, ..
                 } => match src {
                     Url::Resolved(r) => {
-                        hooks.render_image_styled(
+                        hooks.render_image(
                             out,
                             r,
                             alt,
@@ -838,7 +838,7 @@ fn render_inline<H: RenderHooks + ?Sized>(
                     return;
                 }
             };
-            hooks.render_image(out, resolved, alt, title.as_deref());
+            hooks.render_image(out, resolved, alt, title.as_deref(), None, None);
         }
         Inline::Emphasis(children) => {
             out.push_str("<em>");
