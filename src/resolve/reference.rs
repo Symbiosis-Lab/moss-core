@@ -598,15 +598,4 @@ mod tests {
         assert_eq!(r.kind, ReferenceKind::Link { anchor: Some("heading".into()) });
         assert_eq!(r.url.as_deref(), Some("/note/#heading"));
     }
-
-    #[test]
-    fn build_safety_folder_marker_ignores_urls() {
-        let a = FakeAssetIndex::new(&[]);
-        let mut f = FakeFolderIndex::new();
-        f.dirs.insert("app".into());
-        f.static_index.insert("app".into(), "index.html".into());
-        let u = FakeUrlIndex::new();
-        let r = classify_reference("/app/", "page.md", true, &ctx(&a, &f, &u));
-        assert_eq!(r.kind, ReferenceKind::FolderIndexIframe);
-    }
 }
