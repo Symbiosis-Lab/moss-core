@@ -132,3 +132,25 @@ fn test_skip_schema_fields_are_on_the_allowlist() {
         }
     }
 }
+
+#[test]
+fn every_file_picker_field_declares_file_kinds() {
+    // Both directions of the SSOT `asset_field_names` reads: a FilePicker
+    // field must declare the extension filter its picker needs, and nothing
+    // else may claim to be a file picker without one.
+    for f in BUILTIN_FIELDS {
+        if matches!(f.widget, Widget::FilePicker) {
+            assert!(
+                f.file_kinds.is_some(),
+                "FilePicker field `{}` declares no file_kinds",
+                f.name
+            );
+        }
+    }
+}
+
+#[test]
+fn asset_field_names_is_exactly_cover_and_logo() {
+    let names: Vec<&str> = asset_field_names().collect();
+    assert_eq!(names, vec!["cover", "logo"]);
+}

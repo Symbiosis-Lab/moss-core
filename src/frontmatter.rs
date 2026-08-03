@@ -305,6 +305,213 @@ pub fn value_as_string(value: &serde_yaml::Value) -> Option<String> {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ── Structural asset paths in frontmatter ────────────────────────────────
+
+/// Byte spans of frontmatter values that name a project file.
+///
+/// The field set is derived from the schema
+/// ([`crate::schema_fields::asset_field_names`]), never listed here.
+///
+/// # Why this does not use `parse`
+///
+/// [`parse`] CRLF-normalizes before computing `frontmatter_range`, so those
+/// offsets index a COPY and are unsafe for rewriting a CRLF source. This
+/// locates the block on its own raw line table instead. It agrees with
+/// `parse` on what a block is (any content starting with `---`, ending at
+/// the next line that trims to `---`), so it adds no false-positive surface
+/// relative to the parser that already reads these files.
+///
+/// # Why this does not use the inert mask
+///
+/// Frontmatter is YAML, not markdown. A 4-space-indented `cover:` under
+/// `cascade:` after a blank line reads as an indented code block to
+/// [`crate::inert_regions`] and would be silently dropped.
+///
+/// Nothing is deserialized and nothing re-serialized: only the value span is
+/// ever replaced, so YAML comments, key order and quoting style survive.
+pub fn frontmatter_asset_spans(source: &str) -> Vec<crate::resolve::md_extract::AssetPathSpan> {
+    use crate::resolve::md_extract::{AssetPathSpan, PathContainer};
+
+    let mut out = Vec::new();
+    let table = crate::resolve::md_extract::line_table(source);
+    let line_at = |k: usize| -> &str {
+        let (base, content, _) = table[k];
+        #[allow(clippy::string_slice)]
+        // Line boundaries from `line_table`, which splits on ASCII '\n'/'\r'.
+        &source[base..base + content]
+    };
+
+    // The block must open on line 0 and close on a later `---` line.
+    if table.is_empty() || line_at(0).trim() != "---" {
+        return out;
+    }
+    let Some(close) = (1..table.len()).find(|&k| line_at(k).trim() == "---") else {
+        return out;
+    };
+
+    let keys: Vec<&str> = crate::schema_fields::asset_field_names().collect();
+    // Indent of the key that opened a `|`/`>` block scalar, if we are inside
+    // one. Every deeper-indented line below it is content, not a mapping —
+    // this is what stops a `description: |` body containing `cover: x.png`
+    // from being rewritten.
+    let mut block_scalar_indent: Option<usize> = None;
+
+    for k in 1..close {
+        let (base, content_len, term_len) = table[k];
+        let line = line_at(k);
+        let indent = line.len() - line.trim_start().len();
+
+        if let Some(bi) = block_scalar_indent {
+            if line.trim().is_empty() || indent > bi {
+                continue;
+            }
+            block_scalar_indent = None;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let Some(colon) = line.find(':') else { continue };
+        #[allow(clippy::string_slice)]
+        // `find` on ASCII ':' → char boundary; `indent` counts leading ASCII
+        // whitespace.
+        let key = line[indent..colon].trim();
+        #[allow(clippy::string_slice)]
+        let after = &line[colon + 1..];
+
+        // `key: |` / `key: >-` / `key: |2` opens a block scalar.
+        let t = after.trim();
+        if t.starts_with('|') || t.starts_with('>') {
+            #[allow(clippy::string_slice)]
+            // '|' and '>' are ASCII.
+            let tail = t[1..].trim_start_matches(['+', '-']);
+            if tail.chars().all(|c| c.is_ascii_digit()) {
+                block_scalar_indent = Some(indent);
+                continue;
+            }
+        }
+
+        if !keys.contains(&key) {
+            continue;
+        }
+
+        // Value start: first non-space after the colon.
+        let vrel = colon + 1 + (after.len() - after.trim_start().len());
+        if vrel >= content_len {
+            continue;
+        }
+        #[allow(clippy::string_slice)]
+        let raw_tail = &line[vrel..];
+        let first = raw_tail.as_bytes()[0];
+        // Flow collections are not asset paths.
+        if first == b'[' || first == b'{' {
+            continue;
+        }
+
+        let (value_len, quote) = match first {
+            b'"' => (scan_quoted(raw_tail, '"'), Some('"')),
+            b'\'' => (scan_quoted(raw_tail, '\''), Some('\'')),
+            _ => (scan_plain(raw_tail), None),
+        };
+        let Some(value_len) = value_len else { continue };
+        #[allow(clippy::string_slice)]
+        // `scan_quoted` / `scan_plain` return char-boundary lengths.
+        let raw = &raw_tail[..value_len];
+        let inner = match quote {
+            Some('"') => unescape_double(raw),
+            Some('\'') => raw
+                .trim_matches('\'')
+                .replace("''", "'"),
+            _ => raw.to_string(),
+        };
+        if inner.trim().is_empty() {
+            continue;
+        }
+        let (path, attrs) = crate::media::split_pipe(&inner);
+        let path = crate::media::strip_wikilink(path).trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+
+        out.push(AssetPathSpan {
+            path,
+            attrs: attrs.to_string(),
+            quote,
+            value: base + vrel..base + vrel + value_len,
+            outer: base..base + content_len + term_len,
+            container: PathContainer::FrontmatterField {
+                key: key.to_string(),
+            },
+        });
+    }
+
+    out
+}
+
+/// Byte length of a quoted YAML scalar starting at `s[0]` (the open quote),
+/// INCLUDING both quotes. `None` when the quote never closes on this line.
+fn scan_quoted(s: &str, q: char) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        if q == '"' && bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == q as u8 {
+            // YAML single quotes escape by doubling.
+            if q == '\'' && bytes.get(i + 1) == Some(&b'\'') {
+                i += 2;
+                continue;
+            }
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Byte length of a plain (unquoted) YAML scalar: to end of line, minus a
+/// trailing ` #` comment, minus trailing whitespace.
+fn scan_plain(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut end = bytes.len();
+    for i in 0..bytes.len() {
+        if bytes[i] == b'#' && i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t') {
+            end = i;
+            break;
+        }
+    }
+    while end > 0 && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t') {
+        end -= 1;
+    }
+    if end == 0 {
+        None
+    } else {
+        Some(end)
+    }
+}
+
+/// Decode a double-quoted YAML scalar's inner text (`\"` and `\\`).
+fn unescape_double(raw: &str) -> String {
+    let inner = raw
+        .strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .unwrap_or(raw);
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(n) = chars.next() {
+                out.push(n);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 #[path = "frontmatter_tests.rs"]
 mod tests;

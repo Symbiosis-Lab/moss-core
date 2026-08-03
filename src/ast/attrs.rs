@@ -97,6 +97,26 @@ pub enum AttrError {
     InvalidKey { token: String },
 }
 
+/// Byte spans of one `key=value` item inside an attribute block.
+///
+/// Produced as a by-product of [`parse_attrs_spanned`] so a caller that
+/// wants to REWRITE one attribute value (rename tracking for
+/// `:::hero {image=…}`) can do a surgical byte replacement instead of
+/// re-serializing the block and losing the author's spacing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KvSpan {
+    /// The item's key.
+    pub key: String,
+    /// RAW value span, quotes INCLUDED, relative to `input`.
+    pub value: std::ops::Range<usize>,
+    /// The whole `key=value` item, relative to `input`.
+    pub item: std::ops::Range<usize>,
+    /// Only ever `None` or `Some('"')` — this grammar has no single-quote
+    /// form (`'` is not in [`is_bareword`], so `image='a b.jpg'` is an
+    /// `EmptyValue` error, not a quoted value).
+    pub quote: Option<char>,
+}
+
 /// Parse an attribute block.
 ///
 /// `input` must include the surrounding braces: `{.foo key=bar}`.
@@ -106,6 +126,28 @@ pub enum AttrError {
 /// of an item — anything not `.`, `#`, or a valid key character — produce
 /// `InvalidKey { token }` so the caller can surface a useful diagnostic.
 pub fn parse_attrs(input: &str) -> Result<AttrBlock, AttrError> {
+    parse_attrs_spanned(input).map(|(block, _)| block)
+}
+
+/// [`parse_attrs`] plus one [`KvSpan`] per `key=value` item.
+///
+/// Same loop, same grammar, same errors — the spans are pushed by the
+/// existing `char_indices()` walk rather than by a second tokenizer, so
+/// both of this parser's quirks are preserved by construction: an empty
+/// `.`/`#` bareword is silently skipped, and the FIRST malformed item
+/// aborts the whole block (discarding everything accumulated so far).
+///
+/// # Parsing past the closing brace
+///
+/// `parse_attrs_spanned` returns `Ok` at the first `}` **at item position**,
+/// and a `}` inside a quoted value is consumed by `read_quoted`. That is what
+/// lets [`crate::ast::shortcode_extract::shortcode_asset_spans`] hand it
+/// `&source[brace_start..]` — the rest of the document — and get spans that
+/// terminate exactly where the gathered-args form would, without duplicating
+/// [`gather_multi_line_attrs`]. **If this grammar ever gains a nested `{`,
+/// that equivalence breaks silently.**
+pub fn parse_attrs_spanned(input: &str) -> Result<(AttrBlock, Vec<KvSpan>), AttrError> {
+    let mut kv_spans: Vec<KvSpan> = Vec::new();
     let mut chars = input.char_indices().peekable();
 
     // Expect leading `{`.
@@ -123,7 +165,7 @@ pub fn parse_attrs(input: &str) -> Result<AttrBlock, AttrError> {
             None => return Err(AttrError::UnclosedBrace),
             Some((_, '}')) => {
                 chars.next();
-                return Ok(block);
+                return Ok((block, kv_spans));
             }
             Some((_, '.')) => {
                 chars.next();
@@ -139,14 +181,28 @@ pub fn parse_attrs(input: &str) -> Result<AttrBlock, AttrError> {
                     block.id = Some(id);
                 }
             }
-            Some((_, c)) if is_key_start(c) => {
+            Some((item_start, c)) if is_key_start(c) => {
                 let key = read_key(&mut chars);
                 skip_ws_inline(&mut chars);
                 match chars.peek().copied() {
                     Some((_, '=')) => {
                         chars.next();
                         skip_ws_inline(&mut chars);
+                        let value_start = chars.peek().map_or(input.len(), |&(i, _)| i);
+                        let quote = match chars.peek() {
+                            Some(&(_, '"')) => Some('"'),
+                            _ => None,
+                        };
                         let value = read_value(&mut chars, &key)?;
+                        // `read_value` stops on the first char it did not
+                        // consume, so the peeked index IS the exclusive end.
+                        let value_end = chars.peek().map_or(input.len(), |&(i, _)| i);
+                        kv_spans.push(KvSpan {
+                            key: key.clone(),
+                            value: value_start..value_end,
+                            item: item_start..value_end,
+                            quote,
+                        });
                         block.set_kv(key, value);
                     }
                     _ => {

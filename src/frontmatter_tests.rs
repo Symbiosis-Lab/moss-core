@@ -434,3 +434,129 @@ fn test_strip_control_chars_str_keeps_tab_lf_cr() {
     let input = "a\tb\nc\rd\u{00}\u{7f}\u{85}e";
     assert_eq!(strip_control_chars_str(input), "a\tb\nc\rde");
 }
+
+// ── Structural asset spans in frontmatter (2026-08-03) ───────────────────
+
+use crate::resolve::md_extract::PathContainer;
+
+fn fm_spans(src: &str) -> Vec<crate::resolve::md_extract::AssetPathSpan> {
+    frontmatter_asset_spans(src)
+}
+
+#[test]
+fn frontmatter_cover_bare() {
+    let src = "---\ntitle: Hi\ncover: 關於/x.png\n---\n\nBody\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "關於/x.png");
+    assert_eq!(s[0].path, "關於/x.png");
+    assert_eq!(s[0].quote, None);
+    assert_eq!(
+        s[0].container,
+        PathContainer::FrontmatterField { key: "cover".into() }
+    );
+    assert_eq!(&src[s[0].outer.clone()], "cover: 關於/x.png\n");
+}
+
+#[test]
+fn frontmatter_cover_double_quoted() {
+    let src = "---\ncover: \"my photo.png\"\n---\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "\"my photo.png\"");
+    assert_eq!(s[0].path, "my photo.png");
+    assert_eq!(s[0].quote, Some('"'));
+}
+
+#[test]
+fn frontmatter_cover_single_quoted() {
+    let src = "---\ncover: 'x.png'\n---\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "'x.png'");
+    assert_eq!(s[0].path, "x.png");
+    assert_eq!(s[0].quote, Some('\''));
+}
+
+#[test]
+fn frontmatter_cover_with_pipe_attrs() {
+    let src = "---\ncover: x.png|cover top\n---\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].path, "x.png");
+    assert_eq!(s[0].attrs, "cover top");
+}
+
+#[test]
+fn frontmatter_cover_with_trailing_comment() {
+    let src = "---\ncover: x.png  # keep this\n---\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(
+        &src[s[0].value.clone()],
+        "x.png",
+        "the span must stop before the ` #` comment"
+    );
+}
+
+#[test]
+fn frontmatter_wikilink_cover_path_matches_generic() {
+    // `cover: '[[DSCF.jpeg]]'` must yield the same path the generic token
+    // scanner yields for the same bytes, or the rename/delete edit ordering
+    // in ref_scan resolves them differently.
+    let src = "---\ncover: '[[DSCF.jpeg]]'\n---\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].path, "DSCF.jpeg");
+    let generic = crate::resolve::md_extract::extract_md_references(src);
+    assert_eq!(generic.len(), 1);
+    assert_eq!(generic[0].text, "DSCF.jpeg");
+}
+
+#[test]
+fn frontmatter_block_scalar_body_is_not_scanned() {
+    let src = "---\ndescription: |\n  cover: not-a-field.png\n  more text\ncover: real.png\n---\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].path, "real.png");
+}
+
+#[test]
+fn nested_cover_after_blank_line_is_found() {
+    // Why frontmatter is scanned on the RAW source: this 4-space-indented
+    // key after a blank line reads as an indented code block to
+    // `inert_regions` and would be silently dropped.
+    let src = "---\ncascade:\n\n    cover: nested.png\n---\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].path, "nested.png");
+}
+
+#[test]
+fn frontmatter_logo_uses_schema_derived_field_set() {
+    let src = "---\nlogo: brand.svg\nunrelated: other.png\n---\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "only schema FilePicker fields: {s:?}");
+    assert_eq!(s[0].path, "brand.svg");
+}
+
+#[test]
+fn frontmatter_flow_collection_is_skipped() {
+    let src = "---\ncover: [a.png, b.png]\n---\n";
+    assert!(fm_spans(src).is_empty());
+}
+
+#[test]
+fn no_frontmatter_delimiters_yields_no_frontmatter_refs() {
+    assert!(fm_spans("cover: x.png\n\nBody\n").is_empty());
+    assert!(fm_spans("---\ncover: x.png\n").is_empty(), "unclosed block");
+}
+
+#[test]
+fn crlf_frontmatter_spans_are_exact() {
+    let src = "---\r\ncover: x.png\r\n---\r\n";
+    let s = fm_spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "x.png");
+    assert_eq!(&src[s[0].outer.clone()], "cover: x.png\r\n");
+}

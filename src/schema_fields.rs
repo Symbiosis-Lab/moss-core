@@ -678,6 +678,23 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
     },
 ];
 
+/// Frontmatter fields whose value is a path to a file in the project.
+///
+/// Derived from the `FilePicker` widget — the same SSOT the chip bar's file
+/// picker reads — so adding a FilePicker field makes it rename-tracked with
+/// no further edit here. Guarded in both directions by
+/// `every_file_picker_field_declares_file_kinds`.
+///
+/// `sidebar` / `children` / `series` are deliberately excluded: they are
+/// `WikilinkPicker` fields holding `[[…]]`, which the generic token scanner
+/// already sees.
+pub fn asset_field_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN_FIELDS
+        .iter()
+        .filter(|f| matches!(f.widget, Widget::FilePicker))
+        .map(|f| f.name)
+}
+
 #[cfg(test)]
 #[path = "schema_fields_tests.rs"]
 mod tests;

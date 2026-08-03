@@ -276,3 +276,115 @@ fn strip_link_title(raw: &str) -> String {
 #[cfg(test)]
 #[path = "md_extract_tests.rs"]
 mod tests;
+
+// ── Structural asset paths ────────────────────────────────────────────────
+//
+// `extract_md_references` above sees only BRACKETED markdown tokens. A
+// `:::gallery` body line, a `:::hero {image=…}` attribute and a frontmatter
+// `cover:` value are asset references with no reference syntax around them,
+// so they were invisible to rename tracking and silently broke on rename.
+// The types below are the second half of the answer; `ref_scan` (src-tauri)
+// unions the two.
+
+/// Which container a structurally-extracted path was found in.
+/// Decides quoting when the value is rebuilt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathContainer {
+    /// A body line of a `:::gallery` block.
+    GalleryBody,
+    /// A body media line of a `:::hero` block.
+    HeroBodyMedia,
+    /// The positional path on a `:::hero <path>` directive line.
+    HeroDirective,
+    /// A `key=value` attribute of a `:::` block (today only `image=`).
+    ShortcodeAttr { key: String },
+    /// A frontmatter field whose value names a project file.
+    FrontmatterField { key: String },
+}
+
+/// An asset path that occupies a span with NO markdown reference syntax
+/// around it.
+///
+/// # Contract
+///
+/// A rename replaces `value` with `render_bare_value(container, quote, path,
+/// attrs)`; a delete removes `outer`. `attrs` is the `|attrs` suffix that
+/// lives INSIDE `value` — it is empty when the author's attrs sit outside it
+/// (`![alt](x.png)|cover`, where the attrs follow the closing paren), so
+/// re-rendering never duplicates or drops them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetPathSpan {
+    /// Decoded and trimmed: no quotes, no `|attrs`, no `[[ ]]`.
+    pub path: String,
+    /// The `|attrs` suffix inside `value`, or `""` — rebuilt verbatim.
+    pub attrs: String,
+    /// Quote character the value was wrapped in, if any.
+    pub quote: Option<char>,
+    /// Span a RENAME rewrites — the whole value, quotes included.
+    pub value: std::ops::Range<usize>,
+    /// Span a DELETE removes — the whole gallery/frontmatter line
+    /// (including its terminator) or the whole `key=value` attr item.
+    pub outer: std::ops::Range<usize>,
+    /// Where the path was found.
+    pub container: PathContainer,
+}
+
+/// One recognized media reference on a single line, with LINE-RELATIVE
+/// offsets. Produced by the gallery and hero line recognizers; lifted to
+/// absolute offsets by the block-level scanner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaLineSpan {
+    /// The path text as the parser would read it.
+    pub path: String,
+    /// Alt text (`![alt](…)`), or `""`.
+    pub alt: String,
+    /// The full `|attrs` suffix the parser reads (may sit outside `value`).
+    pub attrs: String,
+    /// Line-relative span a rename replaces.
+    pub value: std::ops::Range<usize>,
+    /// The `|attrs` suffix contained WITHIN `value`.
+    pub value_attrs: String,
+    /// The line carried markdown reference syntax (`![[…]]` / `![…](…)`),
+    /// so [`extract_md_references`] already sees it as a token.
+    pub is_token: bool,
+}
+
+/// `(base, content_len, terminator_len)` per physical line of `source`,
+/// index-aligned with [`str::lines`].
+pub(crate) fn line_table(source: &str) -> Vec<(usize, usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut table = Vec::new();
+    let mut base = 0usize;
+    while base <= bytes.len() {
+        let nl = bytes[base..].iter().position(|&b| b == b'\n');
+        match nl {
+            Some(off) => {
+                let mut content = off;
+                if content > 0 && bytes[base + content - 1] == b'\r' {
+                    content -= 1;
+                }
+                table.push((base, content, off - content + 1));
+                base += off + 1;
+            }
+            None => {
+                if base < bytes.len() {
+                    table.push((base, bytes.len() - base, 0));
+                }
+                break;
+            }
+        }
+    }
+    table
+}
+
+/// Every structural asset path in `source`, ascending by `value.start`.
+///
+/// Complements [`extract_md_references`], which sees only bracketed markdown
+/// tokens. A caller that REWRITES must union the two and resolve overlaps —
+/// see `apply_edits` in src-tauri's `editor::ref_scan`.
+pub fn extract_structural_asset_refs(source: &str) -> Vec<AssetPathSpan> {
+    let mut v = crate::ast::shortcode_extract::shortcode_asset_spans(source);
+    v.extend(crate::frontmatter::frontmatter_asset_spans(source));
+    v.sort_by_key(|s| s.value.start);
+    v
+}

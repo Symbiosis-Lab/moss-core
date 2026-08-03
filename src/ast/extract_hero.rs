@@ -43,6 +43,7 @@ use super::document::Document;
 use super::hooks::RenderHooks;
 use super::node::Block;
 use super::parser::{parse_fragment_with_config, ParseConfig};
+use crate::resolve::md_extract::MediaLineSpan;
 use super::shortcode::{HeroShortcode, Shortcode};
 use super::url::Url;
 
@@ -282,44 +283,37 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
     // first is the primary image, the rest `extra_images`; blank lines
     // between media lines don't end the run. The first non-media,
     // non-empty line starts the overlay.
-    let mut overlay_lines: Vec<&str> = Vec::new();
+    // The media/overlay split is `hero_media_run`'s, so the span emitter in
+    // `shortcode_asset_spans` and this parser cannot disagree about which
+    // body lines are slides. Kept honest by `spans_agree_with_parsers`.
+    let lines: Vec<&str> = body.lines().collect();
+    let run = hero_media_run(&lines);
+
     let mut image_path: Option<String> = None;
     let mut image_attrs = String::new();
     let mut extra_images: Vec<Url> = Vec::new();
-    let mut in_media_run = true;
-    let mut used_priority_3 = false;
-    for line in body.lines() {
-        if in_media_run {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Some((path, attrs_str)) = parse_hero_media_line(line) {
-                // A bare filename containing whitespace on a CONTINUATION
-                // line is almost certainly prose that happens to end in a
-                // media extension ("Photo: alpine-meadow.jpg") — treat it
-                // as overlay rather than silently eating a caption. The
-                // first line keeps the historical bare-filename grammar.
-                let bare = !line.trim_start().starts_with("![");
-                if image_path.is_some() && bare && path.contains(char::is_whitespace) {
-                    // fall through: the line below ends the media run.
-                } else if image_path.is_none() {
-                    image_path = Some(path);
-                    // Frame-level media attrs (object-fit/position) come
-                    // from the primary slide and apply to every slide.
-                    image_attrs = attrs_str;
-                    used_priority_3 = true;
-                    continue;
-                } else {
-                    extra_images.push(Url::unresolved(path));
-                    continue;
-                }
-            }
-            // First non-media, non-empty line — overlay starts here.
-            in_media_run = false;
+    for &k in &run.media {
+        let Some(m) = hero_media_line_span(lines[k]) else {
+            continue;
+        };
+        if image_path.is_none() {
+            image_path = Some(m.path);
+            // Frame-level media attrs (object-fit/position) come from the
+            // primary slide and apply to every slide.
+            image_attrs = m.attrs;
+        } else {
+            extra_images.push(Url::unresolved(m.path));
         }
-        overlay_lines.push(line);
     }
-    let overlay_text = overlay_lines.join("\n").trim().to_string();
+    let used_priority_3 = image_path.is_some();
+    let overlay_text = run
+        .overlay
+        .iter()
+        .map(|&k| lines[k])
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
     let overlay = parse_overlay_to_blocks(&overlay_text, config);
     (
         HeroShortcode {
@@ -351,11 +345,11 @@ fn parse_overlay_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
 }
 
 /// File extensions recognized as media for hero body-image fallback.
-const HERO_MEDIA_EXTENSIONS: &[&str] = &[
+pub(crate) const HERO_MEDIA_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "avif", "svg", "mp4", "webm", "mov",
 ];
 
-fn is_bare_hero_media(s: &str) -> bool {
+pub(crate) fn is_bare_hero_media(s: &str) -> bool {
     let (path_part, _) = crate::media::split_pipe(s);
     let path = path_part.trim();
     path.rfind('.')
@@ -371,8 +365,14 @@ fn is_bare_hero_media(s: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Parse a line as a media reference. Returns `(path, attrs_str)`.
-fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
+/// Recognize one hero media line, with LINE-RELATIVE byte offsets.
+///
+/// The single grammar for a hero media line: [`parse_hero_media_line`] is a
+/// wrapper over it and [`crate::ast::shortcode_extract::shortcode_asset_spans`]
+/// lifts its offsets to absolute. Three arms, in the historical order —
+/// wikilink embed, markdown image, bare media filename.
+pub(crate) fn hero_media_line_span(line: &str) -> Option<MediaLineSpan> {
+    let lead = line.len() - line.trim_start().len();
     let trimmed = line.trim();
 
     // Wikilink embed: ![[path|attrs]]
@@ -381,7 +381,16 @@ fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
         .and_then(|s| s.strip_suffix("]]"))
     {
         let (path, attrs_str) = crate::media::split_pipe(inner);
-        return Some((path.trim().to_string(), attrs_str.to_string()));
+        // `![[` is 3 ASCII bytes.
+        let start = lead + 3;
+        return Some(MediaLineSpan {
+            path: path.trim().to_string(),
+            alt: String::new(),
+            attrs: attrs_str.to_string(),
+            value: start..start + inner.len(),
+            value_attrs: attrs_str.to_string(),
+            is_token: true,
+        });
     }
 
     // Standard markdown image: ![alt](path|attrs)
@@ -393,8 +402,18 @@ fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
                 // `trimmed.len() - 1` is the byte before the trailing ASCII ')'.
                 #[allow(clippy::string_slice)]
                 let inner = &trimmed[paren_open + 2..trimmed.len() - 1];
+                #[allow(clippy::string_slice)]
+                let alt = trimmed[2..paren_open].to_string();
                 let (path, attrs_str) = crate::media::split_pipe(inner);
-                return Some((path.trim().to_string(), attrs_str.to_string()));
+                let start = lead + paren_open + 2;
+                return Some(MediaLineSpan {
+                    path: path.trim().to_string(),
+                    alt,
+                    attrs: attrs_str.to_string(),
+                    value: start..start + inner.len(),
+                    value_attrs: attrs_str.to_string(),
+                    is_token: true,
+                });
             }
         }
     }
@@ -402,10 +421,66 @@ fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
     // Bare media filename: photo.jpg or photo.jpg|contain
     if is_bare_hero_media(trimmed) {
         let (path, attrs_str) = crate::media::split_pipe(trimmed);
-        return Some((path.trim().to_string(), attrs_str.to_string()));
+        return Some(MediaLineSpan {
+            path: path.trim().to_string(),
+            alt: String::new(),
+            attrs: attrs_str.to_string(),
+            value: lead..lead + trimmed.len(),
+            value_attrs: attrs_str.to_string(),
+            is_token: false,
+        });
     }
 
     None
+}
+
+/// Which body lines of a `:::hero` are background-media slides and which are
+/// overlay markdown.
+///
+/// The Priority-3 consecutive-run rule, lifted verbatim out of [`parse_hero`]
+/// so the span emitter and the parser cannot drift. `overlay` is literally
+/// the index list `parse_hero` pushes — blank lines INSIDE the run excluded,
+/// everything from the first non-media line onward included — rather than
+/// `lines[last_media + 1 ..]`, which is equivalent only by accident of the
+/// trailing `.trim()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeroRun {
+    pub media: Vec<usize>,
+    pub overlay: Vec<usize>,
+}
+
+pub(crate) fn hero_media_run(lines: &[&str]) -> HeroRun {
+    let mut media = Vec::new();
+    let mut overlay = Vec::new();
+    let mut in_media_run = true;
+    let mut have_primary = false;
+
+    for (k, line) in lines.iter().enumerate() {
+        if in_media_run {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Some(m) = hero_media_line_span(line) {
+                // A bare filename containing whitespace on a CONTINUATION
+                // line is almost certainly prose that happens to end in a
+                // media extension ("Photo: alpine-meadow.jpg") — treat it
+                // as overlay rather than silently eating a caption. The
+                // first line keeps the historical bare-filename grammar.
+                let bare = !line.trim_start().starts_with("![");
+                if !(have_primary && bare && m.path.contains(char::is_whitespace)) {
+                    have_primary = true;
+                    media.push(k);
+                    continue;
+                }
+                // else fall through: this line ends the media run.
+            }
+            // First non-media, non-empty line — overlay starts here.
+            in_media_run = false;
+        }
+        overlay.push(k);
+    }
+
+    HeroRun { media, overlay }
 }
 #[cfg(test)]
 #[path = "extract_hero_tests.rs"]
