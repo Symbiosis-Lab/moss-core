@@ -957,6 +957,12 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 default: "",
                 description: "Slide count of a multi-image hero (consecutive leading media lines). Present only when > 1; drives the ambient CSS crossfade — one slide visible at a time, no controls. Absent = single-image hero, today's exact markup.",
             },
+            DataAttr {
+                name: "data-hero-tone",
+                values: &["light"],
+                default: "",
+                description: "Marks a hero whose image is pale enough (scan-cached dominant colour above 0.4 relative luminance) that the default legibility scrim leaves white overlay text under 4.5:1; site.css swaps in a stronger gradient. Emitted only when the hero also carries overlay text. Absent = mid-tone or dark image, no overlay, or an unparseable colour — all keep the default ramp.",
+            },
         ],
         example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
