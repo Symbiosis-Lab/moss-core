@@ -7,6 +7,17 @@
 //!
 //! **No resolution** happens here. The caller (src-tauri) resolves each
 //! `RawRef` against the project's indexes.
+//!
+//! Recognition runs over [`crate::inert_regions`]'s mask rather than a
+//! private fence tracker, so this scanner and
+//! [`crate::ast::shortcode_extract::shortcode_asset_spans`] give one
+//! identical answer to "which bytes are live syntax". Two behaviours changed
+//! when the private tracker was deleted (2026-08-03): references inside an
+//! authored `<!-- … -->` comment and inside an indented code block are no
+//! longer extracted. The old doc justified scanning comments with
+//! build-internal `<!-- moss-embed:… -->` sentinels, which never appear in
+//! the author files this module's only consumer (src-tauri's
+//! `editor::ref_scan`) reads from disk.
 
 /// Which surface syntax produced this reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,111 +57,30 @@ pub struct RawRef {
 
 /// Extract all markdown references from `source`.
 ///
-/// Skips content inside fenced code blocks (` ``` ` / `~~~`) and inline
-/// code spans.  Does **not** skip HTML comments — `<!-- moss-embed:… -->`
-/// is build-internal and not a user-authored reference.
+/// Recognition runs over [`crate::inert_regions::mask_inert`], the one
+/// shared answer to "which bytes are not live syntax" — so references
+/// inside fenced code blocks, indented code blocks, inline code spans and
+/// HTML comments are skipped. Every *string* (`text`, `label`, `alt`, the
+/// wikilink alias) is sliced from the ORIGINAL source, because the mask
+/// blanks inline code spans and would otherwise corrupt a label like
+/// ``[a `b` c](x.md)``.
 ///
 /// External URLs (`http://…`, `https://…`, `//`, `mailto:`, `tel:`, `data:`)
 /// are included as `MarkdownLink` / `MarkdownImage` — the caller decides
 /// whether to filter them out.
 pub fn extract_md_references(source: &str) -> Vec<RawRef> {
-    let bytes = source.as_bytes();
+    let mask = crate::inert_regions::mask_inert(source);
+    let bytes = mask.as_bytes();
     let len = bytes.len();
     let mut refs = Vec::new();
     let mut i = 0;
 
-    // Fenced block tracking: Some(char) while inside a fence.
-    let mut fence_char: Option<u8> = None;
-    // Track line starts for fence detection.
-    let mut line_start = 0;
-
     while i < len {
-        // ── Newline: advance line_start, check for fence ─────────────────
-        if bytes[i] == b'\n' {
-            i += 1;
-            line_start = i;
-            continue;
-        }
-
-        // ── At start of a line: check for fence open/close ───────────────
-        if i == line_start {
-            // Skip leading whitespace (up to 3 spaces per CommonMark for fences)
-            let mut j = i;
-            while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') && j - i < 4 {
-                j += 1;
-            }
-            // Check for ``` or ~~~
-            let fence_cand = if j + 2 < len && bytes[j] == b'`' && bytes[j+1] == b'`' && bytes[j+2] == b'`' {
-                Some(b'`')
-            } else if j + 2 < len && bytes[j] == b'~' && bytes[j+1] == b'~' && bytes[j+2] == b'~' {
-                Some(b'~')
-            } else {
-                None
-            };
-            if let Some(fc) = fence_cand {
-                if let Some(cur_fc) = fence_char {
-                    if cur_fc == fc {
-                        // Closing fence: rest of line must not contain fc
-                        let mut k = j + 3;
-                        while k < len && bytes[k] == fc { k += 1; }
-                        // skip spaces
-                        while k < len && bytes[k] == b' ' { k += 1; }
-                        if k >= len || bytes[k] == b'\n' {
-                            fence_char = None;
-                            // Advance past the closing-fence line itself. Without
-                            // this, `i` still points at the fence line and the
-                            // backtick handler below would consume the rest of
-                            // the file, silently dropping every reference AFTER a
-                            // fenced code block.
-                            while i < len && bytes[i] != b'\n' {
-                                i += 1;
-                            }
-                            continue;
-                        }
-                    }
-                } else {
-                    fence_char = Some(fc);
-                }
-            }
-        }
-
-        // Inside a fenced block: skip until newline
-        if fence_char.is_some() {
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-
-        // ── Inline code span: skip ──────────────────────────────────────
-        if bytes[i] == b'`' {
-            // Count backtick run
-            let mut n = 0;
-            while i + n < len && bytes[i + n] == b'`' { n += 1; }
-            let start = i;
-            i += n;
-            // Find matching run of n backticks
-            while i < len {
-                if bytes[i] == b'`' {
-                    let mut m = 0;
-                    while i + m < len && bytes[i + m] == b'`' { m += 1; }
-                    if m == n {
-                        i += m;
-                        break;
-                    }
-                    i += m;
-                } else {
-                    i += 1;
-                }
-            }
-            let _ = start;
-            continue;
-        }
-
         // ── Backslash escape: `\[[note]]` / `\[t](p)` are NOT references ──
-        // Skip the backslash and the next char so the escaped bracket can't
-        // start a reference token. Advance by a full char (not a byte) so `i`
-        // stays on a UTF-8 boundary for later string slices.
+        // An escape is not an inert region (the mask leaves it alone), so it
+        // stays a case here. Skip the backslash and the next char so the
+        // escaped bracket can't start a reference token. Advance by a full
+        // char (not a byte) so `i` stays on a UTF-8 boundary for later slices.
         if bytes[i] == b'\\' {
             i += 1; // past the backslash (ASCII, boundary-safe)
             if i < len {
@@ -176,7 +106,8 @@ pub fn extract_md_references(source: &str) -> Vec<RawRef> {
         if is_embed_wikilink || is_wikilink {
             let token_start = i;
             let inner_start = if is_embed_wikilink { i + 3 } else { i + 2 };
-            // Find closing ]]
+            // Find closing ]] — in the MASK, so a `]]` hidden in inline code
+            // does not close a live wikilink.
             if let Some(close) = find_double_bracket(bytes, inner_start) {
                 // SAFETY: inner_start and close are valid UTF-8 char boundaries
                 // because we only advance past ASCII bytes ([, !, ]) to reach them.

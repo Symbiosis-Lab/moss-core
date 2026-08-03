@@ -1,43 +1,23 @@
 use super::*;
 
+/// The four unaliased wikilink shapes: bare stem / path, link / embed.
+/// Four near-identical functions folded into one table (2026-08-03) — same
+/// three assertions per row (text, syntax, exact source span).
 #[test]
-fn wikilink_stem() {
-    let src = "See [[note]] for details.";
-    let refs = extract_md_references(src);
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].text, "note");
-    assert_eq!(refs[0].syntax, RefSyntax::WikilinkStem);
-    assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "[[note]]");
-}
-
-#[test]
-fn wikilink_path() {
-    let src = "See [[a/b]] here.";
-    let refs = extract_md_references(src);
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].text, "a/b");
-    assert_eq!(refs[0].syntax, RefSyntax::WikilinkPath);
-    assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "[[a/b]]");
-}
-
-#[test]
-fn wikilink_stem_embed() {
-    let src = "![[x]] is an embed.";
-    let refs = extract_md_references(src);
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].text, "x");
-    assert_eq!(refs[0].syntax, RefSyntax::WikilinkStemEmbed);
-    assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "![[x]]");
-}
-
-#[test]
-fn wikilink_path_embed() {
-    let src = "![[a/b]] embedded.";
-    let refs = extract_md_references(src);
-    assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].text, "a/b");
-    assert_eq!(refs[0].syntax, RefSyntax::WikilinkPathEmbed);
-    assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "![[a/b]]");
+fn wikilink_shapes() {
+    let cases: &[(&str, &str, &str, RefSyntax)] = &[
+        ("See [[note]] for details.", "[[note]]", "note", RefSyntax::WikilinkStem),
+        ("See [[a/b]] here.", "[[a/b]]", "a/b", RefSyntax::WikilinkPath),
+        ("![[x]] is an embed.", "![[x]]", "x", RefSyntax::WikilinkStemEmbed),
+        ("![[a/b]] embedded.", "![[a/b]]", "a/b", RefSyntax::WikilinkPathEmbed),
+    ];
+    for (src, token, text, syntax) in cases {
+        let refs = extract_md_references(src);
+        assert_eq!(refs.len(), 1, "{src}");
+        assert_eq!(&refs[0].text, text, "{src}");
+        assert_eq!(&refs[0].syntax, syntax, "{src}");
+        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], *token, "{src}");
+    }
 }
 
 #[test]
@@ -94,17 +74,6 @@ fn external_link_included() {
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].text, "https://example.com");
     assert!(matches!(&refs[0].syntax, RefSyntax::MarkdownLink { .. }));
-}
-
-#[test]
-fn skip_fenced_code_block() {
-    let src = "```\n[[note]]\n```\nAfter.";
-    let refs = extract_md_references(src);
-    assert_eq!(
-        refs.len(),
-        0,
-        "wikilink inside fenced block should be skipped"
-    );
 }
 
 #[test]
@@ -167,5 +136,43 @@ fn aliased_embed_preserves_alias() {
     assert_eq!(refs[0].text, "image.png");
     assert!(
         matches!(&refs[0].syntax, RefSyntax::WikilinkAliasedEmbed { display } if display == "600")
+    );
+}
+
+// ── Inert-mask migration (2026-08-03) ────────────────────────────────────
+
+#[test]
+fn refs_inside_html_comment_are_skipped() {
+    // Behaviour CHANGE: the private fence tracker knew nothing about HTML
+    // comments, so an authored `<!-- … -->` leaked its refs.
+    let src = "<!-- draft: [[note]] and ![](x.png) -->\nLive [[real]].";
+    let refs = extract_md_references(src);
+    assert_eq!(refs.len(), 1, "only the live ref, got: {:?}", refs);
+    assert_eq!(refs[0].text, "real");
+}
+
+#[test]
+fn refs_inside_indented_code_are_skipped() {
+    // Behaviour CHANGE: a 4-space-indented code block is inert.
+    let src = "Intro.\n\n    [[in-code]]\n\nAfter [[live]].";
+    let refs = extract_md_references(src);
+    assert_eq!(refs.len(), 1, "only the live ref, got: {:?}", refs);
+    assert_eq!(refs[0].text, "live");
+}
+
+#[test]
+fn label_containing_code_span_is_preserved() {
+    // Load-bearing for the mask migration: positions come from the mask
+    // (which blanks the inline code span), but every STRING is sliced from
+    // the original source. Slicing the label out of the mask would silently
+    // return "a     c".
+    let src = "[a `b` c](x.md)";
+    let refs = extract_md_references(src);
+    assert_eq!(refs.len(), 1, "got: {:?}", refs);
+    assert_eq!(refs[0].text, "x.md");
+    assert!(
+        matches!(&refs[0].syntax, RefSyntax::MarkdownLink { label } if label == "a `b` c"),
+        "label must come from the source, not the mask: {:?}",
+        refs[0].syntax
     );
 }
