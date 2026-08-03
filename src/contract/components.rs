@@ -2183,7 +2183,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
     <div class="moss-search__progress" hidden></div>
     <div class="moss-search__seam"></div>
     <div class="moss-search__body">
-      <p class="moss-search__status" role="status">Type to search this site.</p>
+      <p class="moss-search__status" role="status" hidden></p>
       <ul class="moss-search__results" role="listbox">
         <li class="moss-search__row">
           <a class="moss-search__link" role="option" href="/posts/foo/">
