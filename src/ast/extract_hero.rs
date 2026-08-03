@@ -43,7 +43,7 @@ use super::document::Document;
 use super::hooks::RenderHooks;
 use super::node::Block;
 use super::parser::{parse_fragment_with_config, ParseConfig};
-use crate::resolve::md_extract::MediaLineSpan;
+use crate::resolve::md_extract::{AssetPathSpan, MediaLineSpan, PathContainer};
 use super::shortcode::{HeroShortcode, Shortcode};
 use super::url::Url;
 
@@ -482,6 +482,118 @@ pub(crate) fn hero_media_run(lines: &[&str]) -> HeroRun {
 
     HeroRun { media, overlay }
 }
+/// Hero image spans, mirroring [`parse_hero`]'s priority
+/// ladder and short-circuiting at the same points.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hero_asset_spans(
+    source: &str,
+    mask: &str,
+    table: &[(usize, usize, usize)],
+    opener: usize,
+    body_start: usize,
+    close: usize,
+    out: &mut Vec<AssetPathSpan>,
+) {
+    let (obase, ocontent, _) = table[opener];
+    #[allow(clippy::string_slice)]
+    let opener_masked = &mask[obase..obase + ocontent];
+
+    // Priority 1: an `image=` attribute anywhere in the (possibly multi-line)
+    // attribute block. `parse_attrs_spanned` is handed the rest of the
+    // document from the `{` — it returns at the first `}` at item position,
+    // so it terminates exactly where the gathered-args form would. See its
+    // doc comment for the constraint that makes this legal.
+    if let Some(brace_rel) = opener_masked.find('{') {
+        let brace_abs = obase + brace_rel;
+        #[allow(clippy::string_slice)]
+        // `find` on ASCII '{' → char boundary.
+        let rest = &source[brace_abs..];
+        if let Ok((_, kvs)) = crate::ast::attrs::parse_attrs_spanned(rest) {
+            if let Some(kv) = kvs.iter().find(|kv| kv.key == "image") {
+                let value = brace_abs + kv.value.start..brace_abs + kv.value.end;
+                let mut item = brace_abs + kv.item.start..brace_abs + kv.item.end;
+                // Absorb one leading space so removing the item doesn't
+                // leave a double space inside the braces.
+                if item.start > brace_abs && source.as_bytes()[item.start - 1] == b' ' {
+                    item.start -= 1;
+                }
+                #[allow(clippy::string_slice)]
+                // Both ends come from `char_indices()` over `rest`.
+                let raw = &source[value.clone()];
+                let inner = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')).unwrap_or(raw);
+                let (path, attrs) = crate::media::split_pipe(inner);
+                out.push(AssetPathSpan {
+                    path: crate::media::strip_wikilink(path).to_string(),
+                    attrs: attrs.to_string(),
+                    quote: if raw.starts_with('"') { Some('"') } else { None },
+                    value,
+                    outer: item,
+                    container: PathContainer::ShortcodeAttr { key: "image".to_string() },
+                });
+                // Body lines are pure overlay when `image=` is present.
+                return;
+            }
+        }
+    }
+
+    // Priority 2: a positional path on the directive line, before any `{`.
+    // `parse_shortcode_opener` already stripped the colons and the name.
+    let opener_trimmed = opener_masked.trim();
+    if let Some((_, _name, args)) = super::shortcode_extract::parse_shortcode_opener(opener_trimmed) {
+        let cut = args.find('{').unwrap_or(args.len());
+        #[allow(clippy::string_slice)]
+        // `find` on ASCII '{' → char boundary; `args` is a suffix of the line.
+        let positional = args[..cut].trim();
+        if !positional.is_empty() {
+            // Absolute offset of `positional` in the raw line. `args` is
+            // `opener_trimmed` with the colons + name stripped and both ends
+            // trimmed, and `opener_trimmed` has no trailing whitespace, so
+            // `args` ends where `opener_trimmed` does — its start offset is
+            // the length difference. `positional` starts at `args[0]`
+            // because `args` is already left-trimmed.
+            let lead = ocontent - opener_masked.trim_start().len();
+            let start = obase + lead + (opener_trimmed.len() - args.len());
+            let value = start..start + positional.len();
+            let (path, attrs) = crate::media::split_pipe(positional);
+            out.push(AssetPathSpan {
+                path: crate::media::strip_wikilink(path.trim()).to_string(),
+                attrs: attrs.to_string(),
+                quote: None,
+                value: value.clone(),
+                outer: value,
+                container: PathContainer::HeroDirective,
+            });
+            return;
+        }
+    }
+
+    // Priority 3: the leading run of body media lines.
+    let body: Vec<&str> = (body_start..close)
+        .map(|k| {
+            let (base, content, _) = table[k];
+            #[allow(clippy::string_slice)]
+            // Line boundaries from `line_table`; read verbatim, exactly as
+            // `parse_hero` reads them.
+            &source[base..base + content]
+        })
+        .collect();
+    let run = hero_media_run(&body);
+    for &k in &run.media {
+        let Some(m) = hero_media_line_span(body[k]) else {
+            continue;
+        };
+        let (base, content, term) = table[body_start + k];
+        out.push(AssetPathSpan {
+            path: crate::media::strip_wikilink(&m.path).to_string(),
+            attrs: m.value_attrs,
+            quote: None,
+            value: base + m.value.start..base + m.value.end,
+            outer: base..base + content + term,
+            container: PathContainer::HeroBodyMedia,
+        });
+    }
+}
+
 #[cfg(test)]
 #[path = "extract_hero_tests.rs"]
 mod tests;
