@@ -32,10 +32,12 @@ fn describe_payload_serializes_with_versions() {
 }
 
 #[test]
-fn describe_schema_version_is_5() {
+fn describe_schema_version_is_6() {
     // Guard against accidental version rollback. Any future bump must be
     // intentional and accompanied by a CHANGELOG entry.
-    assert_eq!(DESCRIBE_SCHEMA_VERSION, 5);
+    // v6 added `custom_properties` and `scope_attributes` — the escape-hatch
+    // theming API and the structural attributes on classless elements.
+    assert_eq!(DESCRIBE_SCHEMA_VERSION, 6);
 }
 
 #[test]
@@ -181,4 +183,65 @@ fn describe_plugin_contract_structs_serialize_correctly() {
     assert_eq!(cmds.len(), 1);
     assert_eq!(cmds[0]["name"], "build");
     assert!(cmds[0]["args"].as_str().unwrap().contains("--serve"));
+}
+
+/// The seven hooks the 2026-08-03 audit found invisible.
+///
+/// okagaki and 在場 — the two most heavily customized moss sites — between them
+/// set six custom properties and hung their layouts off three structural
+/// attributes. Before schema v6, `describe --json` reported **none** of them,
+/// so an agent given moss's own contract could not have written either theme.
+/// This is the acceptance test for that gap.
+#[test]
+fn the_hooks_the_flagship_themes_actually_used_are_discoverable() {
+    let tokens = load_tokens().expect("tokens");
+    let payload = DescribePayload::new(&tokens);
+    let json = serde_json::to_value(&payload).expect("serialize");
+    let blob = json.to_string();
+
+    for hook in [
+        // set by okagaki
+        "--moss-hero-object-position",
+        // set by 在場
+        "--moss-grid-image-ratio",
+        "--moss-grid-image-radius",
+        "--moss-grid-image-fit",
+        "--moss-card-cover-ratio",
+        "--moss-card-cover-fit",
+        // the cap okagaki hand-fought across three selectors
+        "--moss-hero-max-height",
+        // structural attributes both themes scoped to
+        "data-page",
+        "data-mobile",
+        "data-columns",
+    ] {
+        assert!(
+            blob.contains(hook),
+            "{hook} must be discoverable from `moss describe --json` — it was \
+             load-bearing in a shipped moss theme and reported nowhere"
+        );
+    }
+}
+
+/// Every custom property must carry the fallback moss's CSS actually uses.
+/// A declared hook with an invented default is worse than an undeclared one:
+/// an agent reasons about the wrong starting point and cannot tell.
+#[test]
+fn custom_properties_declare_a_default_and_an_owner() {
+    let tokens = load_tokens().expect("tokens");
+    let payload = DescribePayload::new(&tokens);
+    let json = serde_json::to_value(&payload).expect("serialize");
+
+    let props = json["custom_properties"].as_array().expect("custom_properties array");
+    assert!(props.len() >= 15, "expected the full escape-hatch set, got {}", props.len());
+    for p in props {
+        let name = p["name"].as_str().unwrap_or_default();
+        assert!(name.starts_with("--moss-"), "{name} must be a --moss-* property");
+        for field in ["owner", "default", "description"] {
+            assert!(
+                !p[field].as_str().unwrap_or_default().is_empty(),
+                "{name} must declare a non-empty {field}"
+            );
+        }
+    }
 }

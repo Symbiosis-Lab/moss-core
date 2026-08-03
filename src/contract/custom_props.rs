@@ -1,0 +1,198 @@
+//! Theming escape hatches — Source 2b of the federated contract.
+//!
+//! Two tables that do not fit the class-keyed [`super::components::COMPONENTS`]
+//! table, kept here rather than bolted onto it.
+//!
+//! Why they are separate: 167 component entries would each need an empty array
+//! that says nothing, and several of these hooks have no single owning class at
+//! all — `--moss-nav-width` resolves against the `<body>`-level content width,
+//! `--moss-escape` is set by `[data-width]` on any block, and `data-page` lives
+//! on `<body>`, which carries no `moss-*` class. Inventing a `moss-body` entry
+//! to give it a home would have added an orphan contract entry for a class moss
+//! never emits — precisely what teaches agents to target dead selectors (#777).
+//!
+//! ## Adding a hook
+//!
+//! 1. Read it from a stylesheet as `var(--moss-foo, <fallback>)`.
+//! 2. Add a [`CustomProp`] here, with `default` copied **verbatim** from the
+//!    call site. A declared hook with an invented default is worse than an
+//!    undeclared one: an agent reasons from the wrong starting point and has no
+//!    way to tell.
+//! 3. `cargo test --test components_sync_test` — `every_escape_hatch_is_declared`
+//!    fails on a read nothing declares, and `every_declared_custom_prop_is_read`
+//!    fails on a declaration nothing reads.
+
+/// A CSS custom property a theme may set to reconfigure a component.
+///
+/// These are read by moss's stylesheets as `var(--moss-foo, <fallback>)` and
+/// are deliberately **never declared** — that is exactly what makes them opt-in
+/// escape hatches rather than design tokens. A token has a value in `:root` and
+/// cascades site-wide; one of these has no value until a theme sets it, and it
+/// is set *on a component or a scope* to change that component.
+///
+/// The distinction matters because it is the whole theming API in practice.
+/// Audited 2026-08-03: the two most heavily customized moss sites (okagaki, 在場)
+/// overrode **zero** design tokens between them and set six of these. None was
+/// discoverable — not in `moss describe --json`, not in any published doc — so
+/// okagaki hand-fought the hero height caps that `--moss-hero-max-height` exists
+/// to lift, across three selectors and a 12-line comment.
+pub struct CustomProp {
+    /// Property name including the leading dashes (e.g. `"--moss-hero-max-height"`).
+    pub name: &'static str,
+    /// Class of the component whose rules read it, or a scope selector when no
+    /// single class owns it (e.g. `"body"`). Free-form: this is documentation,
+    /// not a foreign key.
+    pub owner: &'static str,
+    /// The fallback moss's own CSS uses when the theme does not set it.
+    /// Taken verbatim from the `var()` call site — never invented.
+    pub default: &'static str,
+    /// What setting it does, and when you would want to.
+    pub description: &'static str,
+}
+
+/// Every escape-hatch custom property moss's stylesheets read.
+///
+/// Kept as its own table rather than a field on [`ComponentEntry`] for two
+/// reasons: 167 entries would each need a `custom_props: &[]` that says
+/// nothing, and several of these are not owned by a single class anyway
+/// (`--moss-nav-width` is read against the `<body>`-level content width;
+/// `--moss-escape` is set by `[data-width]` on any block).
+///
+/// Enforced by `every_escape_hatch_is_declared` in
+/// `src-tauri/tests/components_sync_test.rs`: a `var(--moss-*, …)` read that no
+/// entry here declares fails the build. That test is the point of the table —
+/// a hook nothing declares is a hook no agent can find.
+pub const CUSTOM_PROPS: &[CustomProp] = &[
+    CustomProp {
+        name: "--moss-hero-max-height",
+        owner: "moss-hero",
+        default: "70vh",
+        description: "Cap on hero media height on desktop. Set `none` for a hero that fills its container. Note the wrapper has its own cap — `.moss-hero { max-height: min(80vh, 800px) }` reads the same property, so setting it once lifts both.",
+    },
+    CustomProp {
+        name: "--moss-hero-object-position",
+        owner: "moss-hero",
+        default: "top",
+        description: "Crop anchor for hero media, which is `object-fit: cover`. The default anchors the top, which suits landscapes; use `center` for portraits and faces.",
+    },
+    CustomProp {
+        name: "--moss-grid-image-ratio",
+        owner: "moss-grid-card",
+        default: "1 / 1",
+        description: "Aspect ratio of images inside a `:::grid`. Set to the source art's own ratio when the image is a designed artifact whose edges carry meaning (a poster, a titled tile) rather than a photograph.",
+    },
+    CustomProp {
+        name: "--moss-grid-image-radius",
+        owner: "moss-grid-card",
+        default: "8px",
+        description: "Corner radius of grid images. `50%` makes circular portraits; `0` suits art that has its own designed corners.",
+    },
+    CustomProp {
+        name: "--moss-grid-image-fit",
+        owner: "moss-grid-card",
+        default: "cover",
+        description: "`object-fit` for grid images. `contain` letterboxes onto the surface colour instead of cropping — the right choice for typographic work, where a crop costs words rather than scenery.",
+    },
+    CustomProp {
+        name: "--moss-card-cover-ratio",
+        owner: "moss-card-cover",
+        default: "4 / 3",
+        description: "Aspect ratio of card cover images. Same reasoning as `--moss-grid-image-ratio`, for `:::cards` rather than `:::grid`.",
+    },
+    CustomProp {
+        name: "--moss-card-cover-fit",
+        owner: "moss-card-cover",
+        default: "cover",
+        description: "`object-fit` for card covers. `contain` for artwork whose edges carry meaning; `cover` stays right for photography.",
+    },
+    CustomProp {
+        name: "--moss-card-min",
+        owner: "moss-cards",
+        default: "280px",
+        description: "Minimum column width in the auto-filled card grid. Lower it for denser grids of short items, raise it to force fewer, wider cards.",
+    },
+    CustomProp {
+        name: "--moss-cover-color",
+        owner: "moss-card",
+        default: "var(--moss-bg, var(--moss-color-bg, #fff))",
+        description: "Background behind card content when the card carries `data-cover-color`. moss sets this per-card from the cover image's dominant colour; a theme can override it to opt out of the extracted tint.",
+    },
+    CustomProp {
+        name: "--moss-bg",
+        owner: "moss-card",
+        default: "var(--moss-color-bg, #fff)",
+        description: "Fallback background in the `--moss-cover-color` chain, for a scope that wants a different neutral than the site background without redefining the `--moss-color-bg` token.",
+    },
+    CustomProp {
+        name: "--moss-nav-width",
+        owner: "main-nav",
+        default: "var(--moss-content-width)",
+        description: "Width of the header nav's inner row. Unset (the default) the nav tracks the `<body>`-level content width, so it stays aligned with the article column through every `content_width` preset. Set it only to deliberately break that alignment.",
+    },
+    CustomProp {
+        name: "--moss-escape",
+        owner: "[data-width]",
+        default: "100%",
+        description: "Width a `data-width` block escapes to. moss sets it per keyword (`wide`, `page`, `screen`); set it directly for a width the keywords do not cover. Always clamped by `min(…, 100cqw)`, so a narrow viewport stays safe.",
+    },
+    CustomProp {
+        name: "--moss-success",
+        owner: "moss-input-feedback",
+        default: "#10b981",
+        description: "Colour of a success message under a form field. Deliberately not a token: it is one accent moss does not want to spend a site-wide variable on.",
+    },
+    CustomProp {
+        name: "--moss-error",
+        owner: "moss-input-feedback",
+        default: "#c85450",
+        description: "Colour of an error message under a form field, and of comment-thread error states.",
+    },
+    CustomProp {
+        name: "--moss-radius-md",
+        owner: "moss-subscribe",
+        default: "0.5rem",
+        description: "Corner radius of the subscribe card. Set to `0` for a square-cornered form that matches a flat theme.",
+    },
+];
+
+/// A `data-*` attribute moss emits on an element that carries no `moss-*` class.
+///
+/// `<body data-page="home">` is the case that forced this to exist. It is a
+/// first-class part of the contract — the only thing that tells a stylesheet
+/// which page it is on, and okagaki's entire front page hangs off it — but
+/// `<body>` has no class, so declaring it would have meant inventing a
+/// `moss-body` entry for a class moss never emits. That is the orphan-entry
+/// problem (#777) in miniature: a contract that names selectors moss does not
+/// produce teaches agents to target dead ones.
+pub struct ScopeAttr {
+    /// CSS selector for the element carrying it (e.g. `"body"`).
+    pub selector: &'static str,
+    /// Attribute name including the `data-` prefix.
+    pub name: &'static str,
+    /// Allowed values. Empty means free-form.
+    pub values: &'static [&'static str],
+    /// What it marks, and what to scope to it.
+    pub description: &'static str,
+}
+
+/// Structural attributes on classless elements. See [`ScopeAttr`].
+pub const SCOPE_ATTRS: &[ScopeAttr] = &[
+    ScopeAttr {
+        selector: "body",
+        name: "data-page",
+        values: &["home"],
+        description: "Present as `home` on the site's front page only. Scope front-page-only rules to `body[data-page=\"home\"]` rather than to something merely unique to your homepage today — a hero that fills the screen, a suppressed footer, a different nav treatment.",
+    },
+    ScopeAttr {
+        selector: "html",
+        name: "data-theme",
+        values: &["light", "dark"],
+        description: "The resolved colour scheme, set on `<html>` before the first paint by an inline script, from the reader's stored choice or their OS preference. So `[data-theme=\"dark\"]` alone is sufficient for dark-mode rules — do not also write an `@media (prefers-color-scheme: dark)` block, which ignores the toggle and will disagree with it.",
+    },
+    ScopeAttr {
+        selector: "article > [data-width]",
+        name: "data-width",
+        values: &["body", "wide", "page", "screen"],
+        description: "Set by block shortcodes to escape the text column. The width resolves through `--moss-escape`, clamped by `min(…, 100cqw)` so a narrow viewport stays safe.",
+    },
+];

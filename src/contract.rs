@@ -9,6 +9,7 @@
 
 pub mod tokens;
 pub mod components;
+pub mod custom_props;
 pub mod describe;
 pub mod frontmatter;
 pub mod sizes;

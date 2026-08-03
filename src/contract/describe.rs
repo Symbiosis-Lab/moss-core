@@ -12,7 +12,7 @@ use crate::contract::components::{COMPONENTS, Status};
 use crate::contract::frontmatter::{FrontmatterFieldJson, frontmatter_fields};
 use crate::contract::tokens::Tokens;
 
-pub const DESCRIBE_SCHEMA_VERSION: u32 = 5;
+pub const DESCRIBE_SCHEMA_VERSION: u32 = 6;
 pub const MOSS_HTML_VERSION: u32 = 1;
 
 #[derive(Serialize)]
@@ -22,6 +22,13 @@ pub struct DescribePayload<'a> {
     pub moss_binary_version: &'static str,
     pub tokens: BTreeMap<&'a str, Vec<TokenJson<'a>>>,
     pub components: Vec<ComponentJson>,
+    /// Escape-hatch custom properties: the `var(--moss-*, fallback)` hooks
+    /// moss's stylesheets read but never declare. Schema v6 added this — the
+    /// theming API both flagship sites actually used, previously undiscoverable.
+    pub custom_properties: Vec<CustomPropJson>,
+    /// Structural `data-*` attributes on elements that carry no `moss-*` class
+    /// — `<body data-page>`, `<html data-theme>`. Schema v6.
+    pub scope_attributes: Vec<ScopeAttrJson>,
     pub frontmatter: Vec<FrontmatterFieldJson>,
     /// Plugin hook contract: each capability moss supports, with arity and context type.
     pub plugin_hooks: Vec<PluginHookInfo>,
@@ -132,6 +139,28 @@ pub struct DataAttrJson {
     pub description: &'static str,
 }
 
+/// A structural attribute on a classless element. Top-level for the same reason
+/// as [`CustomPropJson`]: it has no component to nest under.
+#[derive(Serialize)]
+pub struct ScopeAttrJson {
+    pub selector: &'static str,
+    pub name: &'static str,
+    pub values: &'static [&'static str],
+    pub description: &'static str,
+}
+
+/// An escape-hatch custom property, emitted as its own top-level section rather
+/// than nested under a component: an agent looking for "how do I change the hero
+/// crop" greps for the property name, and several of these are not owned by a
+/// single class anyway.
+#[derive(Serialize)]
+pub struct CustomPropJson {
+    pub name: &'static str,
+    pub owner: &'static str,
+    pub default: &'static str,
+    pub description: &'static str,
+}
+
 impl<'a> DescribePayload<'a> {
     pub fn new(tokens: &'a Tokens) -> Self {
         let mut tokens_map: BTreeMap<&str, Vec<TokenJson>> = BTreeMap::new();
@@ -189,6 +218,24 @@ impl<'a> DescribePayload<'a> {
             moss_binary_version: env!("CARGO_PKG_VERSION"),
             tokens: tokens_map,
             components,
+            custom_properties: crate::contract::custom_props::CUSTOM_PROPS
+                .iter()
+                .map(|p| CustomPropJson {
+                    name: p.name,
+                    owner: p.owner,
+                    default: p.default,
+                    description: p.description,
+                })
+                .collect(),
+            scope_attributes: crate::contract::custom_props::SCOPE_ATTRS
+                .iter()
+                .map(|a| ScopeAttrJson {
+                    selector: a.selector,
+                    name: a.name,
+                    values: a.values,
+                    description: a.description,
+                })
+                .collect(),
             frontmatter: frontmatter_fields(),
             // Populated by the Tauri layer (src-tauri/src/describe.rs) which
             // has access to the Tauri-layer plugin types. Callers using
