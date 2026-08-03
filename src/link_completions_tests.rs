@@ -196,15 +196,179 @@ fn ties_break_by_path_deterministically() {
     assert_eq!(cands[ranked[0]].rel_path, "zh-hans/a/guide.md");
 }
 
+// ── Path-qualified queries (a `/` in the prefix) ─────────────────────
+
 #[test]
-fn language_and_proximity_do_not_perturb_a_single_language_vault() {
-    // When every candidate shares the source's language (or there is none),
-    // the language/proximity keys tie and ordering falls back to the
-    // existing match-quality/length/lexicographic behavior.
+fn path_query_matches_across_an_omitted_directory() {
+    // THE CORPUS BUG (/tmp/frontline-test/在場.md:48 writes `關於/頭像-李柏萱.png`
+    // for a file that actually lives at `關於/assets/頭像-李柏萱.png`). Before
+    // path-awareness the ranker only ever compared the FILENAME, so any query
+    // containing `/` matched nothing at all.
+    let cands = vec![cand_at(
+        "頭像-李柏萱.png",
+        "關於/assets/頭像-李柏萱.png",
+        CandidateKind::Asset,
+    )];
+    let ranked = rank_completions("關於/頭像-李", &cands, true, "在場.md");
+    assert_eq!(ranked.len(), 1);
+}
+
+#[test]
+fn path_query_rejects_a_different_directory() {
+    let cands = vec![cand_at(
+        "頭像-李柏萱.png",
+        "關於/assets/頭像-李柏萱.png",
+        CandidateKind::Asset,
+    )];
+    assert!(rank_completions("獎項/頭像-李", &cands, true, "在場.md").is_empty());
+}
+
+#[test]
+fn partial_directory_segment_still_lists_the_subtree() {
+    // Mid-typing a directory name (`關於/ass`) must NOT empty the dropdown —
+    // that is the exact symptom being fixed. The final segment is allowed to
+    // match a DIRECTORY component, and `seg_hit` keeps any real filename match
+    // above the directory-only ones.
     let cands = vec![
-        cand_at("changelog", "en/changelog.md", CandidateKind::Page), // "ang" middle
-        cand_at("angle", "en/angle.md", CandidateKind::Page),         // "ang" start
+        cand_at("f99cc68b.png", "關於/assets/f99cc68b.png", CandidateKind::Asset),
+        cand_at("assembly.png", "關於/assembly.png", CandidateKind::Asset),
+    ];
+    let ranked = rank_completions("關於/ass", &cands, true, "在場.md");
+    assert_eq!(ranked.len(), 2);
+    // `assembly.png` matches on the FILENAME (seg_hit 0); the subtree listing
+    // under `assets/` matched only a directory (seg_hit 1).
+    assert_eq!(cands[ranked[0]].insert, "assembly.png");
+}
+
+#[test]
+fn bare_query_ordering_is_unchanged_by_path_keys() {
+    // The neutrality proof for `seg_hit`/`dir_tight`/the last-segment `starts`.
+    // Same assertions as `prefix_filters_and_starts_with_ranks_first`, but with
+    // directory-bearing rel_paths so the new keys would have something to bite
+    // on if they were not constant for a separator-free query.
+    // MUST NOT BE DELETED — nothing else holds this.
+    let cands = vec![
+        cand_at("changelog", "en/notes/changelog.md", CandidateKind::Page),
+        cand_at("angle", "en/angle.md", CandidateKind::Page),
+        cand_at("about", "en/about.md", CandidateKind::Page),
     ];
     let ranked = rank_completions("ang", &cands, false, "en/index.md");
+    assert_eq!(ranked.len(), 2);
     assert_eq!(cands[ranked[0]].insert, "angle");
+    assert_eq!(cands[ranked[1]].insert, "changelog");
+}
+
+#[test]
+fn contiguous_suffix_dir_match_outranks_a_gapped_one() {
+    // `dir_tight` mirrors resolve_asset_ref step 4, which tries
+    // find_by_suffix(target) before find_by_suffix(basename).
+    let cands = vec![
+        cand_at("x.png", "關於/deep/assets/x.png", CandidateKind::Asset), // gapped
+        cand_at("x.png", "assets/x.png", CandidateKind::Asset),           // contiguous suffix
+    ];
+    let ranked = rank_completions("assets/x", &cands, true, "在場.md");
+    assert_eq!(cands[ranked[0]].rel_path, "assets/x.png");
+}
+
+#[test]
+fn starts_with_uses_the_final_segment_for_a_path_query() {
+    // Without this the `starts` key is a constant 1 for every path query (no
+    // filename starts with `dir/angle`) and the signal is lost.
+    let cands = vec![
+        cand_at("changelog", "dir/changelog.md", CandidateKind::Page),
+        cand_at("angle", "dir/angle.md", CandidateKind::Page),
+    ];
+    let ranked = rank_completions("dir/ang", &cands, false, "index.md");
+    assert_eq!(cands[ranked[0]].insert, "angle");
+}
+
+#[test]
+fn heading_candidates_ignore_slashes_in_the_query() {
+    // A heading's rel_path is the literal string "H2" and its TEXT may contain
+    // `/`, so path logic must not apply. `insert_for` returns None so the caller
+    // inserts the heading text, never "H2".
+    let cands = vec![cand_at("Intro/Setup", "H2", CandidateKind::Heading)];
+    let ranked = rank_completions("Intro/Set", &cands, false, "notes.md");
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(insert_for("Intro/Set", &cands[0], "notes.md"), None);
+}
+
+#[test]
+fn trailing_slash_lists_only_that_directory() {
+    let cands = vec![
+        cand_at("a.png", "關於/assets/a.png", CandidateKind::Asset),
+        cand_at("b.png", "獎項/b.png", CandidateKind::Asset),
+    ];
+    let ranked = rank_completions("關於/", &cands, true, "在場.md");
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(cands[ranked[0]].rel_path, "關於/assets/a.png");
+}
+
+// ── The insert_for invariant, enforced through the REAL resolvers ────
+
+#[test]
+fn insert_for_always_round_trips_through_the_resolver() {
+    use crate::resolve::asset_class::{
+        resolve_asset_ref, AssetProvenance, AssetResolution, FakeAssetIndex,
+    };
+
+    // The corpus shape: a root-level source and a nested one, against a sibling
+    // asset, a subtree asset, a cross-tree asset and a root-level asset. The
+    // cross-tree row is the collision case — `assets/首頁hero.png` seen from
+    // `關於/x.md`, where the bare root-relative form would resolve to the
+    // DIFFERENT, also-existing `關於/assets/首頁hero.png`.
+    let paths = [
+        "關於/assets/頭像-李柏萱.png",
+        "關於/歷季得獎者.md",
+        "關於/近照.png",
+        "assets/首頁hero.png",
+        "關於/assets/首頁hero.png",
+        "首頁.png",
+    ];
+    let idx = FakeAssetIndex::new(&paths);
+
+    for from_rel in ["在場.md", "關於/歷季得獎者.md"] {
+        for rel in [
+            "關於/assets/頭像-李柏萱.png",
+            "關於/近照.png",
+            "assets/首頁hero.png",
+            "首頁.png",
+        ] {
+            let c = cand_at(
+                rel.rsplit('/').next().unwrap(),
+                rel,
+                CandidateKind::Asset,
+            );
+            let emitted = insert_for("關於/x", &c, from_rel)
+                .unwrap_or_else(|| panic!("path-qualified query must emit a form for {rel}"));
+            assert_eq!(
+                resolve_asset_ref(&emitted, from_rel, &idx),
+                AssetResolution::Resolved {
+                    root_rel: rel.to_string(),
+                    provenance: AssetProvenance::Literal,
+                },
+                "from {from_rel}, candidate {rel}, emitted {emitted}"
+            );
+        }
+    }
+
+    // The page leg, through the resolver pages actually use.
+    let mut b = crate::content_graph::ContentGraphBuilder::new();
+    b.add_file("notes/ideas.md", "notes/ideas");
+    b.add_file("關於/歷季得獎者.md", "關於/歷季得獎者");
+    let graph = b.build();
+    for from_rel in ["在場.md", "關於/歷季得獎者.md"] {
+        let c = cand_at("ideas", "notes/ideas.md", CandidateKind::Page);
+        let emitted = insert_for("notes/id", &c, from_rel).unwrap();
+        assert_eq!(emitted, "notes/ideas");
+        assert_eq!(graph.resolve_path(&emitted, from_rel).as_deref(), Some("notes/ideas.md"));
+    }
+}
+
+#[test]
+fn insert_for_is_none_without_a_separator() {
+    // The chip-bar contract: a bare query never produces a path form, so the
+    // frontmatter cover/logo picker keeps writing the bare filename.
+    let c = cand_at("x.png", "關於/assets/x.png", CandidateKind::Asset);
+    assert_eq!(insert_for("x", &c, "關於/y.md"), None);
 }
