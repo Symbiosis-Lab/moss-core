@@ -2239,3 +2239,337 @@ fn everything_after_an_unterminated_html_comment_is_inert() {
     );
     assert_eq!(result.markdown_with_placeholders, md);
 }
+
+// ── Structural asset spans (2026-08-03) ──────────────────────────────────
+//
+// Every span assertion is written `&src[span]` against a literal: the only
+// form that proves the offsets are ABSOLUTE in the source, which is the
+// whole point of this scanner.
+
+use crate::resolve::md_extract::PathContainer;
+
+fn spans(src: &str) -> Vec<crate::resolve::md_extract::AssetPathSpan> {
+    shortcode_asset_spans(src)
+}
+
+fn url_raw(u: &crate::ast::url::Url) -> &str {
+    match u {
+        crate::ast::url::Url::Unresolved(s) => s,
+        crate::ast::url::Url::Resolved(r) => &r.href,
+    }
+}
+
+#[test]
+fn gallery_bare_paths_span_exactly() {
+    // The frontline shape: CJK directory-relative bare paths.
+    let src = ":::gallery 8 {.profiles}\n關於/頭像-李柏萱.png\n關於/頭像-李年.png\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 2, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "關於/頭像-李柏萱.png");
+    assert_eq!(&src[s[1].value.clone()], "關於/頭像-李年.png");
+    assert_eq!(s[0].path, "關於/頭像-李柏萱.png");
+    assert_eq!(s[0].container, PathContainer::GalleryBody);
+    // `outer` is the whole physical line including its terminator.
+    assert_eq!(&src[s[0].outer.clone()], "關於/頭像-李柏萱.png\n");
+}
+
+#[test]
+fn gallery_bare_path_with_pipe_attrs() {
+    let src = ":::gallery\nphoto.jpg|cover top\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "photo.jpg|cover top");
+    assert_eq!(s[0].path, "photo.jpg");
+    assert_eq!(s[0].attrs, "cover top");
+}
+
+#[test]
+fn gallery_blank_and_indented_lines() {
+    // The indent would read as an indented code block to `inert_regions`;
+    // inside a gallery body it is just an indented item, as the parser sees
+    // it.
+    let src = ":::gallery\n\n    photo.jpg\n\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "photo.jpg", "span starts after the indent");
+    assert_eq!(&src[s[0].outer.clone()], "    photo.jpg\n");
+}
+
+#[test]
+fn gallery_prose_line_emits_no_span() {
+    // The emission filter: `parse_gallery_body` still makes an item of a
+    // prose line (that is its historical grammar), but prose must never
+    // reach the delete-confirmation modal as a "reference".
+    let src = ":::gallery\nJust some prose here\nphoto.jpg\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "only the media line, got {s:?}");
+    assert_eq!(s[0].path, "photo.jpg");
+    let g = parse_gallery_body("", "Just some prose here\nphoto.jpg");
+    assert_eq!(g.items.len(), 2, "the parser still yields both items");
+}
+
+#[test]
+fn gallery_wikilink_line_path_is_stripped() {
+    let src = ":::gallery\n![[a.png]]\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].path, "a.png", "agrees with the generic token scanner");
+    assert_eq!(&src[s[0].value.clone()], "a.png");
+}
+
+#[test]
+fn gallery_markdown_image_line_spans_the_destination() {
+    let src = ":::gallery\n![alt](a.png)\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "a.png");
+    assert_eq!(&src[s[0].outer.clone()], "![alt](a.png)\n");
+}
+
+#[test]
+fn gallery_inside_fence_emits_nothing() {
+    let src = "```\n:::gallery\nphoto.jpg\n:::\n```\n";
+    assert!(spans(src).is_empty());
+}
+
+#[test]
+fn gallery_inside_html_comment_emits_nothing() {
+    let src = "<!--\n:::gallery\nphoto.jpg\n:::\n-->\n";
+    assert!(spans(src).is_empty());
+}
+
+#[test]
+fn fence_inside_gallery_body_is_still_tracked() {
+    // The mask gates OPENERS and CLOSERS, not body lines. Once the gallery
+    // opener is live, `parse_gallery_body` makes an item of every non-blank
+    // body line — including one inside a ``` fence, which really does render
+    // as an image. Masking it would leave the silent rename break intact.
+    let src = ":::gallery\n```\nphoto.jpg\n```\nreal.jpg\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 2, "{s:?}");
+    assert_eq!(s[0].path, "photo.jpg");
+    assert_eq!(s[1].path, "real.jpg");
+}
+
+#[test]
+fn gallery_nested_in_css_region_is_found() {
+    let src = ":::{.wrap}\n::::gallery\nphoto.jpg\n::::\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].path, "photo.jpg");
+}
+
+#[test]
+fn gallery_nested_in_grid_cell_is_found() {
+    // The deliberate SUPERSET over `extract_with_state`, which recurses only
+    // into CssRegion and Unknown bodies.
+    let src = "::::grid\n:::gallery\nphoto.jpg\n:::\n::::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].path, "photo.jpg");
+}
+
+#[test]
+fn unclosed_gallery_emits_nothing() {
+    let src = ":::gallery\nphoto.jpg\n";
+    assert!(spans(src).is_empty());
+}
+
+#[test]
+fn crlf_source_spans_are_exact() {
+    let src = ":::gallery\r\nphoto.jpg\r\n:::\r\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "photo.jpg");
+    assert_eq!(&src[s[0].outer.clone()], "photo.jpg\r\n");
+}
+
+#[test]
+fn hero_image_attr_span() {
+    let src = ":::hero {.big image=cover.jpg}\nOverlay copy\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "cover.jpg");
+    assert_eq!(s[0].container, PathContainer::ShortcodeAttr { key: "image".into() });
+    // `outer` is the whole item, plus a leading space so removing it does
+    // not leave a double space inside the braces.
+    assert_eq!(&src[s[0].outer.clone()], " image=cover.jpg");
+}
+
+#[test]
+fn hero_image_attr_quoted_with_pipe_attrs() {
+    let src = ":::hero {image=\"cover.jpg|contain top\"}\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "\"cover.jpg|contain top\"");
+    assert_eq!(s[0].path, "cover.jpg");
+    assert_eq!(s[0].attrs, "contain top");
+    assert_eq!(s[0].quote, Some('"'));
+}
+
+#[test]
+fn hero_multi_line_attr_block_span_is_exact() {
+    // Proves `parse_attrs_spanned(&source[brace_start..])` terminates where
+    // the gathered-args form would, so the multi-line ladder is not mirrored.
+    let src = ":::hero {.big\n  mobile=overlay\n  image=cover.jpg\n}\nOverlay\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "cover.jpg");
+}
+
+#[test]
+fn hero_malformed_attr_block_emits_no_span_and_parser_falls_back() {
+    // `image=a.jpg|contain` is an InvalidKey (the bareword grammar has no
+    // `|`), which `parse_hero` swallows via `unwrap_or_default()`.
+    let src = ":::hero {image=a.jpg|contain}\n:::\n";
+    assert!(spans(src).is_empty(), "{:?}", spans(src));
+    assert!(crate::ast::attrs::parse_attrs("{image=a.jpg|contain}").is_err());
+}
+
+#[test]
+fn hero_directive_line_path_span() {
+    let src = ":::hero ./photo.jpg {.big}\nOverlay\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "./photo.jpg");
+    assert_eq!(s[0].container, PathContainer::HeroDirective);
+}
+
+#[test]
+fn hero_body_media_run_spans() {
+    let src = ":::hero\nslide-a.jpg\nslide-b.png\nSome overlay prose\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 2, "{s:?}");
+    assert_eq!(&src[s[0].value.clone()], "slide-a.jpg");
+    assert_eq!(&src[s[1].value.clone()], "slide-b.png");
+    assert_eq!(s[0].container, PathContainer::HeroBodyMedia);
+}
+
+#[test]
+fn hero_prose_ending_in_media_extension_is_not_a_span() {
+    // Mirrors `hero_prose_ending_in_media_extension_stays_overlay`.
+    let src = ":::hero\nslide-a.jpg\nPhoto: alpine-meadow.jpg\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].path, "slide-a.jpg");
+}
+
+#[test]
+fn hero_with_image_attr_emits_no_body_spans() {
+    let src = ":::hero {image=cover.jpg}\nslide-b.png\n:::\n";
+    let s = spans(src);
+    assert_eq!(s.len(), 1, "body lines are overlay when image= is set: {s:?}");
+    assert_eq!(s[0].path, "cover.jpg");
+}
+
+#[test]
+fn spans_agree_with_parsers() {
+    // The parity invariant: whatever `shortcode_asset_spans` reports must be
+    // what the parsers actually read. Cross-referenced from `parse_hero` and
+    // `hero_media_run` — weakening this test is what lets the block-level
+    // ladder drift from `extract_with_state`.
+    let gallery_cases = [
+        ":::gallery\nphoto.jpg\n:::\n",
+        ":::gallery 3 {.p}\na.png\nb.png\nc.webm\n:::\n",
+        ":::gallery\n![[a.png]]\n![alt](b.png)\nc.png|cover\n:::\n",
+        ":::gallery\n\n  indented.png\n\n:::\n",
+        ":::gallery\n關於/x.png\n:::\n",
+    ];
+    for src in gallery_cases {
+        let body: Vec<&str> = src.lines().skip(1).take_while(|l| l.trim() != ":::").collect();
+        let parsed = parse_gallery_body("", &body.join("\n"));
+        let want: Vec<String> = parsed
+            .items
+            .iter()
+            .filter(|it| {
+                let raw = url_raw(&it.src);
+                crate::ast::extract_hero::is_bare_hero_media(raw) || raw.contains('(')
+            })
+            .map(|it| crate::media::strip_wikilink(url_raw(&it.src)).to_string())
+            .collect();
+        let got: Vec<String> = shortcode_asset_spans(src).into_iter().map(|s| s.path).collect();
+        assert_eq!(got, want, "gallery parity for {src:?}");
+    }
+
+    let hero_cases = [
+        ":::hero {image=cover.jpg}\ncopy\n:::\n",
+        ":::hero ./photo.jpg\ncopy\n:::\n",
+        ":::hero\na.jpg\nb.jpg\ncopy\n:::\n",
+        ":::hero\n![[a.png]]\ncopy\n:::\n",
+        ":::hero\ncopy only\n:::\n",
+    ];
+    for src in hero_cases {
+        let opener = src.lines().next().unwrap();
+        let args = opener.trim_start_matches(':').trim_start_matches("hero");
+        let body: Vec<&str> = src.lines().skip(1).take_while(|l| l.trim() != ":::").collect();
+        let (hero, _) = crate::ast::extract_hero::parse_hero(
+            args,
+            &body.join("\n"),
+            &crate::ast::parser::ParseConfig::default(),
+        );
+        let mut want: Vec<String> = Vec::new();
+        if let Some(u) = &hero.image {
+            want.push(crate::media::strip_wikilink(url_raw(u)).to_string());
+        }
+        want.extend(
+            hero.extra_images
+                .iter()
+                .map(|u| crate::media::strip_wikilink(url_raw(u)).to_string()),
+        );
+        let got: Vec<String> = shortcode_asset_spans(src).into_iter().map(|s| s.path).collect();
+        assert_eq!(got, want, "hero parity for {src:?}");
+    }
+}
+
+#[test]
+fn every_shortcode_kind_url_slot_is_accounted_for() {
+    // Derived from `ast::visit::visit_urls_in_shortcode`, the existing SSOT
+    // for "which shortcode fields hold a URL". EXHAUSTIVE match, NO wildcard
+    // arm: a new `Shortcode` variant with a URL slot fails to COMPILE here
+    // rather than going silently untracked by rename.
+    use crate::ast::shortcode::Shortcode;
+
+    /// How a variant's URL slots reach rename tracking.
+    #[derive(Debug, PartialEq)]
+    enum Tracking {
+        /// Always written as a markdown token — `extract_md_references` sees it.
+        GenericOnly,
+        /// Can be written as a bare path — needs `shortcode_asset_spans`.
+        Structural,
+        /// No URL slots at all.
+        None,
+    }
+
+    fn classify(sc: &Shortcode) -> Tracking {
+        match sc {
+            // `visit.rs`: no URLs.
+            Shortcode::Subscribe(_) | Shortcode::Recent(_) | Shortcode::Apply(_) => Tracking::None,
+            // `visit.rs`: item.url — buttons items are `[label](url)` lines.
+            Shortcode::Buttons(_) => Tracking::GenericOnly,
+            // `visit.rs`: cells are typed blocks; every URL in them came from
+            // real markdown inline syntax.
+            Shortcode::Grid(_) => Tracking::GenericOnly,
+            // `visit.rs`: item.src — a gallery body line may be a bare path.
+            Shortcode::Gallery(_) => Tracking::Structural,
+            // `visit.rs`: args.image + args.extra_images — `image=` attr,
+            // directive-line path, or bare body media lines. `mobile=` is a
+            // layout mode, not a path, and is correctly excluded.
+            Shortcode::Hero(_) => Tracking::Structural,
+        }
+    }
+
+    let all = [
+        Shortcode::Subscribe(Default::default()),
+        Shortcode::Buttons(Default::default()),
+        Shortcode::Gallery(Default::default()),
+        Shortcode::Hero(Default::default()),
+        Shortcode::Grid(Default::default()),
+        Shortcode::Recent(Default::default()),
+        Shortcode::Apply(Default::default()),
+    ];
+    let structural = all
+        .iter()
+        .filter(|sc| classify(sc) == Tracking::Structural)
+        .count();
+    assert_eq!(structural, 2, "exactly Gallery and Hero need structural spans");
+}

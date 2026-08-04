@@ -47,6 +47,12 @@ pub struct CompletionCandidate {
 /// same language tree (e.g. both under `zh-hans/`), and then candidates closer
 /// in the directory tree, rank higher. This mirrors [`crate::content_graph`]'s
 /// resolver so the dropdown order matches how a link would actually resolve.
+///
+/// A prefix containing a `/` (or `\`) is PATH-QUALIFIED: its segments are
+/// matched, in order, against the candidate's full path components rather than
+/// against the filename alone. That is what makes `關於/頭像-李` find
+/// `關於/assets/頭像-李柏萱.png` even though the author omits the `assets/`
+/// segment they never type. See [`insert_for`] for what such an accept inserts.
 pub fn rank_completions(
     prefix: &str,
     candidates: &[CompletionCandidate],
@@ -59,14 +65,185 @@ pub fn rank_completions(
     let from_norm = crate::content_graph::normalize_path(from_file);
     let from_lang = crate::home::lang_tree_prefix(&from_norm);
     let from_dirs = crate::content_graph::dir_components(&from_norm);
+    let query = parse_query(prefix);
 
-    let mut idx: Vec<usize> = (0..candidates.len()).collect();
-    idx.retain(|&i| matches(prefix, &candidates[i].insert));
-    // `sort_by_cached_key`, not `sort_by_key`: `score` normalizes the candidate
-    // path (NFC + lowercase, plus a Vec alloc), so caching one key per element
-    // avoids re-running it on every comparison across the whole-vault list.
-    idx.sort_by_cached_key(|&i| score(prefix, &candidates[i], embed, from_lang, &from_dirs));
-    idx
+    // ONE normalization pass per candidate. Both the filter (`match_query`) and
+    // the sort key (`score`) read the same `Prepared`, so neither `norm` nor
+    // `normalize_path` runs twice — and `norm(prefix)` no longer runs per
+    // candidate at all. Net per-keystroke work is lower than the filename-only
+    // version this replaced, despite the added path logic.
+    let mut hits: Vec<(Prepared<'_>, Hit)> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let p = Prepared {
+                idx: i,
+                c,
+                insert_norm: norm(&c.insert),
+                cand_norm: crate::content_graph::normalize_path(&c.rel_path),
+            };
+            let hit = match_query(&query, &p)?;
+            Some((p, hit))
+        })
+        .collect();
+    // `sort_by_cached_key`, not `sort_by_key`: `score` allocates two Strings and
+    // a Vec, so caching one key per element avoids re-running it on every
+    // comparison across the whole-vault list.
+    hits.sort_by_cached_key(|(p, hit)| score(&query, p, *hit, embed, from_lang, &from_dirs));
+    hits.into_iter().map(|(p, _)| p.idx).collect()
+}
+
+/// A candidate with its two normalized forms computed once. `cand_norm`'s
+/// components are re-split on demand rather than stored: a `Vec<&str>` borrowed
+/// from a sibling field would make this struct self-referential.
+struct Prepared<'a> {
+    idx: usize,
+    c: &'a CompletionCandidate,
+    /// `norm(&c.insert)` — the bare filename / page name / heading text.
+    insert_norm: String,
+    /// `content_graph::normalize_path(&c.rel_path)` — the root-relative path.
+    cand_norm: String,
+}
+
+/// The typed prefix, split into path segments.
+///
+/// `path_qualified` is what switches the matcher from "filename contains" to
+/// "ordered subsequence over path components". Empty segments are dropped, so a
+/// leading `/` is harmless (candidates are root-relative already) and `a//b` is
+/// `a`,`b`. `dir_only` (a trailing `/`) restricts matching to directories.
+struct Query {
+    segs: Vec<String>,
+    path_qualified: bool,
+    dir_only: bool,
+}
+
+fn parse_query(prefix: &str) -> Query {
+    let raw = prefix.replace('\\', "/");
+    Query {
+        path_qualified: raw.contains('/'),
+        dir_only: raw.ends_with('/'),
+        segs: raw.split('/').filter(|s| !s.is_empty()).map(norm).collect(),
+    }
+}
+
+/// How well a candidate matched — two sort keys, both constant `0` for a
+/// non-path-qualified query (see `match_query`'s single early return), which is
+/// what makes bare-query ordering provably identical to before.
+#[derive(Debug, Clone, Copy)]
+struct Hit {
+    /// 0 = the LAST query segment matched the filename component; 1 = it only
+    /// matched a directory (so `關於/ass` still lists the subtree while any true
+    /// filename match outranks it).
+    seg_hit: u8,
+    /// 0 = the matched components are contiguous AND end at the filename (a true
+    /// path-suffix match); 1 = gapped. Mirrors `resolve_asset_ref` step 4, which
+    /// tries `find_by_suffix(target)` before `find_by_suffix(basename)`.
+    dir_tight: u8,
+}
+
+/// Filter + match-quality, in one pass. `None` drops the candidate.
+fn match_query(q: &Query, p: &Prepared<'_>) -> Option<Hit> {
+    if q.segs.is_empty() {
+        return Some(Hit { seg_hit: 0, dir_tight: 0 });
+    }
+    // Headings are excluded from path logic on purpose: heading TEXT may contain
+    // `/` (`[[Page#A/B]]`), and a heading candidate's `rel_path` is the literal
+    // string `"H2"`, so splitting the query would match the user's words against
+    // a level marker. A non-path-qualified query takes the same branch, which is
+    // today's rule verbatim.
+    if !q.path_qualified || p.c.kind == CandidateKind::Heading {
+        return if p.insert_norm.contains(&q.segs[0]) {
+            Some(Hit { seg_hit: 0, dir_tight: 0 })
+        } else {
+            None
+        };
+    }
+
+    let comps: Vec<&str> = p.cand_norm.split('/').filter(|s| !s.is_empty()).collect();
+    if comps.is_empty() {
+        return None;
+    }
+    let file_i = comps.len() - 1;
+    // A trailing `/` means "inside this directory": the segments must all be
+    // consumed by directory components, never by the filename.
+    let limit = if q.dir_only { file_i } else { comps.len() };
+
+    let mut positions: Vec<usize> = Vec::with_capacity(q.segs.len());
+    let mut next = 0usize;
+    for seg in &q.segs {
+        let mut found = None;
+        while next < limit {
+            let at = next;
+            next += 1;
+            if comps[at].contains(seg.as_str()) {
+                found = Some(at);
+                break;
+            }
+        }
+        positions.push(found?);
+    }
+
+    let last = *positions.last().expect("segs is non-empty");
+    let contiguous = positions.windows(2).all(|w| w[1] == w[0] + 1);
+    Some(Hit {
+        seg_hit: u8::from(last != file_i),
+        dir_tight: u8::from(!(contiguous && last == file_i)),
+    })
+}
+
+/// The reference text an accepted completion must insert, or `None` when the
+/// bare `insert` value is already correct (a non-path-qualified query, or a
+/// `Heading`).
+///
+/// THE INVARIANT: the emitted form is the one whose FIRST applicable resolver
+/// step reproduces `c.rel_path` exactly.
+///
+/// - `Page` → `rel_path` minus `.md`, root-relative, no leading `/`.
+///   [`crate::content_graph::ContentGraph::resolve_path`] has no source-relative
+///   step, so its exact `path_index` lookup (step 1/2) pins this regardless of
+///   where the source file lives.
+/// - `Asset` inside the source's own subtree → the path relative to
+///   `parent_dir(from_rel)`. `resolve_asset_ref` STEP 2 (`lexical_join`) then
+///   reproduces `rel_path` by construction → `Literal`.
+/// - `Asset` anywhere else → `"/" + rel_path`, pinned by step 1.
+///
+/// The bare root-relative asset form is never emitted: from `關於/x.md` it would
+/// hit step 2 first and silently resolve `assets/hero.png` to an entirely
+/// different, existing `關於/assets/hero.png`. `..` is never emitted either —
+/// step-1 anchoring is strictly simpler and equally exact.
+///
+/// Extension policy lives here, next to the ranker that owns it: pages drop
+/// `.md`, assets keep their extension.
+pub fn insert_for(prefix: &str, c: &CompletionCandidate, from_rel: &str) -> Option<String> {
+    let q = parse_query(prefix);
+    if !q.path_qualified || q.segs.is_empty() {
+        return None;
+    }
+    let rel = c.rel_path.replace('\\', "/");
+    match c.kind {
+        CandidateKind::Heading => None,
+        CandidateKind::Page => Some(rel.strip_suffix(".md").unwrap_or(&rel).to_string()),
+        CandidateKind::Asset => {
+            let from = from_rel.replace('\\', "/");
+            let from_dir = crate::resolve::parent_dir(&from);
+            Some(source_relative(from_dir, &rel).unwrap_or_else(|| format!("/{rel}")))
+        }
+    }
+}
+
+/// `rel_path` expressed relative to `from_dir`, or `None` when it is not inside
+/// that directory. Compares COMPONENTS, never the raw string — `關於2/x.png`
+/// must not count as living inside `關於`. Never produces a `..` segment.
+fn source_relative(from_dir: &str, rel_path: &str) -> Option<String> {
+    let base: Vec<&str> = from_dir.split('/').filter(|s| !s.is_empty()).collect();
+    let target: Vec<&str> = rel_path.split('/').filter(|s| !s.is_empty()).collect();
+    if target.len() <= base.len() {
+        return None;
+    }
+    if base.iter().enumerate().any(|(i, b)| target[i] != *b) {
+        return None;
+    }
+    Some(target[base.len()..].join("/"))
 }
 
 /// NFC-normalize then lowercase — identical to
@@ -80,282 +257,77 @@ fn norm(s: &str) -> String {
     s.nfc().collect::<String>().to_lowercase()
 }
 
-/// A candidate matches when its normalized insert value contains the
-/// normalized prefix (empty prefix matches everything).
-fn matches(prefix: &str, insert: &str) -> bool {
-    if prefix.is_empty() {
-        return true;
-    }
-    norm(insert).contains(&norm(prefix))
-}
-
 /// Lower score sorts first. Ordering, in priority:
 /// 1. kind matches the trigger (`embed` → Asset first, else Page first)
 /// 2. prefix-at-start beats prefix-in-middle (match quality)
-/// 3. same language tree as the source (or both tree-less) beats a different one
-/// 4. closer in the directory tree (longer shared dir prefix) beats farther
-/// 5. shorter insert value (closer match) beats longer
-/// 6. lexicographic insert value
-/// 7. lexicographic normalized path (fully deterministic, independent of the
+/// 3. the last query segment matched the FILENAME, not just a directory
+/// 4. the matched components are a contiguous path suffix, not a gapped one
+/// 5. same language tree as the source (or both tree-less) beats a different one
+/// 6. closer in the directory tree (longer shared dir prefix) beats farther
+/// 7. shorter insert value (closer match) beats longer
+/// 8. lexicographic insert value
+/// 9. lexicographic normalized path (fully deterministic, independent of the
 ///    filesystem walk order)
 ///
-/// Keys 3, 4 and 7 mirror the resolver's tiebreak chain in
+/// Keys 5, 6 and 9 mirror the resolver's tiebreak chain in
 /// [`crate::content_graph`] (`tree_match`, `common_prefix_len`,
 /// `Reverse(normalized path)`), so when two candidates share a stem the
-/// dropdown surfaces the same one the link would resolve to. Keys 1–2 are
+/// dropdown surfaces the same one the link would resolve to. Keys 1–4 are
 /// completion-specific — the resolver matches exact stems and has no notion of
 /// trigger kind or partial-match quality.
+///
+/// Keys 3 and 4 are inserted BEFORE that resolver-mirroring chain begins and are
+/// the constant `0` for every candidate when the query has no separator, so they
+/// cannot perturb bare-query order (see `bare_query_ordering_is_unchanged_by_path_keys`).
+/// Key 2 is computed against the query's LAST segment, which for a bare query is
+/// the whole prefix — byte-identical to before.
 ///
 /// `from_lang` / `from_dirs` are the source file's language-tree prefix and
 /// directory components (computed once by the caller).
 fn score(
-    prefix: &str,
-    c: &CompletionCandidate,
+    q: &Query,
+    p: &Prepared<'_>,
+    hit: Hit,
     embed: bool,
     from_lang: Option<&str>,
     from_dirs: &[&str],
-) -> (u8, u8, u8, Reverse<usize>, usize, String, String) {
+) -> (u8, u8, u8, u8, u8, Reverse<usize>, usize, String, String) {
+    let c = p.c;
     let kind_rank = match (embed, c.kind) {
         (true, CandidateKind::Asset) | (false, CandidateKind::Page) => 0u8,
         _ => 1u8,
     };
-    let starts = if !prefix.is_empty() && norm(&c.insert).starts_with(&norm(prefix)) { 0u8 } else { 1u8 };
+    let starts = match q.segs.last() {
+        Some(last) if p.insert_norm.starts_with(last.as_str()) => 0u8,
+        _ => 1u8,
+    };
 
     // Language tree + directory proximity, both relative to the source file and
     // computed on the resolver-normalized candidate path.
-    let cand_norm = crate::content_graph::normalize_path(&c.rel_path);
-    let cand_lang = crate::home::lang_tree_prefix(&cand_norm);
+    let cand_lang = crate::home::lang_tree_prefix(&p.cand_norm);
     let lang_rank = match (from_lang, cand_lang) {
         (Some(f), Some(cc)) if f.eq_ignore_ascii_case(cc) => 0u8,
         (None, None) => 0u8,
         _ => 1u8,
     };
     let proximity = crate::content_graph::common_prefix_len(
-        &crate::content_graph::dir_components(&cand_norm),
+        &crate::content_graph::dir_components(&p.cand_norm),
         from_dirs,
     );
 
     (
         kind_rank,
         starts,
+        hit.seg_hit,
+        hit.dir_tight,
         lang_rank,
         Reverse(proximity), // more shared dirs sorts first under ascending order
         c.insert.chars().count(), // scalar count, not byte len — CJK filenames sort correctly
-        norm(&c.insert),
-        cand_norm, // terminal: alphabetical-by-normalized-path (smallest wins, mirroring the resolver's Reverse(path))
+        p.insert_norm.clone(),
+        p.cand_norm.clone(), // terminal: alphabetical-by-normalized-path (smallest wins, mirroring the resolver's Reverse(path))
     )
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn cand(insert: &str, kind: CandidateKind) -> CompletionCandidate {
-        CompletionCandidate {
-            insert: insert.to_string(),
-            label: insert.to_string(),
-            rel_path: format!("{insert}.x"),
-            kind,
-        }
-    }
-
-    /// Candidate with an explicit project-relative path, for language/proximity
-    /// ranking tests.
-    fn cand_at(insert: &str, rel_path: &str, kind: CandidateKind) -> CompletionCandidate {
-        CompletionCandidate {
-            insert: insert.to_string(),
-            label: insert.to_string(),
-            rel_path: rel_path.to_string(),
-            kind,
-        }
-    }
-
-    #[test]
-    fn empty_prefix_returns_all_candidates() {
-        let cands = vec![
-            cand("about", CandidateKind::Page),
-            cand("photo.png", CandidateKind::Asset),
-        ];
-        let ranked = rank_completions("", &cands, false, "");
-        assert_eq!(ranked.len(), 2);
-        // Link mode (embed=false): page ranks before asset.
-        assert_eq!(cands[ranked[0]].kind, CandidateKind::Page);
-        assert_eq!(cands[ranked[1]].kind, CandidateKind::Asset);
-    }
-
-    #[test]
-    fn prefix_filters_and_starts_with_ranks_first() {
-        let cands = vec![
-            cand("changelog", CandidateKind::Page),  // contains "ang" in middle
-            cand("angle", CandidateKind::Page),        // starts with "ang"
-            cand("about", CandidateKind::Page),        // no match
-        ];
-        let ranked = rank_completions("ang", &cands, false, "");
-        // "about" filtered out; "angle" (starts-with) before "changelog".
-        assert_eq!(ranked.len(), 2);
-        assert_eq!(cands[ranked[0]].insert, "angle");
-        assert_eq!(cands[ranked[1]].insert, "changelog");
-    }
-
-    #[test]
-    fn case_insensitive_match() {
-        let cands = vec![cand("README", CandidateKind::Page)];
-        assert_eq!(rank_completions("read", &cands, false, "").len(), 1);
-    }
-
-    #[test]
-    fn embed_ranks_assets_before_pages() {
-        let cands = vec![
-            cand("hero", CandidateKind::Page),
-            cand("hero.png", CandidateKind::Asset),
-        ];
-        // Both match "hero". With embed=true the asset must come first.
-        let ranked = rank_completions("hero", &cands, true, "");
-        assert_eq!(cands[ranked[0]].kind, CandidateKind::Asset);
-        // With embed=false the page comes first.
-        let ranked2 = rank_completions("hero", &cands, false, "");
-        assert_eq!(cands[ranked2[0]].kind, CandidateKind::Page);
-    }
-
-    #[test]
-    fn cjk_prefix_matches() {
-        let cands = vec![
-            cand("刘果的笔记", CandidateKind::Page),
-            cand("about", CandidateKind::Page),
-        ];
-        let ranked = rank_completions("刘果", &cands, false, "");
-        assert_eq!(ranked.len(), 1);
-        assert_eq!(cands[ranked[0]].insert, "刘果的笔记");
-    }
-
-    #[test]
-    fn heading_candidates_rank_starts_with_before_contains() {
-        // A homogeneous Heading list: kind-priority is irrelevant (every
-        // candidate is a Heading), so ranking degenerates to prefix-at-start
-        // beating prefix-in-middle, then shorter, then lexicographic.
-        let cands = vec![
-            cand("Background and context", CandidateKind::Heading), // "context" in middle
-            cand("Context", CandidateKind::Heading),                  // starts with "context"
-            cand("Conclusion", CandidateKind::Heading),               // no match
-        ];
-        let ranked = rank_completions("context", &cands, false, "");
-        assert_eq!(ranked.len(), 2);
-        assert_eq!(cands[ranked[0]].insert, "Context");
-        assert_eq!(cands[ranked[1]].insert, "Background and context");
-    }
-
-    #[test]
-    fn heading_embed_flag_does_not_reorder_headings() {
-        // Headings are completed for both `[[#` and (hypothetically) `![[#`;
-        // the embed flag must not perturb a homogeneous heading list, since
-        // no Heading is "the embed kind".
-        // Equal-length labels so the length tiebreak is neutral and the
-        // lexicographic tiebreak decides ("aaaa" < "bbbb").
-        let cands = vec![
-            cand("bbbb", CandidateKind::Heading),
-            cand("aaaa", CandidateKind::Heading),
-        ];
-        let with_embed = rank_completions("", &cands, true, "");
-        let without = rank_completions("", &cands, false, "");
-        assert_eq!(with_embed, without);
-        assert_eq!(cands[with_embed[0]].insert, "aaaa");
-    }
-
-    #[test]
-    fn nfc_and_nfd_forms_match_each_other() {
-        // "café": NFC is U+00E9 (é as one codepoint); NFD is "cafe" + U+0301
-        // (combining acute). A filename written in NFD must still match an NFC
-        // prefix and vice versa — matching ContentGraph's normalize_component
-        // so the suggestion resolves to the same target the link will.
-        let nfc = "caf\u{00e9}"; // café (single é)
-        let nfd = "cafe\u{0301}"; // café (e + combining accent)
-        assert_ne!(nfc, nfd, "precondition: the two byte-forms differ");
-
-        // NFD candidate, NFC prefix → matches.
-        let cands = vec![cand(nfd, CandidateKind::Page)];
-        assert_eq!(rank_completions(nfc, &cands, false, "").len(), 1);
-
-        // NFC candidate, NFD prefix → matches.
-        let cands2 = vec![cand(nfc, CandidateKind::Page)];
-        assert_eq!(rank_completions(nfd, &cands2, false, "").len(), 1);
-    }
-
-    // ── Language-tree + tree-proximity ranking (uses from_file) ──────────
-
-    #[test]
-    fn same_language_tree_ranks_before_other_language() {
-        // Two equally-good "guide" matches. From a zh-hans source, the zh-hans
-        // candidate must win over the en one.
-        let cands = vec![
-            cand_at("guide", "en/guide.md", CandidateKind::Page),
-            cand_at("guide", "zh-hans/guide.md", CandidateKind::Page),
-        ];
-        let ranked = rank_completions("guide", &cands, false, "zh-hans/about.md");
-        assert_eq!(cands[ranked[0]].rel_path, "zh-hans/guide.md");
-    }
-
-    #[test]
-    fn closer_in_tree_ranks_before_farther_in_same_language() {
-        // Both same language (zh-hans), both match "note". From
-        // zh-hans/游记/index.md the sibling under .../游记/ outranks the one at
-        // the language-tree root.
-        let cands = vec![
-            cand_at("note", "zh-hans/note.md", CandidateKind::Page),
-            cand_at("note", "zh-hans/游记/note.md", CandidateKind::Page),
-        ];
-        let ranked = rank_completions("note", &cands, false, "zh-hans/游记/index.md");
-        assert_eq!(cands[ranked[0]].rel_path, "zh-hans/游记/note.md");
-    }
-
-    #[test]
-    fn match_quality_outranks_language() {
-        // Match quality (starts-with vs substring) is a higher-priority key than
-        // language — a completion-specific choice (the resolver has no partial
-        // match). A starts-with match in another language beats a middle-
-        // substring match in the same one.
-        let cands = vec![
-            cand_at("周报report", "zh-hans/周报report.md", CandidateKind::Page), // same lang, middle
-            cand_at("report-en", "en/report-en.md", CandidateKind::Page),        // other lang, starts
-        ];
-        let ranked = rank_completions("report", &cands, false, "zh-hans/about.md");
-        assert_eq!(cands[ranked[0]].rel_path, "en/report-en.md");
-    }
-
-    #[test]
-    fn root_source_prefers_root_candidate_over_language_tree() {
-        // A tree-less (root) source prefers a tree-less candidate — the "both
-        // tree-less" arm of the language match, mirroring the resolver.
-        let cands = vec![
-            cand_at("about", "zh-hans/about.md", CandidateKind::Page),
-            cand_at("about", "about.md", CandidateKind::Page),
-        ];
-        let ranked = rank_completions("about", &cands, false, "index.md");
-        assert_eq!(cands[ranked[0]].rel_path, "about.md");
-    }
-
-    #[test]
-    fn ties_break_by_path_deterministically() {
-        // Same stem, same language, same proximity, same length → the resolver's
-        // terminal key (alphabetically-smaller normalized path) decides, so the
-        // result is independent of candidate walk order.
-        let cands = vec![
-            cand_at("guide", "zh-hans/b/guide.md", CandidateKind::Page),
-            cand_at("guide", "zh-hans/a/guide.md", CandidateKind::Page),
-        ];
-        let ranked = rank_completions("guide", &cands, false, "zh-hans/x.md");
-        assert_eq!(cands[ranked[0]].rel_path, "zh-hans/a/guide.md");
-    }
-
-    #[test]
-    fn language_and_proximity_do_not_perturb_a_single_language_vault() {
-        // When every candidate shares the source's language (or there is none),
-        // the language/proximity keys tie and ordering falls back to the
-        // existing match-quality/length/lexicographic behavior.
-        let cands = vec![
-            cand_at("changelog", "en/changelog.md", CandidateKind::Page), // "ang" middle
-            cand_at("angle", "en/angle.md", CandidateKind::Page),          // "ang" start
-        ];
-        let ranked = rank_completions("ang", &cands, false, "en/index.md");
-        assert_eq!(cands[ranked[0]].insert, "angle");
-    }
-}
+#[path = "link_completions_tests.rs"]
+mod tests;

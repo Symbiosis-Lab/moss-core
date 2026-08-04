@@ -51,9 +51,9 @@
 //!   [`InertRegions::intersects`].
 //!
 //! Not yet consolidated onto this module (each still carries a fence-only
-//! scan): [`crate::resolve::block_refs`], [`crate::resolve::md_extract`],
-//! [`crate::ast::editor_scan`], and src-tauri's `build::scan::scan`. They
-//! should move here as they are next touched.
+//! scan): [`crate::resolve::block_refs`], [`crate::ast::editor_scan`], and
+//! src-tauri's `build::scan::scan`. They should move here as they are next
+//! touched. [`crate::resolve::md_extract`] moved here 2026-08-03.
 
 use std::ops::Range;
 
