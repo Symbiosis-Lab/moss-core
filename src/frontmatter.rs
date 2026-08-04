@@ -214,7 +214,7 @@ pub fn serialize(
 /// `tauri-apps/tauri#10194` (open upstream issue).
 ///
 /// The frontend guards this at the DOM `beforeinput` boundary (see
-/// `frontend/app/ui/control-char-guard.ts`), but this Rust strip mirrors it
+/// `frontend/app/shared/ui/control-char-guard.ts`), but this Rust strip mirrors it
 /// at the write boundary as defense-in-depth — any control char that reaches
 /// this point (e.g. a value set before the guard was installed, or via a
 /// path that bypasses the DOM entirely) is stripped before it is ever

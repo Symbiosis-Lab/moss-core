@@ -332,7 +332,7 @@ fn test_serialize_strips_stray_control_chars() {
     // path can insert the arrow key's legacy control code (Right =
     // U+001D GROUP SEPARATOR) into a plain input instead of just moving
     // the caret. The frontend guards this at `beforeinput`
-    // (frontend/app/ui/control-char-guard.ts); this write-boundary strip
+    // (frontend/app/shared/ui/control-char-guard.ts); this write-boundary strip
     // is the defense-in-depth backstop so a corrupted value can never
     // reach disk even if it slips past the DOM guard.
     let corrupted = format!("websites.{}", "\u{1D}".repeat(8));
