@@ -231,12 +231,14 @@ fn link_closes_at(bytes: &[u8], at: usize) -> bool {
 /// Replace the sentinels in `blocks` with the inlines their `![[…]]` sources
 /// parse to on their own. A no-op when [`substitute`] found nothing.
 ///
-/// Every field that can hold a sentinel is visited: inline vectors (where the
-/// embed becomes an `Inline::Image`), and the string-ish leaves — `Url`,
-/// `title`, image `alt`, `Inline::Code`, `Block::CodeBlock`, `Block::Other` —
-/// where the author's original bytes are put back instead. `Block::Shortcode`
-/// is the one exception, and only because its cells were parsed (and restored)
-/// by their own `parse_document` call.
+/// EVERY field of `Block` and `Inline` is visited, enforced by the compiler:
+/// no match arm in [`Restore::in_block`] / [`Restore::in_inline`] uses `..`,
+/// so a new AST field cannot be forgotten here. Inline vectors get the embed
+/// as an `Inline::Image`; the string-ish leaves — `Url`, `title`, image `alt`,
+/// `wikilink_pothole`, callout `title`, footnote `label`, `Inline::Code`,
+/// `Block::CodeBlock`, `Block::Other` — get the author's original bytes back
+/// instead. `Block::Shortcode` is the one exception, and only because its
+/// cells were parsed (and restored) by their own `parse_document` call.
 ///
 /// Must run BEFORE `assign_heading_id_suffixes`: a heading whose text held a
 /// sentinel gets its `id` recomputed here, and the duplicate-numbering pass
@@ -271,9 +273,23 @@ struct Restore<'a> {
 }
 
 impl Restore<'_> {
+    /// # Why every arm destructures exhaustively (no `..`)
+    ///
+    /// Four sentinel leaks have shipped from this file, each one a field the
+    /// author of the previous fix did not think of: `Block::Table.header`,
+    /// then `Inline::Image.wikilink_pothole`, with `Block::Callout.title` and
+    /// `Block::FootnoteDefinition.label` sitting unvisited behind a
+    /// `..`-swallowed match arm. Finding an input that reaches a field is a
+    /// weak proof — the reviewer who could not build one for `title` was
+    /// right about today's parser and would be wrong the day it changes.
+    ///
+    /// So no arm here may use `..`. Adding a field to `Block` or `Inline` is
+    /// now a COMPILE ERROR in this function, which forces the next author to
+    /// answer "can this hold a sentinel?" instead of leaking one. Bind an
+    /// irrelevant field to `_` and the answer is recorded in the source.
     fn in_block(&self, block: &mut Block) {
         match block {
-            Block::Heading { children, id, .. } => {
+            Block::Heading { children, id, level: _ } => {
                 if self.in_inlines(children) {
                     // The `id` was slugged mid-parse from the event stream,
                     // when the heading's text still read `U+E000…`. Recompute
@@ -292,7 +308,14 @@ impl Restore<'_> {
             Block::Paragraph(children) => {
                 self.in_inlines(children);
             }
-            Block::Figure { image, caption, .. } => {
+            Block::Figure {
+                image,
+                caption,
+                width: _,
+                align: _,
+                class_names: _,
+                img_style: _,
+            } => {
                 self.in_inline(image);
                 if let Some(caption) = caption {
                     self.in_inlines(caption);
@@ -304,21 +327,53 @@ impl Restore<'_> {
                     self.in_block(nested);
                 }
             }
-            Block::Callout { children, .. }
-            | Block::BlockQuote(children)
-            | Block::FootnoteDefinition { children, .. } => {
+            // `title` is plain text on the callout marker line
+            // (`> [!note] [![[x.png]]](/u)`), not an inline vector — the
+            // author's bytes go back.
+            Block::Callout {
+                title,
+                children,
+                kind: _,
+                fold: _,
+            } => {
+                self.literal_opt(title);
                 for nested in children {
                     self.in_block(nested);
                 }
             }
-            Block::List { items, .. } => {
+            Block::BlockQuote(children) => {
+                for nested in children {
+                    self.in_block(nested);
+                }
+            }
+            // The definition's `label` must stay byte-equal to the
+            // `Inline::FootnoteRef` that points at it, so both are restored
+            // the same way.
+            Block::FootnoteDefinition { label, children } => {
+                self.literal(label);
+                for nested in children {
+                    self.in_block(nested);
+                }
+            }
+            Block::List {
+                items,
+                ordered: _,
+                start: _,
+                item_source_lines: _,
+            } => {
                 for item in items {
                     for nested in item {
                         self.in_block(nested);
                     }
                 }
             }
-            Block::Table { header, rows, .. } => {
+            Block::Table {
+                header,
+                rows,
+                alignments: _,
+                header_source_line: _,
+                row_source_lines: _,
+            } => {
                 // The header row is a `Vec<Vec<Inline>>` of its own; a `..`
                 // that swallowed it dropped the author's embed on the floor
                 // and published a `U+E000` as link text.
@@ -329,8 +384,9 @@ impl Restore<'_> {
             // Raw payloads: a sentinel can only land here if the compound
             // shape sat inside an HTML block (not an inert region), so put
             // the author's bytes back rather than leaking `U+E000`.
-            Block::CodeBlock { value, .. } => {
+            Block::CodeBlock { value, lang } => {
                 self.literal(value);
+                self.literal_opt(lang);
             }
             Block::Other(html) => {
                 self.literal(html);
@@ -381,26 +437,38 @@ impl Restore<'_> {
                 children,
                 url,
                 title,
-                ..
+                is_wikilink: _,
             } => {
                 let mut changed = self.in_inlines(children);
                 changed |= self.literal_url(url);
                 changed |= self.literal_opt(title);
                 changed
             }
+            // `wikilink_pothole` is the fourth sentinel-bearing field found in
+            // this file: `![[a.png|[![[b.png]]](/u)]]` puts a whole compound
+            // shape in the pothole, `substitute` replaces its inner embed, and
+            // the `..` that used to sit here skipped the field — leaving a
+            // live `U+E000` for `dispatch_wikilink_embeds` to re-read as
+            // display params.
             Inline::Image {
-                src, alt, title, ..
+                src,
+                alt,
+                title,
+                wikilink_pothole,
+                is_wikilink: _,
             } => {
                 let mut changed = self.literal_url(src);
                 changed |= self.literal(alt);
                 changed |= self.literal_opt(title);
+                changed |= self.literal_opt(wikilink_pothole);
                 changed
             }
             Inline::Code(code) => self.literal(code),
             Inline::Other(raw) => self.literal(raw),
-            Inline::Text(_) | Inline::LineBreak | Inline::FootnoteRef(_) | Inline::TaskMarker(_) => {
-                false
-            }
+            // A footnote reference's label is restored so it keeps matching
+            // the `Block::FootnoteDefinition` label restored above.
+            Inline::FootnoteRef(label) => self.literal(label),
+            Inline::Text(_) | Inline::LineBreak | Inline::TaskMarker(_) => false,
         }
     }
 

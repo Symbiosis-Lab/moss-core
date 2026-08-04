@@ -53,6 +53,19 @@ pub struct RawRef {
     pub byte_from: usize,
     /// Byte offset in the source string where the token ends (exclusive).
     pub byte_to: usize,
+    /// Byte span of [`text`](Self::text) itself inside the source — the
+    /// wikilink target, or the markdown destination with any title stripped.
+    /// `source[ref_from..ref_to] == text`.
+    ///
+    /// A RENAME replaces exactly this span, which is narrower than
+    /// `byte_from..byte_to` and never covers a nested reference. That is what
+    /// makes `[![[hero.png]]](/album/)` rewritable: the inner embed's span and
+    /// the outer link's destination span are disjoint, so both can be edited
+    /// in one pass. Rebuilding the whole token from `syntax` instead would
+    /// re-emit the label verbatim and silently drop the inner rewrite.
+    pub ref_from: usize,
+    /// Exclusive end of [`ref_from`](Self::ref_from).
+    pub ref_to: usize,
 }
 
 /// Extract all markdown references from `source`.
@@ -68,12 +81,35 @@ pub struct RawRef {
 /// External URLs (`http://…`, `https://…`, `//`, `mailto:`, `tel:`, `data:`)
 /// are included as `MarkdownLink` / `MarkdownImage` — the caller decides
 /// whether to filter them out.
+///
+/// **Nested references are reported too.** The label of a markdown link is
+/// re-scanned, so `[![[hero.png]]](/album/)` — ADR-041's link-wrapped embed —
+/// yields the outer `MarkdownLink` AND the inner `WikilinkStemEmbed`, and
+/// `[![a](hero.png)](/album/)` yields the outer link and the inner image.
+/// Before that, the inner reference existed only as a substring of the outer
+/// ref's `label`, so a rename left it dangling with no report. Results stay in
+/// source order, with an enclosing reference immediately preceding the ones
+/// nested inside it.
+///
+/// An image's `alt` is deliberately NOT re-scanned: `![alt [![[x]]](/u)](y.png)`
+/// is one image whose alt text happens to contain brackets, and rewriting
+/// inside it would edit prose.
 pub fn extract_md_references(source: &str) -> Vec<RawRef> {
     let mask = crate::inert_regions::mask_inert(source);
-    let bytes = mask.as_bytes();
-    let len = bytes.len();
     let mut refs = Vec::new();
-    let mut i = 0;
+    scan_range(source, mask.as_bytes(), 0, source.len(), &mut refs);
+    refs
+}
+
+/// Scan `source[from..to]` for reference tokens, appending to `refs`.
+///
+/// `bytes` is the whole-source inert mask (byte-length preserving, so an
+/// offset in it is an offset in `source`); `to` bounds every lookahead, which
+/// is what keeps a nested scan of a link label from claiming a `]]` or a `)`
+/// that lives past the label's end.
+fn scan_range(source: &str, bytes: &[u8], from: usize, to: usize, refs: &mut Vec<RawRef>) {
+    let len = to;
+    let mut i = from;
 
     while i < len {
         // ── Backslash escape: `\[[note]]` / `\[t](p)` are NOT references ──
@@ -108,7 +144,7 @@ pub fn extract_md_references(source: &str) -> Vec<RawRef> {
             let inner_start = if is_embed_wikilink { i + 3 } else { i + 2 };
             // Find closing ]] — in the MASK, so a `]]` hidden in inline code
             // does not close a live wikilink.
-            if let Some(close) = find_double_bracket(bytes, inner_start) {
+            if let Some(close) = find_double_bracket(bytes, inner_start, len) {
                 // SAFETY: inner_start and close are valid UTF-8 char boundaries
                 // because we only advance past ASCII bytes ([, !, ]) to reach them.
                 #[allow(clippy::string_slice)]
@@ -133,7 +169,18 @@ pub fn extract_md_references(source: &str) -> Vec<RawRef> {
                         }
                         (true, Some(pot)) => RefSyntax::WikilinkAliasedEmbed { display: pot.to_string() },
                     };
-                    refs.push(RawRef { text, syntax, byte_from: token_start, byte_to: token_end });
+                    // `text` is `path_part` trimmed; its span starts past the
+                    // leading whitespace `trim` removed.
+                    let ref_from = inner_start + (path_part.len() - path_part.trim_start().len());
+                    let ref_to = ref_from + text.len();
+                    refs.push(RawRef {
+                        text,
+                        syntax,
+                        byte_from: token_start,
+                        byte_to: token_end,
+                        ref_from,
+                        ref_to,
+                    });
                 }
                 i = token_end;
                 continue;
@@ -142,15 +189,17 @@ pub fn extract_md_references(source: &str) -> Vec<RawRef> {
 
         // ── Markdown image ![alt](path) ──────────────────────────────────
         if i + 3 < len && bytes[i] == b'!' && bytes[i+1] == b'[' {
-            if let Some((alt, path, end)) = parse_md_link(source, bytes, i + 1) {
+            if let Some(link) = parse_md_link(source, bytes, i + 1, len) {
                 let token_start = i;
                 refs.push(RawRef {
-                    text: path,
-                    syntax: RefSyntax::MarkdownImage { alt },
+                    text: link.path,
+                    syntax: RefSyntax::MarkdownImage { alt: link.label },
                     byte_from: token_start,
-                    byte_to: end,
+                    byte_to: link.token_end,
+                    ref_from: link.path_from,
+                    ref_to: link.path_to,
                 });
-                i = end;
+                i = link.token_end;
                 continue;
             }
         }
@@ -159,13 +208,22 @@ pub fn extract_md_references(source: &str) -> Vec<RawRef> {
         if bytes[i] == b'[' {
             // Guard: not a wikilink (already handled above)
             if i + 1 < len && bytes[i+1] != b'[' {
-                if let Some((label, path, end)) = parse_md_link(source, bytes, i) {
+                if let Some(link) = parse_md_link(source, bytes, i, len) {
+                    let (label_from, label_to) = (link.label_from, link.label_to);
+                    let end = link.token_end;
                     refs.push(RawRef {
-                        text: path,
-                        syntax: RefSyntax::MarkdownLink { label },
+                        text: link.path,
+                        syntax: RefSyntax::MarkdownLink { label: link.label },
                         byte_from: i,
                         byte_to: end,
+                        ref_from: link.path_from,
+                        ref_to: link.path_to,
                     });
+                    // The label can itself hold references — ADR-041's
+                    // `[![[hero.png]]](/album/)`, or the CommonMark spelling
+                    // `[![a](hero.png)](/album/)`. Scan it, bounded by the
+                    // label's own end.
+                    scan_range(source, bytes, label_from, label_to, refs);
                     i = end;
                     continue;
                 }
@@ -174,13 +232,12 @@ pub fn extract_md_references(source: &str) -> Vec<RawRef> {
 
         i += 1;
     }
-
-    refs
 }
 
-/// Find the byte index of the first `]]` in `bytes` at or after `start`.
+/// Find the byte index of the first `]]` in `bytes[start..limit]`.
 /// Returns the index of the first `]` in the `]]` pair, or `None`.
-fn find_double_bracket(bytes: &[u8], start: usize) -> Option<usize> {
+fn find_double_bracket(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
+    let bytes = &bytes[..limit];
     let mut j = start;
     while j + 1 < bytes.len() {
         if bytes[j] == b']' && bytes[j+1] == b']' {
@@ -195,11 +252,28 @@ fn find_double_bracket(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
+/// One parsed `[label](path)` / `![alt](path)` token, with the byte spans a
+/// rewriter needs: `label_from..label_to` (re-scanned for nested references)
+/// and `path_from..path_to` (the only bytes a rename touches).
+struct ParsedLink {
+    label: String,
+    label_from: usize,
+    label_to: usize,
+    path: String,
+    path_from: usize,
+    path_to: usize,
+    token_end: usize,
+}
+
 /// Parse a `[label](path)` or `![alt](path)` link starting at `bracket_pos`
-/// (the position of the opening `[`).
-/// Returns `(label_or_alt, path, byte_end)` or `None`.
-fn parse_md_link(source: &str, bytes: &[u8], bracket_pos: usize) -> Option<(String, String, usize)> {
-    let len = bytes.len();
+/// (the position of the opening `[`), scanning no further than `limit`.
+fn parse_md_link(
+    source: &str,
+    bytes: &[u8],
+    bracket_pos: usize,
+    limit: usize,
+) -> Option<ParsedLink> {
+    let len = limit;
     // Find closing ] — but respect nested brackets and bail on newline
     let mut depth = 0usize;
     let mut j = bracket_pos;
@@ -244,12 +318,25 @@ fn parse_md_link(source: &str, bytes: &[u8], bracket_pos: usize) -> Option<(Stri
     let path_start = paren_open + 1;
     let path_end = k;
     #[allow(clippy::string_slice)]
-    let path_raw = source[path_start..path_end].trim().to_string();
-    // Strip optional title: `path "title"` → path
-    let path = strip_link_title(&path_raw);
-    let token_end = k + 1;
+    let raw = &source[path_start..path_end];
+    // Strip optional title: `path "title"` → path. Both `trim` and
+    // `strip_link_title` only ever cut from the ends, so the surviving text is
+    // a prefix of the trimmed slice and its span is arithmetic, not a search
+    // (a `find` would land on the wrong copy of a repeated path).
+    let trimmed = raw.trim();
+    let path_from = path_start + (raw.len() - raw.trim_start().len());
+    let path = strip_link_title(trimmed);
+    let path_to = path_from + path.len();
 
-    Some((label, path, token_end))
+    Some(ParsedLink {
+        label,
+        label_from: label_start,
+        label_to: label_end,
+        path,
+        path_from,
+        path_to,
+        token_end: k + 1,
+    })
 }
 
 /// Strip an optional CommonMark link title from a raw link destination string.

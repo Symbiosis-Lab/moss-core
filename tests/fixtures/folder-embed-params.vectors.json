@@ -242,6 +242,42 @@
         "limit": null
       },
       "note": "kept verbatim; the card treats it as direct"
+    },
+    {
+      "name": "nel-is-trimmed",
+      "input": "sort:date",
+      "expect": {
+        "style": null,
+        "sort": "date",
+        "depth": null,
+        "group": null,
+        "limit": null
+      },
+      "note": "U+0085 NEL has the Unicode White_Space property, so Rust `str::trim` strips it. JS `String.prototype.trim` does NOT — the reason parseFolderParams trims with an explicit White_Space class instead. Found by a differential fuzz over both real parsers."
+    },
+    {
+      "name": "bom-is-not-trimmed-limit",
+      "input": "limit:\ufeff3",
+      "expect": {
+        "style": null,
+        "sort": null,
+        "depth": null,
+        "group": null,
+        "limit": null
+      },
+      "note": "U+FEFF is in the JS WhiteSpace production but has NO Unicode White_Space property, so Rust keeps it and `usize::from_str` rejects the value. The build sets no limit; the card must not chip one."
+    },
+    {
+      "name": "bom-is-not-trimmed-style",
+      "input": "style:\ufeffgrid",
+      "expect": {
+        "style": "\ufeffgrid",
+        "sort": null,
+        "depth": null,
+        "group": null,
+        "limit": null
+      },
+      "note": "same code point on an unvalidated key: the build keeps the BOM in the style string (so it is not `grid` and the grid renderer will not fire)."
     }
   ]
 }

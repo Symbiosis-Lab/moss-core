@@ -12,7 +12,7 @@
 //!           | key "=" value
 //! key      := [A-Za-z][A-Za-z0-9_-]*
 //! value    := bareword | quoted
-//! bareword := [A-Za-z0-9:_/.\-]+
+//! bareword := (Unicode-alphanumeric | [:_/.\-])+
 //! quoted   := "\"" any-char-except-unescaped-quote* "\""
 //! ```
 //!
@@ -263,11 +263,21 @@ fn is_key_continue(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
-fn is_bareword(c: char) -> bool {
-    matches!(c,
-        'A'..='Z' | 'a'..='z' | '0'..='9' |
-        ':' | '/' | '.' | '-' | '_'
-    )
+/// Whether `c` can appear in an unquoted attribute value.
+///
+/// Unicode-alphanumeric (not just ASCII) so a non-ASCII filename — `頭像.png`,
+/// `café.jpg` — can be written unquoted in `:::hero {image=…}` the same way
+/// it can appear bare anywhere else a path is written (gallery body,
+/// frontmatter, wikilinks). Before this widened, `read_value` treated the
+/// first non-ASCII byte as "not bareword", `parse_attrs` returned
+/// `EmptyValue`, and every caller's `.unwrap_or_default()` silently dropped
+/// the ENTIRE attribute block — not just the offending value, so `image=`
+/// disappeared along with `width`/`classes`/`mobile` and the hero rendered
+/// with no image at all. `required_quote` in src-tauri's `ref_rewrite.rs`
+/// must accept exactly this same set — it calls this function rather than
+/// keeping its own copy, so the two can't drift apart again.
+pub fn is_bareword(c: char) -> bool {
+    matches!(c, ':' | '/' | '.' | '-' | '_') || c.is_alphanumeric()
 }
 
 fn skip_ws<I>(iter: &mut std::iter::Peekable<I>)
