@@ -623,6 +623,13 @@ fn find_delimiter(content: &str, scan_start: usize) -> Option<usize> {
 /// any trailing newline after the closing `---`.  Returns
 /// `(None, full_content)` when no frontmatter is detected.
 fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
+    // Literal prefix, not `trim_start()`: everything below indexes from byte 0
+    // on the assumption that the opening `---` IS the first line. The simplified
+    // branch's own bail-out is deliberately wider (`trim_start()`), so a file
+    // that opens with a blank line and then `---` matches neither and comes back
+    // as "no frontmatter" — the safe answer. Narrowing it to match here instead
+    // would hand that file to the arithmetic below, which reads the opening
+    // `---` as the closing one and splits the frontmatter in half.
     if content.starts_with("---") {
         // --- Standard YAML frontmatter ---
 
@@ -644,12 +651,17 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
         }
     } else {
         // --- Simplified frontmatter ---
-        // Look for the first standalone `---` line.  Everything up to and
-        // including that line (plus its trailing newline) is frontmatter;
-        // everything after is body.
+        // Everything up to and including the closing `---` line (plus its
+        // trailing newline) is frontmatter; everything after is body.
+        // WHICH `---` closes it is `simplified_frontmatter_delimiter`'s call,
+        // not a local scan: a `---` inside a fenced code block or a `:::`
+        // directive is a code sample or a grid-cell separator. It returns the
+        // start of that line; `find_delimiter` then walks past the line itself.
         // Same char-alignment rationale as above.
         #[allow(clippy::string_slice)]
-        match find_delimiter(content, 0) {
+        match crate::frontmatter_typed::simplified_frontmatter_delimiter(content)
+            .and_then(|line_start| find_delimiter(content, line_start))
+        {
             Some(split_pos) => (Some(&content[..split_pos]), &content[split_pos..]),
             None => (None, content), // No `---` found at all — no frontmatter.
         }
@@ -799,6 +811,39 @@ mod tests {
         let (fm, body) = split_frontmatter(input);
         assert_eq!(fm, Some("children: false\nuid: a48746ca\n---\n"));
         assert_eq!(body, "\n# Page Title\n\nBody content here\n");
+    }
+
+    #[test]
+    fn test_split_does_not_treat_a_grid_cell_separator_as_frontmatter() {
+        // `:::grid` separates its cells with `---`. A frontmatter-less file that
+        // opens with a grid (a footer built as a link map) has no frontmatter at
+        // all — the first cell is body, not a key/value block. Splitting there
+        // fed cell 1 to the FRONTMATTER wikilink resolver, which rewrites
+        // `[[alpha]]` to the bare path `alpha.md` (correct for `sidebar: [[x]]`,
+        // silently destroying the link in prose).
+        let input = ":::grid 2\n### [[alpha]]\n\n---\n\n### [[beta]]\n:::\n";
+        let (fm, body) = split_frontmatter(input);
+        assert!(fm.is_none(), "grid cell separator is not a delimiter; got fm={:?}", fm);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn test_split_does_not_treat_a_fenced_dash_line_as_frontmatter() {
+        // Docs pages quote YAML frontmatter examples inside a code fence.
+        let input = "Intro.\n\n```yaml\ntitle: Example\n---\n```\n\nMore prose.\n";
+        let (fm, body) = split_frontmatter(input);
+        assert!(fm.is_none(), "fenced `---` is a code sample; got fm={:?}", fm);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn test_split_finds_frontmatter_that_precedes_a_directive_block() {
+        // Guard against over-correcting: a real frontmatter prefix must still
+        // split, even when the body it introduces opens with a `---`-using grid.
+        let input = "children: false\n---\n\n:::grid 2\nA\n\n---\n\nB\n:::\n";
+        let (fm, body) = split_frontmatter(input);
+        assert_eq!(fm, Some("children: false\n---\n"));
+        assert_eq!(body, "\n:::grid 2\nA\n\n---\n\nB\n:::\n");
     }
 
     #[test]

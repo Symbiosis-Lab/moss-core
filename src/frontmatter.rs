@@ -214,7 +214,7 @@ pub fn serialize(
 /// `tauri-apps/tauri#10194` (open upstream issue).
 ///
 /// The frontend guards this at the DOM `beforeinput` boundary (see
-/// `frontend/app/ui/control-char-guard.ts`), but this Rust strip mirrors it
+/// `frontend/app/shared/ui/control-char-guard.ts`), but this Rust strip mirrors it
 /// at the write boundary as defense-in-depth — any control char that reaches
 /// this point (e.g. a value set before the guard was installed, or via a
 /// path that bypasses the DOM entirely) is stripped before it is ever
@@ -631,7 +631,7 @@ mod tests {
         // path can insert the arrow key's legacy control code (Right =
         // U+001D GROUP SEPARATOR) into a plain input instead of just moving
         // the caret. The frontend guards this at `beforeinput`
-        // (frontend/app/ui/control-char-guard.ts); this write-boundary strip
+        // (frontend/app/shared/ui/control-char-guard.ts); this write-boundary strip
         // is the defense-in-depth backstop so a corrupted value can never
         // reach disk even if it slips past the DOM guard.
         let corrupted = format!("websites.{}", "\u{1D}".repeat(8));

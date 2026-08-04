@@ -957,6 +957,12 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 default: "",
                 description: "Slide count of a multi-image hero (consecutive leading media lines). Present only when > 1; drives the ambient CSS crossfade — one slide visible at a time, no controls. Absent = single-image hero, today's exact markup.",
             },
+            DataAttr {
+                name: "data-hero-tone",
+                values: &["light"],
+                default: "",
+                description: "Marks a hero whose image is pale enough (scan-cached dominant colour above 0.4 relative luminance) that the default legibility scrim leaves white overlay text under 4.5:1; site.css swaps in a stronger gradient. Emitted only when the hero also carries overlay text. Absent = mid-tone or dark image, no overlay, or an unparseable colour — all keep the default ramp.",
+            },
         ],
         example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
@@ -1835,7 +1841,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Emerging,
         since: "0",
-        description: "Runtime marker the preview bridge adds to `<html>` when the shell is in mobile device-preview mode; drops the titlebar-clearance padding (the phone frame sits below the titlebar).",
+        description: "Runtime marker the preview bridge adds to `<html>` when the shell is in mobile device-preview mode. Since ADR-039 the shell owns chrome clearance by insetting the preview iframe, so no CSS keys off this class and it currently has no effect; it is retained as a revert path and may be removed.",
     },
     ComponentEntry {
         class: "main-nav",
@@ -2183,7 +2189,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
     <div class="moss-search__progress" hidden></div>
     <div class="moss-search__seam"></div>
     <div class="moss-search__body">
-      <p class="moss-search__status" role="status">Type to search this site.</p>
+      <p class="moss-search__status" role="status" hidden></p>
       <ul class="moss-search__results" role="listbox">
         <li class="moss-search__row">
           <a class="moss-search__link" role="option" href="/posts/foo/">
