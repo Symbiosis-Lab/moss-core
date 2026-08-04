@@ -47,7 +47,7 @@ pub enum Shortcode {
     Buttons(ButtonsShortcode),
     /// `:::gallery N {.classname}` — image gallery with optional columns.
     ///
-    /// `N` (positional integer) sets `--gallery-columns` CSS variable.
+    /// `N` (positional integer) sets `--moss-gallery-columns` CSS variable.
     /// Body is one image reference per line: `![alt](path)`, bare
     /// `path.jpg`, or `path|attrs` for media attributes (passed through
     /// to the renderer's inline style).
@@ -118,7 +118,7 @@ pub struct ButtonItem {
 /// Arguments for [`Shortcode::Gallery`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GalleryShortcode {
-    /// Optional column count for `--gallery-columns` CSS variable.
+    /// Optional column count for `--moss-gallery-columns` CSS variable.
     pub columns: Option<u32>,
     /// Extra CSS classes for the wrapping `<div>` (from `{.foo .bar}`).
     pub classes: String,
