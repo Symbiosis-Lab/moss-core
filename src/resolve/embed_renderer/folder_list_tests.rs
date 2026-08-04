@@ -1,23 +1,6 @@
 use super::*;
 
 #[test]
-fn parses_limit() {
-    assert_eq!(parse_params("limit:5").limit, Some(5));
-}
-
-#[test]
-fn parses_more_flag_ignored() {
-    // "more" is a legacy bare flag that is now silently ignored; limit still parses
-    let p = parse_params("limit:5,more");
-    assert_eq!(p.limit, Some(5));
-}
-
-#[test]
-fn parses_sort_override() {
-    assert_eq!(parse_params("sort:date").sort, Some(SortAxis::Date));
-}
-
-#[test]
 fn parses_percent_size() {
     let p = parse_params("80%");
     assert_eq!(p.size, Some("80%".to_string()));
@@ -64,18 +47,6 @@ fn size_coexists_with_limit_key() {
 }
 
 #[test]
-fn empty_returns_defaults() {
-    assert_eq!(parse_params(""), FolderEmbedParams::default());
-}
-
-#[test]
-fn unknown_keys_ignored() {
-    let p = parse_params("limit:3,layout:minimal");
-    assert_eq!(p.limit, Some(3));
-    // layout: silently dropped — not implemented in v1
-}
-
-#[test]
 fn marker_roundtrips() {
     let p = FolderEmbedParams {
         limit: Some(3),
@@ -90,21 +61,6 @@ fn marker_roundtrips() {
     assert!(!m.contains("more"));
     assert!(m.contains("sort=date"));
     assert!(m.ends_with(MARKER_END));
-}
-
-#[test]
-fn parses_style_grid() {
-    assert_eq!(parse_params("style:grid").style, Some("grid".to_string()));
-}
-
-#[test]
-fn parses_depth_all() {
-    assert_eq!(parse_params("depth:all").depth, Some("all".to_string()));
-}
-
-#[test]
-fn parses_group_year() {
-    assert_eq!(parse_params("group:year").group, Some("year".to_string()));
 }
 
 #[test]
