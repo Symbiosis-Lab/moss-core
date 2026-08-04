@@ -672,6 +672,34 @@ pub(crate) const SIMPLIFIED_BARE_FLAGS: [&str; 8] = [
     "nav", "home", "draft", "listed", "breadcrumb", "footer", "comments", "children",
 ];
 
+/// The field names a simplified frontmatter block declares, in source order.
+///
+/// [`parse_simplified_frontmatter`] drops every name it doesn't recognize —
+/// exactly what a caller wanting to say something *about* an unrecognized name
+/// needs back. Same delimiter call and same `key: value` / bare-flag shapes as
+/// that parser, so the two cannot disagree about what counts as a field. Path-
+/// free by moss-core's no-I/O rule; the caller owns the path and the decision
+/// to warn (`foreign_frontmatter_warnings` in `build/markdown/pipeline.rs`).
+pub fn simplified_frontmatter_keys(content: &str) -> Vec<String> {
+    let Some(delimiter) = simplified_frontmatter_delimiter(content) else {
+        return Vec::new();
+    };
+    let (fields, _) = content.split_at(delimiter);
+    fields
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            match trimmed.split_once(':') {
+                Some((key, _)) => Some(key.trim().to_string()),
+                None => Some(trimmed.to_string()),
+            }
+        })
+        .collect()
+}
+
 /// Parse simplified frontmatter format into FrontMatter struct.
 /// Format:
 /// - Boolean flags: just the word (e.g., `nav` → nav: true)
@@ -804,7 +832,12 @@ pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
                         frontmatter.slot = Some(value.to_string());
                     }
                 }
-                _ => {} // Unknown key, ignore
+                // Unknown key, ignore. Deliberately silent HERE: this parser runs
+                // ~5x per file (uid stamping, scanning, editor chips) and never
+                // sees the path, so a warning from it repeats and names no file.
+                // pipeline.rs raises it once, with the path, over
+                // `simplified_frontmatter_keys`.
+                _ => {}
             }
         } else {
             // Boolean flag (just the word)
@@ -1467,5 +1500,36 @@ mod url_path_tests {
         let (_, body) = parse_simplified_frontmatter(content);
         assert_eq!(content.len() - body.len(), delimiter + "---\n".len());
         assert_eq!(body, "Body line\n");
+    }
+
+    #[test]
+    fn simplified_keys_include_the_names_the_typed_parser_drops() {
+        // The whole point: `slug` never reaches FrontMatter, so a caller that
+        // wants to tell the author it was ignored has to read it from here.
+        let content = "title: Privacy\nslug: privacy\nnav\nmy_field: x\n---\n\nBody\n";
+        let keys = simplified_frontmatter_keys(content);
+        assert_eq!(keys, vec!["title", "slug", "nav", "my_field"]);
+    }
+
+    #[test]
+    fn simplified_keys_stop_at_the_delimiter_and_survive_colons_in_values() {
+        // A body line containing `x: y` must not be read as a field, and a
+        // value that itself contains a colon must not split the key.
+        let content = "title: Hello: World\n---\n\nNote: this is prose.\n";
+        assert_eq!(simplified_frontmatter_keys(content), vec!["title"]);
+    }
+
+    #[test]
+    fn simplified_keys_are_empty_without_simplified_frontmatter() {
+        // Traditional YAML (leading `---`) is the other branch's business, and
+        // a plain body has no frontmatter at all.
+        assert_eq!(
+            simplified_frontmatter_keys("---\ntitle: Hi\nslug: x\n---\n\nBody\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            simplified_frontmatter_keys("Just prose.\n"),
+            Vec::<String>::new()
+        );
     }
 }
