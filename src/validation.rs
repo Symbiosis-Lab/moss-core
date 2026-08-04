@@ -13,6 +13,76 @@ use crate::schema::{ContentSchema, FieldType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Frontmatter names moss does not use, paired with the field that does the job.
+///
+/// An unknown field is normally harmless — plugins and templates read their own
+/// keys, so moss ignores what it doesn't recognize rather than rejecting it.
+/// That silence is wrong for exactly one class of name: the field a writer
+/// arrives with from another generator. `slug:` is the case that prompted this
+/// — it is the custom-URL field in Hugo, Jekyll, Zola and Astro, moss spells it
+/// `url:`, and writing `slug:` did nothing at all and said nothing about it.
+///
+/// Curated, not computed. Edit distance would pair `data:` with `date:` and
+/// `image:` with nothing, producing confident wrong advice on fields that are
+/// legitimately someone's own. Every entry here is a name that means something
+/// specific somewhere else, so the suggestion is a translation rather than a
+/// guess. Keys are compared after [`normalize_field_name`], so `publishDate`,
+/// `publish_date` and `publish-date` all match one entry.
+const FOREIGN_FIELD_HINTS: &[(&str, &str)] = &[
+    // Custom URL segment — Hugo, Jekyll, Zola, Astro, Eleventy.
+    ("slug", "url"),
+    ("permalink", "url"),
+    // Short blurb — Hugo (`summary`), Jekyll (`excerpt`).
+    ("summary", "description"),
+    ("excerpt", "description"),
+    ("subtitle", "description"),
+    // Taxonomy — Jekyll/Hugo split tags from categories; moss has one axis.
+    ("categories", "tags"),
+    ("category", "tags"),
+    ("keywords", "tags"),
+    // Lead image.
+    ("image", "cover"),
+    ("thumbnail", "cover"),
+    ("banner", "cover"),
+    ("featuredimage", "cover"),
+    // Publication date — Astro (`pubDate`), assorted (`publishDate`).
+    ("pubdate", "date"),
+    ("publishdate", "date"),
+    ("datepublished", "date"),
+    // Singular in moss.
+    ("authors", "author"),
+    // Language.
+    ("language", "lang"),
+    ("locale", "lang"),
+    // Manual ordering.
+    ("order", "weight"),
+    ("menuorder", "weight"),
+    ("sortorder", "weight"),
+];
+
+/// Fold a frontmatter key to the form [`FOREIGN_FIELD_HINTS`] is keyed by:
+/// lowercase, with `_` and `-` removed. `pubDate`, `pub_date` and `pub-date`
+/// all fold to `pubdate`.
+fn normalize_field_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// The moss field a foreign frontmatter name most likely meant, if any.
+///
+/// Returns `None` for a name moss simply doesn't know — that is an ordinary
+/// custom field and must stay silent. Callers should phrase the result as a
+/// question, not a correction: a template really may read its own `image:`.
+pub fn foreign_field_suggestion(name: &str) -> Option<&'static str> {
+    let folded = normalize_field_name(name);
+    FOREIGN_FIELD_HINTS
+        .iter()
+        .find(|(foreign, _)| *foreign == folded)
+        .map(|(_, moss_field)| *moss_field)
+}
+
 /// Diagnostic severity levels (LSP-compatible integer values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
@@ -152,9 +222,18 @@ pub fn validate_frontmatter(
         {
             continue;
         }
+        // Name a moss equivalent when the key is one another generator uses,
+        // so the hint is actionable instead of merely true.
+        let message = match foreign_field_suggestion(key) {
+            Some(moss_field) => format!(
+                "unknown field '{}' is not defined in the schema — did you mean '{}'?",
+                key, moss_field
+            ),
+            None => format!("unknown field '{}' is not defined in the schema", key),
+        };
         diags.push(Diagnostic {
             severity: Severity::Hint,
-            message: format!("unknown field '{}' is not defined in the schema", key),
+            message,
             path: Some(key.clone()),
             line: None,
             column: None,
@@ -641,5 +720,96 @@ mod tests {
         assert!(!is_valid_date("2024/01/15")); // wrong separator
         assert!(!is_valid_date("2024-1-5")); // this passes since parse() accepts it
         assert!(!is_valid_date("1900-02-29")); // not a leap year (divisible by 100 but not 400)
+    }
+
+    // -----------------------------------------------------------------------
+    // Foreign-field hints
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn slug_suggests_url() {
+        // The case that prompted the table: `slug:` is the custom-URL field in
+        // Hugo, Jekyll, Zola and Astro. moss spells it `url:` and used to
+        // ignore `slug:` without a word.
+        assert_eq!(foreign_field_suggestion("slug"), Some("url"));
+    }
+
+    #[test]
+    fn a_name_moss_simply_does_not_know_stays_silent() {
+        // Custom fields are legitimate — plugins and templates read their own
+        // keys. Suggesting anything here would be noise on every build.
+        assert_eq!(foreign_field_suggestion("bogus"), None);
+        assert_eq!(foreign_field_suggestion("my_custom_thing"), None);
+        // Near-misses that edit distance would have "corrected". `data:` is one
+        // character from `date:` and is a perfectly ordinary custom field.
+        assert_eq!(foreign_field_suggestion("data"), None);
+        assert_eq!(foreign_field_suggestion("tag"), None);
+    }
+
+    #[test]
+    fn case_and_separators_fold_to_one_entry() {
+        // Astro writes `pubDate`, Hugo-era templates write `publish_date`, and
+        // some exporters write `publish-date`. All are the same mistake.
+        for spelling in ["pubDate", "PubDate", "pub_date", "pub-date", "PUBDATE"] {
+            assert_eq!(
+                foreign_field_suggestion(spelling),
+                Some("date"),
+                "{} should fold to the pubdate entry",
+                spelling
+            );
+        }
+        assert_eq!(foreign_field_suggestion("featuredImage"), Some("cover"));
+    }
+
+    #[test]
+    fn every_suggested_field_actually_exists_in_the_schema() {
+        // The failure this guards is worse than the silence it replaces:
+        // pointing an author at a field moss also ignores. If a builtin field
+        // is ever renamed, this fails instead of shipping confident bad advice.
+        let schema = builtin_schema();
+        for (foreign, suggested) in FOREIGN_FIELD_HINTS {
+            assert!(
+                schema.frontmatter.fields.contains_key(*suggested),
+                "hint '{}' -> '{}' names a field the schema does not define",
+                foreign,
+                suggested
+            );
+        }
+    }
+
+    #[test]
+    fn no_hint_key_is_itself_a_real_moss_field() {
+        // A key that moss actually supports must never be reported as
+        // meaningless. If moss ever adopts one of these names for real, the
+        // entry has to go — this fails the moment that happens.
+        let schema = builtin_schema();
+        for (foreign, _) in FOREIGN_FIELD_HINTS {
+            assert!(
+                !schema
+                    .frontmatter
+                    .fields
+                    .keys()
+                    .any(|name| normalize_field_name(name) == *foreign),
+                "'{}' is a real moss field and must not be listed as foreign",
+                foreign
+            );
+        }
+    }
+
+    #[test]
+    fn the_unknown_field_hint_carries_the_suggestion() {
+        let schema = builtin_schema();
+        let fm = make_fm(&[("title", str_val("Hi")), ("slug", str_val("privacy"))]);
+        let diags = validate_frontmatter(&fm, &schema);
+        let hint = diags
+            .iter()
+            .find(|d| d.path.as_deref() == Some("slug"))
+            .expect("unknown field 'slug' must produce a diagnostic");
+        assert_eq!(hint.severity, Severity::Hint);
+        assert!(
+            hint.message.contains("did you mean 'url'"),
+            "hint should name the moss equivalent, got: {}",
+            hint.message
+        );
     }
 }
