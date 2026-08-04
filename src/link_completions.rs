@@ -183,7 +183,10 @@ fn match_query(q: &Query, p: &Prepared<'_>) -> Option<Hit> {
         positions.push(found?);
     }
 
-    let last = *positions.last().expect("segs is non-empty");
+    // `?` rather than `expect`: the crate denies `clippy::expect_used`, and the
+    // empty case is already handled by the early return above — so this is a
+    // restatement of an invariant, not a real branch.
+    let last = *positions.last()?;
     let contiguous = positions.windows(2).all(|w| w[1] == w[0] + 1);
     Some(Hit {
         seg_hit: u8::from(last != file_i),

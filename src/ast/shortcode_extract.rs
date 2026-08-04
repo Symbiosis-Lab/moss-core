@@ -350,7 +350,8 @@ fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
 /// Ported from src-tauri's `crate::build::markdown::typed_renderers::
 /// detect_compound_link` (Phase 4 PR4.5, 2026-05-28) — the AST-level
 /// equivalent of the same string-level detection. The src-tauri version
-/// is deleted in PR4.5.
+/// is deleted in PR4.5. NOT the general cure for `[![[x.png]]](/url)` —
+/// [`super::linked_embed`] is; this is the block-level grid *card*.
 ///
 /// Safety rules that cause this function to return `None`:
 /// - Cell contains a top-level code fence (\`\`\` or ~~~).
@@ -363,9 +364,8 @@ fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
 ///   hijacking it into a card would change ordinary link cells.
 /// - There is content after the closing `)`, separated by a blank line,
 ///   but the inner content does not lead with a WIKILINK image (`![[`).
-///   Trailing caption paragraphs are only recognized for this exact shape
-///   — the one pulldown-cmark cannot represent at all, a wikilink image
-///   nested inside a standard link (see moss#928-adjacent). A cell led by
+///   Trailing caption paragraphs are only recognized for this exact shape,
+///   the image-card-plus-caption cell (see moss#928-adjacent). A cell led by
 ///   an ordinary markdown image (`![alt](src)`) is deliberately excluded:
 ///   pulldown-cmark parses `![alt](src)` fine on its own, so
 ///   `[![alt](src)](url)\n\ncaption` already reaches the plain block

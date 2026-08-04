@@ -1034,9 +1034,11 @@ fn compound_link_image_cell_with_caption_paragraphs_becomes_card_plus_siblings()
     // image wrapped in a link, followed (after a blank line) by caption
     // paragraphs. Before this fix, `detect_compound_link` required the
     // cell to literally END in `)`, so this cell fell through to the
-    // plain CommonMark parser — which cannot represent a wikilink image
-    // nested inside a standard link and produced corrupted output (a
-    // literal `[` leaking as text, `src` set to the link's own href).
+    // plain block parser and lost its card chrome. (The corrupted-output
+    // half of that failure — a literal `[` leaking as text, `src` set to
+    // the link's own href — is now cured generally by
+    // `crate::ast::linked_embed`; what this test pins is that the cell
+    // still becomes a `LinkCard` plus caption siblings.)
     let md = ":::grid 2\n\
               [![[poster.png]]](/awards/one/)\n\n\
               **A Title**\n\n\
@@ -1077,10 +1079,9 @@ fn compound_link_image_cell_with_caption_paragraphs_becomes_card_plus_siblings()
 #[test]
 fn compound_link_wikilink_image_cell_with_linked_caption_still_becomes_card_plus_siblings() {
     // A caption that itself contains a link (e.g. a translator credit)
-    // must NOT fall back to the plain parser — that's exactly the shape
-    // that corrupts (see the module doc comment on `detect_compound_link`
-    // and moss#928-adjacent): pulldown-cmark cannot represent a wikilink
-    // image nested inside a link no matter what follows it.
+    // must NOT fall back to the plain parser — the cell would render as an
+    // ordinary paragraph and lose its card chrome (see the doc comment on
+    // `detect_compound_link` and moss#928-adjacent).
     let md = ":::grid 1\n\
               [![[poster.png]]](/awards/one/)\n\n\
               Translated by [Yo-Ling Chen](/people/yo-ling-chen/).\n\
