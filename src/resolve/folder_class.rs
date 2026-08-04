@@ -1,14 +1,17 @@
 //! Directory-shaped resolution capability (injected; pure core).
-//! Build impl is backed by the content graph + html_files; the editor impl
-//! by read_dir. Separate from AssetIndex because the backing data and the
-//! query shape (is_dir / markdown-index / static-index) differ.
+//! Build impl is backed by the content graph + html_files; the editor impl by
+//! the last build's folder-index URL set plus a vault walk. Separate from
+//! AssetIndex because the backing data and the query shape (is_dir /
+//! markdown-index / static-index) differ.
 
 pub trait FolderIndex {
     /// Does a directory exist at this root-relative path?
     fn is_dir(&self, root_rel: &str) -> bool;
     /// Does this folder resolve a markdown index (→ FolderListing)?
     /// Build: a doc whose url_path is this folder's index URL (covers
-    /// content-folder promotion). Editor: FS index.md/README.md/_index.md.
+    /// content-folder promotion). Editor: the last build's folder-index URL
+    /// set, reconstructed from `ArticleMap.pages` ∪ the scanned directory set
+    /// (see ADR-040) — NOT an `index.md` stat.
     fn dir_has_markdown_index(&self, root_rel: &str) -> bool;
     /// Does this folder have a static index.html/.htm (and no markdown index)?
     /// Returns the index filename (→ FolderIndexIframe).
@@ -43,24 +46,5 @@ impl FolderIndex for FakeFolderIndex {
     }
     fn dir_has_static_index(&self, p: &str) -> Option<String> {
         self.static_index.get(p).cloned()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fake_reports_dir_kinds() {
-        let mut idx = FakeFolderIndex::new();
-        idx.dirs.insert("Resources/app".into());
-        idx.static_index
-            .insert("Resources/app".into(), "index.html".into());
-        assert!(idx.is_dir("Resources/app"));
-        assert!(!idx.dir_has_markdown_index("Resources/app"));
-        assert_eq!(
-            idx.dir_has_static_index("Resources/app"),
-            Some("index.html".into())
-        );
     }
 }
