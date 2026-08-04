@@ -31,12 +31,15 @@
 //!
 //! 1. [`substitute`] runs on the markdown *after* shortcode extraction and
 //!    replaces the inner `![[…]]` of every confirmed compound shape with a
-//!    single-token sentinel (`U+E000 <index> U+E001`, private-use area).
-//!    pulldown then sees `[<sentinel>](/awards/x/)` — an ordinary inline link
-//!    with plain text inside — and emits `Link(Text)`.
-//! 2. [`restore`] walks the finished [`Document`] and replaces each sentinel
+//!    single-token sentinel (`U+E000 <nonce> : <index> U+E001`, private-use
+//!    area — see `OPEN` below for why the nonce is load-bearing). pulldown then
+//!    sees `[<sentinel>](/awards/x/)` — an ordinary inline link with plain
+//!    text inside — and emits `Link(Text)`.
+//! 2. [`restore`] walks the assembled blocks and replaces each sentinel
 //!    `Inline::Text` with the inlines produced by parsing the embed source on
-//!    its own.
+//!    its own. Where an `Inline::Image` would be nonsense — a `Url`, a
+//!    `title`, an image `alt`, a code span, a raw-HTML payload — the author's
+//!    original bytes go back instead.
 //!
 //! Half 2 re-enters [`super::parser::parse_with_config`] rather than
 //! hand-building an `Inline::Image`. That is the whole point of the design:
@@ -70,15 +73,22 @@
 
 use std::borrow::Cow;
 
-use super::document::Document;
 use super::node::{Block, Inline};
 use super::parser::ParseConfig;
+use super::url::Url;
 use crate::inert_regions::mask_inert;
 
-/// Opens a substitution sentinel. Private-use area, so it can never collide
-/// with author text that has any meaning, and pulldown-cmark passes it
-/// through as ordinary `Event::Text` (verified: no splitting, no escaping,
-/// inside links, emphasis and table cells alike).
+/// Opens a substitution sentinel. Private-use area, so it survives
+/// pulldown-cmark as ordinary `Event::Text` (verified: no splitting, no
+/// escaping, inside links, emphasis and table cells alike).
+///
+/// The PUA codepoint alone is NOT a uniqueness argument — an author can type
+/// `U+E000`, and a sentinel-shaped run in their prose would otherwise be
+/// consumed and replaced by an image they never wrote. The body therefore
+/// carries the per-extraction nonce, exactly as `shortcode_extract`'s
+/// `<!--MOSS_SC_{nonce}_{index}-->` does: a literal collision would have to
+/// embed a hash of the very text containing it, which is computationally
+/// improbable. Anything that does not match the nonce is left as author text.
 const OPEN: char = '\u{e000}';
 /// Closes a substitution sentinel.
 const CLOSE: char = '\u{e001}';
@@ -87,15 +97,22 @@ const CLOSE: char = '\u{e001}';
 #[derive(Debug, Default)]
 pub(super) struct LinkedEmbeds {
     sources: Vec<String>,
+    /// The per-extraction nonce this run's sentinels carry. Empty when
+    /// nothing was substituted.
+    nonce: String,
 }
 
 /// Replace the inner `![[…]]` of every `[![[…]]](url)` in `markdown` with a
 /// sentinel, returning the rewritten markdown and the lifted sources.
 ///
+/// `nonce` is [`super::shortcode_extract::ExtractionResult::nonce`] — the
+/// hash of this parse's input. Reusing it rather than minting a second one
+/// keeps ONE answer to "is this run of bytes a moss sentinel or the author's".
+///
 /// Returns `Cow::Borrowed` untouched when there is no match, which is the
 /// overwhelmingly common case — the scan is a `memchr`-shaped search for the
 /// four-byte `[![[` opener over an inert-masked copy.
-pub(super) fn substitute(markdown: &str) -> (Cow<'_, str>, LinkedEmbeds) {
+pub(super) fn substitute<'a>(markdown: &'a str, nonce: &str) -> (Cow<'a, str>, LinkedEmbeds) {
     let mut embeds = LinkedEmbeds::default();
     if !markdown.contains("[![[") {
         return (Cow::Borrowed(markdown), embeds);
@@ -136,9 +153,7 @@ pub(super) fn substitute(markdown: &str) -> (Cow<'_, str>, LinkedEmbeds) {
         #[allow(clippy::string_slice)]
         {
             out.push_str(&markdown[copied..embed_start]);
-            out.push(OPEN);
-            out.push_str(&embeds.sources.len().to_string());
-            out.push(CLOSE);
+            out.push_str(&sentinel_for(nonce, embeds.sources.len()));
             embeds
                 .sources
                 .push(markdown[embed_start..embed_end].to_string());
@@ -149,10 +164,18 @@ pub(super) fn substitute(markdown: &str) -> (Cow<'_, str>, LinkedEmbeds) {
     if embeds.sources.is_empty() {
         return (Cow::Borrowed(markdown), embeds);
     }
+    embeds.nonce = nonce.to_string();
     // Char-aligned: `copied` is an `embed_end` (see above) or 0.
     #[allow(clippy::string_slice)]
     out.push_str(&markdown[copied..]);
     (Cow::Owned(out), embeds)
+}
+
+/// The sentinel that stands in for embed `index` during this parse.
+/// `U+E000 <nonce> : <index> U+E001` — no newline, so the substitution is
+/// line-count preserving, which is what `LineLookup` in `parser.rs` needs.
+fn sentinel_for(nonce: &str, index: usize) -> String {
+    format!("{OPEN}{nonce}:{index}{CLOSE}")
 }
 
 /// Given `start` pointing at the `!` of `![[`, return the byte index just
@@ -205,9 +228,20 @@ fn link_closes_at(bytes: &[u8], at: usize) -> bool {
     false
 }
 
-/// Replace every sentinel in `doc` with the inlines its `![[…]]` source
-/// parses to on its own. A no-op when [`substitute`] found nothing.
-pub(super) fn restore(doc: &mut Document, embeds: &LinkedEmbeds, config: &ParseConfig) {
+/// Replace the sentinels in `blocks` with the inlines their `![[…]]` sources
+/// parse to on their own. A no-op when [`substitute`] found nothing.
+///
+/// Every field that can hold a sentinel is visited: inline vectors (where the
+/// embed becomes an `Inline::Image`), and the string-ish leaves — `Url`,
+/// `title`, image `alt`, `Inline::Code`, `Block::CodeBlock`, `Block::Other` —
+/// where the author's original bytes are put back instead. `Block::Shortcode`
+/// is the one exception, and only because its cells were parsed (and restored)
+/// by their own `parse_document` call.
+///
+/// Must run BEFORE `assign_heading_id_suffixes`: a heading whose text held a
+/// sentinel gets its `id` recomputed here, and the duplicate-numbering pass
+/// has to see the corrected base slug.
+pub(super) fn restore(blocks: &mut [Block], embeds: &LinkedEmbeds, config: &ParseConfig) {
     if embeds.sources.is_empty() {
         return;
     }
@@ -226,7 +260,7 @@ pub(super) fn restore(doc: &mut Document, embeds: &LinkedEmbeds, config: &ParseC
             hard_line_breaks: false,
         },
     };
-    for block in &mut doc.blocks {
+    for block in blocks.iter_mut() {
         ctx.in_block(block);
     }
 }
@@ -239,8 +273,24 @@ struct Restore<'a> {
 impl Restore<'_> {
     fn in_block(&self, block: &mut Block) {
         match block {
-            Block::Heading { children, .. } | Block::Paragraph(children) => {
-                self.in_inlines(children)
+            Block::Heading { children, id, .. } => {
+                if self.in_inlines(children) {
+                    // The `id` was slugged mid-parse from the event stream,
+                    // when the heading's text still read `U+E000…`. Recompute
+                    // it from the restored inlines using the OTHER adapter of
+                    // the same one policy (`heading::text`'s module doc: one
+                    // policy, two adapters) — `inlines_to_plain_text` +
+                    // `obsidian_heading_anchor` is exactly the equality
+                    // `heading::text`'s `event_walk_and_inline_walk_agree_…`
+                    // test already asserts must hold for every heading. Only
+                    // sentinel-bearing headings are touched, so no existing
+                    // anchor moves.
+                    let text = crate::ast::plain_text::inlines_to_plain_text(children);
+                    *id = Some(crate::heading::anchor::obsidian_heading_anchor(&text));
+                }
+            }
+            Block::Paragraph(children) => {
+                self.in_inlines(children);
             }
             Block::Figure { image, caption, .. } => {
                 self.in_inline(image);
@@ -248,9 +298,14 @@ impl Restore<'_> {
                     self.in_inlines(caption);
                 }
             }
+            Block::LinkCard { url, children } => {
+                self.literal_url(url);
+                for nested in children {
+                    self.in_block(nested);
+                }
+            }
             Block::Callout { children, .. }
             | Block::BlockQuote(children)
-            | Block::LinkCard { children, .. }
             | Block::FootnoteDefinition { children, .. } => {
                 for nested in children {
                     self.in_block(nested);
@@ -263,33 +318,40 @@ impl Restore<'_> {
                     }
                 }
             }
-            Block::Table { rows, .. } => {
-                for row in rows {
-                    for cell in row {
-                        self.in_inlines(cell);
-                    }
+            Block::Table { header, rows, .. } => {
+                // The header row is a `Vec<Vec<Inline>>` of its own; a `..`
+                // that swallowed it dropped the author's embed on the floor
+                // and published a `U+E000` as link text.
+                for cell in header.iter_mut().chain(rows.iter_mut().flatten()) {
+                    self.in_inlines(cell);
                 }
             }
             // Raw payloads: a sentinel can only land here if the compound
             // shape sat inside an HTML block (not an inert region), so put
             // the author's bytes back rather than leaking `U+E000`.
-            Block::CodeBlock { value, .. } => self.literal(value),
-            Block::Other(html) => self.literal(html),
+            Block::CodeBlock { value, .. } => {
+                self.literal(value);
+            }
+            Block::Other(html) => {
+                self.literal(html);
+            }
             // A shortcode's cells were parsed by their own `parse_document`
             // call and restored there.
             Block::Shortcode(_) | Block::ThematicBreak => {}
         }
     }
 
-    fn in_inlines(&self, inlines: &mut Vec<Inline>) {
+    /// Returns true when this vector (or anything nested in it) changed.
+    fn in_inlines(&self, inlines: &mut Vec<Inline>) -> bool {
         let has_sentinel = inlines
             .iter()
             .any(|i| matches!(i, Inline::Text(t) if t.contains(OPEN)));
         if !has_sentinel {
+            let mut changed = false;
             for inline in inlines.iter_mut() {
-                self.in_inline(inline);
+                changed |= self.in_inline(inline);
             }
-            return;
+            return changed;
         }
         let mut out: Vec<Inline> = Vec::with_capacity(inlines.len());
         for mut inline in std::mem::take(inlines) {
@@ -303,18 +365,41 @@ impl Restore<'_> {
             out.push(inline);
         }
         *inlines = out;
+        true
     }
 
-    fn in_inline(&self, inline: &mut Inline) {
+    /// Returns true when anything under `inline` changed.
+    fn in_inline(&self, inline: &mut Inline) -> bool {
         match inline {
             Inline::Emphasis(children)
             | Inline::Strong(children)
             | Inline::Strikethrough(children) => self.in_inlines(children),
-            Inline::Link { children, .. } => self.in_inlines(children),
-            Inline::Image { alt, .. } => self.literal(alt),
+            // `url` and `title` are reachable: `[![[a.png]]]([![[b.png]]](/u))`
+            // puts a sentinel inside the outer link's DESTINATION, and an
+            // `href` holding a private-use codepoint is not a URL.
+            Inline::Link {
+                children,
+                url,
+                title,
+                ..
+            } => {
+                let mut changed = self.in_inlines(children);
+                changed |= self.literal_url(url);
+                changed |= self.literal_opt(title);
+                changed
+            }
+            Inline::Image {
+                src, alt, title, ..
+            } => {
+                let mut changed = self.literal_url(src);
+                changed |= self.literal(alt);
+                changed |= self.literal_opt(title);
+                changed
+            }
             Inline::Code(code) => self.literal(code),
             Inline::Other(raw) => self.literal(raw),
             Inline::Text(_) | Inline::LineBreak | Inline::FootnoteRef(_) | Inline::TaskMarker(_) => {
+                false
             }
         }
     }
@@ -332,9 +417,13 @@ impl Restore<'_> {
         out
     }
 
-    /// Split `text` into literal runs and embed sources. An unrecognized
-    /// sentinel-looking run (a lone `U+E000`, an id with no entry) stays
-    /// literal text, so this can never lose bytes.
+    /// Split `text` into literal runs and embed sources.
+    ///
+    /// A sentinel-shaped run that is not one of THIS parse's sentinels — a
+    /// lone `U+E000`, a foreign or absent nonce, an id with no entry — stays
+    /// literal text. That is what makes an author who types `U+E000` in prose
+    /// safe: their bytes come back out, byte for byte. Every byte of `text`
+    /// appears in exactly one returned segment, so no caller can lose one.
     ///
     /// Char-aligned throughout: every offset is either a `str::find` result
     /// (always a char boundary) or that result advanced by the matched char's
@@ -349,7 +438,13 @@ impl Restore<'_> {
             let after = &rest[open + OPEN.len_utf8()..];
             let source = after
                 .find(CLOSE)
-                .and_then(|close| after[..close].parse::<usize>().ok().map(|id| (close, id)))
+                .and_then(|close| {
+                    // `<nonce>:<index>` — a body that is not this parse's
+                    // nonce belongs to the author, not to us.
+                    let body = &after[..close];
+                    let id = body.strip_prefix(&self.embeds.nonce)?.strip_prefix(':')?;
+                    id.parse::<usize>().ok().map(|id| (close, id))
+                })
                 .and_then(|(close, id)| self.embeds.sources.get(id).map(|s| (close, s)));
             match source {
                 Some((close, source)) => {
@@ -383,10 +478,12 @@ impl Restore<'_> {
         }
     }
 
-    /// Put the author's original bytes back into a raw string payload.
-    fn literal(&self, text: &mut String) {
+    /// Put the author's original bytes back into a raw string payload —
+    /// anywhere an `Inline::Image` would be nonsense (a `Url`, a `title`, an
+    /// `alt`, a code span, a raw-HTML payload). Returns true if it changed.
+    fn literal(&self, text: &mut String) -> bool {
         if !text.contains(OPEN) {
-            return;
+            return false;
         }
         let source = std::mem::take(text);
         let mut out = String::with_capacity(source.len());
@@ -396,6 +493,22 @@ impl Restore<'_> {
             }
         }
         *text = out;
+        true
+    }
+
+    /// [`literal`](Self::literal) for an optional string (`title`).
+    fn literal_opt(&self, text: &mut Option<String>) -> bool {
+        text.as_mut().is_some_and(|t| self.literal(t))
+    }
+
+    /// [`literal`](Self::literal) for a URL. Both variants are handled because
+    /// `Url` is `pub` and a caller could hand `restore` an already-resolved
+    /// tree; at parse time every URL is still `Unresolved`.
+    fn literal_url(&self, url: &mut Url) -> bool {
+        match url {
+            Url::Unresolved(raw) => self.literal(raw),
+            Url::Resolved(resolved) => self.literal(&mut resolved.href),
+        }
     }
 }
 

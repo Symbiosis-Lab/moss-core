@@ -255,7 +255,7 @@ fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds)
 
     // `[![[x.png]]](/url)`: the embed is lifted to a sentinel, restored below.
     let (source, linked_embeds) =
-        super::linked_embed::substitute(&extraction.markdown_with_placeholders);
+        super::linked_embed::substitute(&extraction.markdown_with_placeholders, &extraction.nonce);
 
     let options = parser_options(config.math);
 
@@ -328,8 +328,10 @@ fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds)
         i += advance.max(1);
     }
 
-    // Substitute sentinel placeholders with their typed Shortcode variants.
+    // Put the lifted things back: placeholders become typed Shortcodes, `![[…]]`
+    // sentinels their `Inline::Image`. Both BEFORE `assign_heading_id_suffixes`.
     substitute_shortcode_placeholders(&mut blocks, &extraction.nonce, &extraction.extracted);
+    super::linked_embed::restore(&mut blocks, &linked_embeds, config);
 
     // Implicit-figure gating: the per-paragraph `try_promote_to_figure`
     // inside `parse_block_with_tag` always runs (so the figure promotion
@@ -362,8 +364,6 @@ fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds)
     }
 
     let mut doc = Document::from_blocks_with_meta(blocks, block_meta);
-
-    super::linked_embed::restore(&mut doc, &linked_embeds, config);
 
     // Obsidian parity: a single newline inside a paragraph becomes `<br>`.
     // Runs last, over the finished tree, because pulldown-cmark 0.13 has no

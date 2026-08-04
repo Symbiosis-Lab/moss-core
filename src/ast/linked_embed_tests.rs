@@ -167,8 +167,16 @@ fn works_in_prose_headings_lists_and_tables() {
         other => panic!("expected list, got {other:?}"),
     }
 
-    match &parse("| a |\n|---|\n| [![[a.png]]](/x/) |\n").blocks[0] {
-        Block::Table { rows, .. } => assert!(has_linked_image(&rows[0][0]), "{rows:?}"),
+    // BOTH table halves. `header` is a `Vec<Vec<Inline>>` field of its own, so
+    // a walk that matches `Block::Table { rows, .. }` silently skips it — this
+    // test used to assert `rows` only and its name promised more than it
+    // checked (the header cell lost the author's `![[a.png]]` entirely and
+    // published a U+E000 as link text).
+    match &parse("| [![[hdr.png]]](/h/) | b |\n|---|---|\n| [![[a.png]]](/x/) | d |\n").blocks[0] {
+        Block::Table { header, rows, .. } => {
+            assert!(has_linked_image(&header[0]), "header cell: {header:?}");
+            assert!(has_linked_image(&rows[0][0]), "body cell: {rows:?}");
+        }
         other => panic!("expected table, got {other:?}"),
     }
 
@@ -227,6 +235,18 @@ fn contains_linked_image(blocks: &[Block]) -> bool {
         }
         _ => false,
     })
+}
+
+/// True when a substitution sentinel survived anywhere in `blocks`.
+///
+/// `{:?}` renders a private-use codepoint as the nine ASCII characters
+/// `\u{e000}`, so `dump.contains('\u{e000}')` on a Debug dump is vacuously
+/// false — it never sees the real char and never fails. (It didn't: the first
+/// version of `a_sentinel_never_reaches_a_url_or_a_title` passed with the fix
+/// reverted.) Check both spellings.
+fn sentinel_leaks(blocks: &[Block]) -> bool {
+    let dump = format!("{blocks:?}");
+    dump.contains('\u{e000}') || dump.contains("\\u{e000}")
 }
 
 #[test]
@@ -293,8 +313,90 @@ fn multiline_link_text_is_left_to_pulldown() {
     // A destination that spans a newline is not the shape we claim; the
     // author's bytes must not be replaced by a sentinel that then leaks.
     let doc = parse("[![[card.png]]](/x/\n)\n");
-    let dump = format!("{:?}", doc.blocks);
-    assert!(!dump.contains('\u{e000}'), "sentinel leaked: {dump}");
+    assert!(!sentinel_leaks(&doc.blocks), "sentinel leaked: {:?}", doc.blocks);
+}
+
+#[test]
+fn a_heading_holding_an_embed_keeps_a_clean_anchor() {
+    // The `id` is slugged mid-parse, when the heading text still reads
+    // `U+E000…`. Left uncorrected, `<h2 id>` carries a private-use codepoint
+    // and `[[Page#Awards]]` — what heading completion inserts — no longer
+    // resolves. Recomputed after restore, the anchor is what the equivalent
+    // CommonMark spelling produces.
+    let md = "## Awards [![[badge.png]]](/awards/)\n";
+    match &parse(md).blocks[0] {
+        Block::Heading { id, .. } => {
+            assert_eq!(id.as_deref(), Some("awards"), "anchor holds a sentinel");
+        }
+        other => panic!("expected heading, got {other:?}"),
+    }
+    // And the AST's two views of a heading agree, which is the invariant
+    // `heading::text` exists to hold (see its module doc: one policy, two
+    // adapters). `extract_headings` reads the same `id`.
+    for md in [
+        "## Awards [![[badge.png]]](/awards/)\n",
+        "## [![[badge.png]]](/awards/) trailing\n",
+        "## Plain heading\n",
+    ] {
+        let doc = parse(md);
+        let Block::Heading { children, id, .. } = &doc.blocks[0] else {
+            panic!("expected heading for {md:?}");
+        };
+        let label = crate::ast::plain_text::inlines_to_plain_text(children);
+        assert_eq!(
+            id.as_deref().expect("heading id"),
+            crate::heading::anchor::obsidian_heading_anchor(&label),
+            "slug and label disagree for {md:?}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_heading_numbering_sees_the_restored_slug() {
+    // `assign_heading_id_suffixes` runs AFTER restore, so it must number the
+    // corrected base slugs. Two headings that only collide once the sentinel
+    // is gone have to come out `awards` / `awards-1`.
+    let doc = parse("## Awards [![[a.png]]](/x/)\n\n## Awards\n");
+    let ids: Vec<Option<&str>> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Heading { id, .. } => Some(id.as_deref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, vec![Some("awards"), Some("awards-1")]);
+}
+
+#[test]
+fn a_sentinel_never_reaches_a_url_or_a_title() {
+    // `[![[a.png]]]([![[b.png]]](/u))` puts the inner compound inside the
+    // OUTER link's destination. An href holding U+E000 is not a URL.
+    for md in [
+        "[![[a.png]]]([![[b.png]]](/u))\n",
+        "[![[a.png]]](/u \"[![[b.png]]](/t)\")\n",
+    ] {
+        let blocks = parse(md).blocks;
+        assert!(!sentinel_leaks(&blocks), "sentinel leaked for {md:?}: {blocks:?}");
+    }
+}
+
+#[test]
+fn author_written_private_use_text_survives() {
+    // The sentinel body carries the per-parse nonce precisely so a literal
+    // `U+E000 0 U+E001` in prose is NOT mistaken for embed 0 and replaced by
+    // an image the author never wrote.
+    let md = "keep \u{e000}0\u{e001} me\n\n[![[a.png]]](/x/)\n";
+    let doc = parse(md);
+    match &doc.blocks[0] {
+        Block::Paragraph(inlines) => {
+            let text = crate::ast::plain_text::inlines_to_plain_text(inlines);
+            assert_eq!(text, "keep \u{e000}0\u{e001} me", "author's bytes were eaten");
+        }
+        other => panic!("expected paragraph, got {other:?}"),
+    }
+    // …and the real compound in the same document still resolves.
+    assert!(contains_linked_image(&doc.blocks[1..]), "{:?}", doc.blocks);
 }
 
 #[test]
