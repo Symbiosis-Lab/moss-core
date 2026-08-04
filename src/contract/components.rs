@@ -963,11 +963,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 default: "",
                 description: "Marks a hero whose image is pale enough (scan-cached dominant colour above 0.4 relative luminance) that the default legibility scrim leaves white overlay text under 4.5:1; site.css swaps in a stronger gradient. Emitted only when the hero also carries overlay text. Absent = mid-tone or dark image, no overlay, or an unparseable colour — all keep the default ramp.",
             },
+            DataAttr {
+                name: "data-mobile",
+                values: &["overlay"],
+                default: "",
+                description: "Below **48rem** (moss's mobile threshold), `overlay` keeps the title on top of the image instead of stacking it underneath. Emitted **only** for `:::hero {mobile=overlay}` — an author must ask for it; a hero with overlay text does not get it by default. The selector to fight if you want the other behaviour is `.moss-hero[data-mobile=\"overlay\"]`.",
+            },
         ],
         example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
 </section>"#,
-        example_markdown: ":::hero {image=cover.jpg}\n:::\n",
+        example_markdown: ":::hero {image=cover.jpg}\n:::\n\n:::hero {image=cover.jpg full mobile=overlay}\n# Title over the image\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Hero banner section at the top of a page (cover image + title). v1 adds `data-width` for author-controlled sizing.",
@@ -1092,6 +1098,12 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 default: "body",
                 description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9.",
             },
+            DataAttr {
+                name: "data-columns",
+                values: &["1", "2", "3", "4"],
+                default: "",
+                description: "Column count, from `:::grid N`. Note the responsive default: below 768px moss collapses `[data-columns]` to a single column, which is right for a grid of cards and wrong for a grid of short text lines. Re-assert `grid-template-columns` inside your own media query if yours is the latter.",
+            },
         ],
         example_html: r#"<div class="moss-grid" data-width="wide">
   <div class="moss-grid-card">...</div>
@@ -1129,6 +1141,12 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 values: &["body", "wide", "page", "screen"],
                 default: "body",
                 description: "Display width — text-column (body), wider than text (wide), page-width (page), or viewport-width (screen). See spec § P9.",
+            },
+            DataAttr {
+                name: "data-columns",
+                values: &[],
+                default: "",
+                description: "Column count, from `:::gallery N` — the author names it rather than moss inferring it. The **opposite** of `.moss-grid[data-columns]` on mobile: below 48rem the grid collapses to one column, while the gallery uses `auto-fill` to keep as many tracks as clear 88px. N becomes a maximum rather than a mandate, and a gallery that already fits stays at its authored count. Collapsing a wall of thumbnails to one column is wrong; collapsing prose cells is right.",
             },
         ],
         example_html: r#"<div class="moss-gallery" data-width="page">
