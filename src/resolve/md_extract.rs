@@ -7,6 +7,17 @@
 //!
 //! **No resolution** happens here. The caller (src-tauri) resolves each
 //! `RawRef` against the project's indexes.
+//!
+//! Recognition runs over [`crate::inert_regions`]'s mask rather than a
+//! private fence tracker, so this scanner and
+//! [`crate::ast::shortcode_extract::shortcode_asset_spans`] give one
+//! identical answer to "which bytes are live syntax". Two behaviours changed
+//! when the private tracker was deleted (2026-08-03): references inside an
+//! authored `<!-- … -->` comment and inside an indented code block are no
+//! longer extracted. The old doc justified scanning comments with
+//! build-internal `<!-- moss-embed:… -->` sentinels, which never appear in
+//! the author files this module's only consumer (src-tauri's
+//! `editor::ref_scan`) reads from disk.
 
 /// Which surface syntax produced this reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,111 +57,30 @@ pub struct RawRef {
 
 /// Extract all markdown references from `source`.
 ///
-/// Skips content inside fenced code blocks (` ``` ` / `~~~`) and inline
-/// code spans.  Does **not** skip HTML comments — `<!-- moss-embed:… -->`
-/// is build-internal and not a user-authored reference.
+/// Recognition runs over [`crate::inert_regions::mask_inert`], the one
+/// shared answer to "which bytes are not live syntax" — so references
+/// inside fenced code blocks, indented code blocks, inline code spans and
+/// HTML comments are skipped. Every *string* (`text`, `label`, `alt`, the
+/// wikilink alias) is sliced from the ORIGINAL source, because the mask
+/// blanks inline code spans and would otherwise corrupt a label like
+/// ``[a `b` c](x.md)``.
 ///
 /// External URLs (`http://…`, `https://…`, `//`, `mailto:`, `tel:`, `data:`)
 /// are included as `MarkdownLink` / `MarkdownImage` — the caller decides
 /// whether to filter them out.
 pub fn extract_md_references(source: &str) -> Vec<RawRef> {
-    let bytes = source.as_bytes();
+    let mask = crate::inert_regions::mask_inert(source);
+    let bytes = mask.as_bytes();
     let len = bytes.len();
     let mut refs = Vec::new();
     let mut i = 0;
 
-    // Fenced block tracking: Some(char) while inside a fence.
-    let mut fence_char: Option<u8> = None;
-    // Track line starts for fence detection.
-    let mut line_start = 0;
-
     while i < len {
-        // ── Newline: advance line_start, check for fence ─────────────────
-        if bytes[i] == b'\n' {
-            i += 1;
-            line_start = i;
-            continue;
-        }
-
-        // ── At start of a line: check for fence open/close ───────────────
-        if i == line_start {
-            // Skip leading whitespace (up to 3 spaces per CommonMark for fences)
-            let mut j = i;
-            while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') && j - i < 4 {
-                j += 1;
-            }
-            // Check for ``` or ~~~
-            let fence_cand = if j + 2 < len && bytes[j] == b'`' && bytes[j+1] == b'`' && bytes[j+2] == b'`' {
-                Some(b'`')
-            } else if j + 2 < len && bytes[j] == b'~' && bytes[j+1] == b'~' && bytes[j+2] == b'~' {
-                Some(b'~')
-            } else {
-                None
-            };
-            if let Some(fc) = fence_cand {
-                if let Some(cur_fc) = fence_char {
-                    if cur_fc == fc {
-                        // Closing fence: rest of line must not contain fc
-                        let mut k = j + 3;
-                        while k < len && bytes[k] == fc { k += 1; }
-                        // skip spaces
-                        while k < len && bytes[k] == b' ' { k += 1; }
-                        if k >= len || bytes[k] == b'\n' {
-                            fence_char = None;
-                            // Advance past the closing-fence line itself. Without
-                            // this, `i` still points at the fence line and the
-                            // backtick handler below would consume the rest of
-                            // the file, silently dropping every reference AFTER a
-                            // fenced code block.
-                            while i < len && bytes[i] != b'\n' {
-                                i += 1;
-                            }
-                            continue;
-                        }
-                    }
-                } else {
-                    fence_char = Some(fc);
-                }
-            }
-        }
-
-        // Inside a fenced block: skip until newline
-        if fence_char.is_some() {
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-
-        // ── Inline code span: skip ──────────────────────────────────────
-        if bytes[i] == b'`' {
-            // Count backtick run
-            let mut n = 0;
-            while i + n < len && bytes[i + n] == b'`' { n += 1; }
-            let start = i;
-            i += n;
-            // Find matching run of n backticks
-            while i < len {
-                if bytes[i] == b'`' {
-                    let mut m = 0;
-                    while i + m < len && bytes[i + m] == b'`' { m += 1; }
-                    if m == n {
-                        i += m;
-                        break;
-                    }
-                    i += m;
-                } else {
-                    i += 1;
-                }
-            }
-            let _ = start;
-            continue;
-        }
-
         // ── Backslash escape: `\[[note]]` / `\[t](p)` are NOT references ──
-        // Skip the backslash and the next char so the escaped bracket can't
-        // start a reference token. Advance by a full char (not a byte) so `i`
-        // stays on a UTF-8 boundary for later string slices.
+        // An escape is not an inert region (the mask leaves it alone), so it
+        // stays a case here. Skip the backslash and the next char so the
+        // escaped bracket can't start a reference token. Advance by a full
+        // char (not a byte) so `i` stays on a UTF-8 boundary for later slices.
         if bytes[i] == b'\\' {
             i += 1; // past the backslash (ASCII, boundary-safe)
             if i < len {
@@ -176,7 +106,8 @@ pub fn extract_md_references(source: &str) -> Vec<RawRef> {
         if is_embed_wikilink || is_wikilink {
             let token_start = i;
             let inner_start = if is_embed_wikilink { i + 3 } else { i + 2 };
-            // Find closing ]]
+            // Find closing ]] — in the MASK, so a `]]` hidden in inline code
+            // does not close a live wikilink.
             if let Some(close) = find_double_bracket(bytes, inner_start) {
                 // SAFETY: inner_start and close are valid UTF-8 char boundaries
                 // because we only advance past ASCII bytes ([, !, ]) to reach them.
@@ -343,149 +274,117 @@ fn strip_link_title(raw: &str) -> String {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "md_extract_tests.rs"]
+mod tests;
 
-    #[test]
-    fn wikilink_stem() {
-        let src = "See [[note]] for details.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "note");
-        assert_eq!(refs[0].syntax, RefSyntax::WikilinkStem);
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "[[note]]");
-    }
+// ── Structural asset paths ────────────────────────────────────────────────
+//
+// `extract_md_references` above sees only BRACKETED markdown tokens. A
+// `:::gallery` body line, a `:::hero {image=…}` attribute and a frontmatter
+// `cover:` value are asset references with no reference syntax around them,
+// so they were invisible to rename tracking and silently broke on rename.
+// The types below are the second half of the answer; `ref_scan` (src-tauri)
+// unions the two.
 
-    #[test]
-    fn wikilink_path() {
-        let src = "See [[a/b]] here.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "a/b");
-        assert_eq!(refs[0].syntax, RefSyntax::WikilinkPath);
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "[[a/b]]");
-    }
+/// Which container a structurally-extracted path was found in.
+/// Decides quoting when the value is rebuilt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathContainer {
+    /// A body line of a `:::gallery` block.
+    GalleryBody,
+    /// A body media line of a `:::hero` block.
+    HeroBodyMedia,
+    /// The positional path on a `:::hero <path>` directive line.
+    HeroDirective,
+    /// A `key=value` attribute of a `:::` block (today only `image=`).
+    ShortcodeAttr { key: String },
+    /// A frontmatter field whose value names a project file.
+    FrontmatterField { key: String },
+}
 
-    #[test]
-    fn wikilink_stem_embed() {
-        let src = "![[x]] is an embed.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "x");
-        assert_eq!(refs[0].syntax, RefSyntax::WikilinkStemEmbed);
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "![[x]]");
-    }
+/// An asset path that occupies a span with NO markdown reference syntax
+/// around it.
+///
+/// # Contract
+///
+/// A rename replaces `value` with `render_bare_value(container, quote, path,
+/// attrs)`; a delete removes `outer`. `attrs` is the `|attrs` suffix that
+/// lives INSIDE `value` — it is empty when the author's attrs sit outside it
+/// (`![alt](x.png)|cover`, where the attrs follow the closing paren), so
+/// re-rendering never duplicates or drops them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetPathSpan {
+    /// Decoded and trimmed: no quotes, no `|attrs`, no `[[ ]]`.
+    pub path: String,
+    /// The `|attrs` suffix inside `value`, or `""` — rebuilt verbatim.
+    pub attrs: String,
+    /// Quote character the value was wrapped in, if any.
+    pub quote: Option<char>,
+    /// Span a RENAME rewrites — the whole value, quotes included.
+    pub value: std::ops::Range<usize>,
+    /// Span a DELETE removes — the whole gallery/frontmatter line
+    /// (including its terminator) or the whole `key=value` attr item.
+    pub outer: std::ops::Range<usize>,
+    /// Where the path was found.
+    pub container: PathContainer,
+}
 
-    #[test]
-    fn wikilink_path_embed() {
-        let src = "![[a/b]] embedded.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "a/b");
-        assert_eq!(refs[0].syntax, RefSyntax::WikilinkPathEmbed);
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "![[a/b]]");
-    }
+/// One recognized media reference on a single line, with LINE-RELATIVE
+/// offsets. Produced by the gallery and hero line recognizers; lifted to
+/// absolute offsets by the block-level scanner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaLineSpan {
+    /// The path text as the parser would read it.
+    pub path: String,
+    /// Alt text (`![alt](…)`), or `""`.
+    pub alt: String,
+    /// The full `|attrs` suffix the parser reads (may sit outside `value`).
+    pub attrs: String,
+    /// Line-relative span a rename replaces.
+    pub value: std::ops::Range<usize>,
+    /// The `|attrs` suffix contained WITHIN `value`.
+    pub value_attrs: String,
+    /// The line carried markdown reference syntax (`![[…]]` / `![…](…)`),
+    /// so [`extract_md_references`] already sees it as a token.
+    pub is_token: bool,
+}
 
-    #[test]
-    fn wikilink_aliased() {
-        let src = "See [[stem|Display]] here.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "stem");
-        assert!(matches!(&refs[0].syntax, RefSyntax::WikilinkAliased { display } if display == "Display"));
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "[[stem|Display]]");
+/// `(base, content_len, terminator_len)` per physical line of `source`,
+/// index-aligned with [`str::lines`].
+pub(crate) fn line_table(source: &str) -> Vec<(usize, usize, usize)> {
+    let bytes = source.as_bytes();
+    let mut table = Vec::new();
+    let mut base = 0usize;
+    while base <= bytes.len() {
+        let nl = bytes[base..].iter().position(|&b| b == b'\n');
+        match nl {
+            Some(off) => {
+                let mut content = off;
+                if content > 0 && bytes[base + content - 1] == b'\r' {
+                    content -= 1;
+                }
+                table.push((base, content, off - content + 1));
+                base += off + 1;
+            }
+            None => {
+                if base < bytes.len() {
+                    table.push((base, bytes.len() - base, 0));
+                }
+                break;
+            }
+        }
     }
+    table
+}
 
-    #[test]
-    fn wikilink_aliased_embed() {
-        let src = "![[stem|500]] wide embed.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "stem");
-        assert!(matches!(&refs[0].syntax, RefSyntax::WikilinkAliasedEmbed { display } if display == "500"));
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "![[stem|500]]");
-    }
-
-    #[test]
-    fn markdown_link() {
-        let src = "Click [here](page.md) now.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "page.md");
-        assert!(matches!(&refs[0].syntax, RefSyntax::MarkdownLink { label } if label == "here"));
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "[here](page.md)");
-    }
-
-    #[test]
-    fn markdown_image() {
-        let src = "![alt text](img.png) here.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "img.png");
-        assert!(matches!(&refs[0].syntax, RefSyntax::MarkdownImage { alt } if alt == "alt text"));
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "![alt text](img.png)");
-    }
-
-    #[test]
-    fn external_link_included() {
-        let src = "[foo](https://example.com)";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "https://example.com");
-        assert!(matches!(&refs[0].syntax, RefSyntax::MarkdownLink { .. }));
-    }
-
-    #[test]
-    fn skip_fenced_code_block() {
-        let src = "```\n[[note]]\n```\nAfter.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 0, "wikilink inside fenced block should be skipped");
-    }
-
-    #[test]
-    fn ref_after_fence_is_found() {
-        // Regression: the closing-fence line must be advanced past, otherwise
-        // the backtick handler swallows the rest of the file and drops every
-        // reference after a fenced block.
-        let src = "```\n[[skip]]\n```\n[[find]]";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1, "exactly the ref after the fence is found, got: {:?}", refs);
-        assert_eq!(refs[0].text, "find");
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "[[find]]");
-    }
-
-    #[test]
-    fn backslash_escaped_refs_are_skipped() {
-        // `\[[note]]` and `\[t](p)` are escaped and must NOT be extracted.
-        let src = "Escaped \\[[note]] and \\[t](p.md) but [[real]] counts.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1, "only the unescaped ref should be found, got: {:?}", refs);
-        assert_eq!(refs[0].text, "real");
-    }
-
-    #[test]
-    fn skip_inline_code_span() {
-        let src = "In `` [[note]] `` code.";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 0, "wikilink inside inline code should be skipped");
-    }
-
-    #[test]
-    fn multiple_refs_byte_offsets() {
-        let src = "[[a]] and [[b]]";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 2);
-        assert_eq!(&src[refs[0].byte_from..refs[0].byte_to], "[[a]]");
-        assert_eq!(&src[refs[1].byte_from..refs[1].byte_to], "[[b]]");
-    }
-
-    #[test]
-    fn aliased_embed_preserves_alias() {
-        // ![[image.png|600]] — pothole is "600"
-        let src = "![[image.png|600]]";
-        let refs = extract_md_references(src);
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].text, "image.png");
-        assert!(matches!(&refs[0].syntax, RefSyntax::WikilinkAliasedEmbed { display } if display == "600"));
-    }
+/// Every structural asset path in `source`, ascending by `value.start`.
+///
+/// Complements [`extract_md_references`], which sees only bracketed markdown
+/// tokens. A caller that REWRITES must union the two and resolve overlaps —
+/// see `apply_edits` in src-tauri's `editor::ref_scan`.
+pub fn extract_structural_asset_refs(source: &str) -> Vec<AssetPathSpan> {
+    let mut v = crate::ast::shortcode_extract::shortcode_asset_spans(source);
+    v.extend(crate::frontmatter::frontmatter_asset_spans(source));
+    v.sort_by_key(|s| s.value.start);
+    v
 }
