@@ -253,6 +253,10 @@ enum HeadingIds {
 fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds) -> Document {
     let extraction = extract_shortcodes_with_config(markdown, config);
 
+    // `[![[x.png]]](/url)`: the embed is lifted to a sentinel, restored below.
+    let (source, linked_embeds) =
+        super::linked_embed::substitute(&extraction.markdown_with_placeholders, &extraction.nonce);
+
     let options = parser_options(config.math);
 
     // Source-line tracking requires the `into_offset_iter` form of the
@@ -262,25 +266,22 @@ fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds)
         if config.emit_source_lines {
             let mut evs = Vec::new();
             let mut offs = Vec::new();
-            for (event, range) in
-                Parser::new_ext(&extraction.markdown_with_placeholders, options).into_offset_iter()
-            {
+            for (event, range) in Parser::new_ext(&source, options).into_offset_iter() {
                 evs.push(event);
                 offs.push(Some(range));
             }
             (evs, offs)
         } else {
-            let evs: Vec<Event<'_>> =
-                Parser::new_ext(&extraction.markdown_with_placeholders, options).collect();
+            let evs: Vec<Event<'_>> = Parser::new_ext(&source, options).collect();
             let len = evs.len();
             (evs, vec![None; len])
         };
 
     // Build the prefix-sum line table once (only when needed).
     //
-    // CAVEAT: the markdown that the offsets index into is
-    // `extraction.markdown_with_placeholders`, NOT the original
-    // `markdown` passed in. Shortcode extraction may rewrite some bytes
+    // CAVEAT: the markdown that the offsets index into is `source` (the
+    // post-extraction, post-linked-embed-substitution string), NOT the
+    // original `markdown` passed in. Shortcode extraction may rewrite some bytes
     // into sentinel HTML comments of a different length; line numbers
     // would be off for blocks following an extracted shortcode if we
     // built the lookup against the original. We build against the
@@ -294,10 +295,7 @@ fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds)
     //
     // For the source-line-off path, lookup is unused.
     let line_lookup = if config.emit_source_lines {
-        Some(LineLookup::build(
-            &extraction.markdown_with_placeholders,
-            config.source_line_offset,
-        ))
+        Some(LineLookup::build(&source, config.source_line_offset))
     } else {
         None
     };
@@ -330,8 +328,10 @@ fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds)
         i += advance.max(1);
     }
 
-    // Substitute sentinel placeholders with their typed Shortcode variants.
+    // Put the lifted things back: placeholders become typed Shortcodes, `![[…]]`
+    // sentinels their `Inline::Image`. Both BEFORE `assign_heading_id_suffixes`.
     substitute_shortcode_placeholders(&mut blocks, &extraction.nonce, &extraction.extracted);
+    super::linked_embed::restore(&mut blocks, &linked_embeds, config);
 
     // Implicit-figure gating: the per-paragraph `try_promote_to_figure`
     // inside `parse_block_with_tag` always runs (so the figure promotion

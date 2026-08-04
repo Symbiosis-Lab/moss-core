@@ -26,9 +26,10 @@ use super::node::Block;
 use super::parser::{parse_fragment_with_config, ParseConfig};
 use super::shortcode::{
     ApplyShortcode, ButtonItem, ButtonsShortcode, GalleryItem, GalleryShortcode, GridShortcode,
-    HeroShortcode, RecentShortcode, Shortcode, SubscribeShortcode,
+    RecentShortcode, Shortcode, SubscribeShortcode,
 };
 use super::url::Url;
+use crate::resolve::md_extract::{line_table, AssetPathSpan, MediaLineSpan, PathContainer};
 
 /// One extracted shortcode block, with its body parsed into a typed variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +94,7 @@ fn parse_shortcode_block(
             // only way to express a crossfading hero), not a deprecated
             // fallback — the old Priority-3 deprecation warning retired
             // with the multi-image hero.
-            let (sc, _used_p3) = parse_hero(args, body, config);
+            let (sc, _used_p3) = super::extract_hero::parse_hero(args, body, config);
             let mut warns = vec![];
             if let Some(ref v) = sc.mobile {
                 if v != "overlay" {
@@ -349,7 +350,8 @@ fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
 /// Ported from src-tauri's `crate::build::markdown::typed_renderers::
 /// detect_compound_link` (Phase 4 PR4.5, 2026-05-28) — the AST-level
 /// equivalent of the same string-level detection. The src-tauri version
-/// is deleted in PR4.5.
+/// is deleted in PR4.5. NOT the general cure for `[![[x.png]]](/url)` —
+/// [`super::linked_embed`] is; this is the block-level grid *card*.
 ///
 /// Safety rules that cause this function to return `None`:
 /// - Cell contains a top-level code fence (\`\`\` or ~~~).
@@ -362,9 +364,8 @@ fn detect_bare_url_cell(cell_text: &str) -> Option<String> {
 ///   hijacking it into a card would change ordinary link cells.
 /// - There is content after the closing `)`, separated by a blank line,
 ///   but the inner content does not lead with a WIKILINK image (`![[`).
-///   Trailing caption paragraphs are only recognized for this exact shape
-///   — the one pulldown-cmark cannot represent at all, a wikilink image
-///   nested inside a standard link (see moss#928-adjacent). A cell led by
+///   Trailing caption paragraphs are only recognized for this exact shape,
+///   the image-card-plus-caption cell (see moss#928-adjacent). A cell led by
 ///   an ordinary markdown image (`![alt](src)`) is deliberately excluded:
 ///   pulldown-cmark parses `![alt](src)` fine on its own, so
 ///   `[![alt](src)](url)\n\ncaption` already reaches the plain block
@@ -612,225 +613,208 @@ fn split_grid_cells(body: &str) -> (Vec<String>, bool) {
     (cells, found_legacy_dash)
 }
 
-/// Parse a `:::hero` block in any of three syntactic forms.
+/// Byte-offset asset paths inside `:::gallery` / `:::hero` blocks.
 ///
-/// Image source priority:
-/// 1. `image=path` attribute in the `{...}` block (new grammar).
-/// 2. **Directive-line path**: `:::hero ./path.jpg` or
-///    `:::hero ./path.jpg|attrs` or `:::hero ./path.jpg {.classes}` —
-///    moss-releases / client-site backward-compat. The path appears as
-///    raw text before any `{...}` attribute block.
-/// 3. **Body-image fallback**: scan first non-empty body line for a
-///    media reference (`![[path|attrs]]`, `![alt](path|attrs)`, or
-///    bare media filename). Step 3 of the grammar migration rewrites
-///    these to use the `image=` attribute.
-/// 4. None — renderer emits a `<section>` with no `<img>`.
+/// The structural half of rename tracking: these paths carry NO markdown
+/// reference syntax, so [`crate::resolve::md_extract::extract_md_references`]
+/// cannot see them and a rename silently broke them. Offsets are absolute in
+/// `source`; the body is never joined, so CRLF sources are exact by
+/// construction (unlike `extract_with_state`, which parses a
+/// `lines().join("\n")` copy and destroys offsets one level above the
+/// per-line parsers).
 ///
-/// Returns `(HeroShortcode, bool)` where the bool is `true` when the
-/// body-image fallback (Priority 3) fired, signaling the caller to
-/// emit a deprecation warning.
-fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, bool) {
-    let trimmed_args = args.trim();
+/// Recognition reads [`crate::inert_regions::mask_inert`] — the same mask
+/// [`crate::resolve::md_extract`] scans, so the two passes agree byte for
+/// byte on what is live syntax. Emitted STRINGS are sliced from `source`.
+///
+/// # Where the mask applies, and where it must not
+///
+/// The mask decides which lines carry a live `:::` OPENER or CLOSER — the
+/// same question `extract_with_state` asks it. It does NOT filter body
+/// lines: once a `:::gallery` opener is live, the block grammar owns every
+/// line until the closer, and `parse_gallery_body` reads them verbatim. A
+/// path inside a fenced code block in a gallery body really does render as
+/// an image, so masking it would leave exactly the silent rename break this
+/// scanner exists to fix.
+///
+/// # Deliberate divergence from `extract_with_state`
+///
+/// **Descends into every unrecognized block**, where the extractor recurses
+/// only into CssRegion and Unknown bodies. A `:::gallery` nested inside
+/// `::::grid` is therefore found. Over-approximating is safe: a rename only
+/// fires on an exact path match.
+///
+/// Kept in step with the parsers by `spans_agree_with_parsers`.
+pub fn shortcode_asset_spans(source: &str) -> Vec<AssetPathSpan> {
+    let mask = crate::inert_regions::mask_inert(source);
+    // Line table over the RAW source. Index-aligned with `str::lines()`, but
+    // additionally carrying each line's absolute base and terminator length
+    // so `outer` can cover the whole physical line.
+    let table = line_table(source);
+    let mask_lines: Vec<&str> = mask.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
 
-    // Split args on the first `{` to separate the directive-line path
-    // (if any) from the attribute block (if any).
-    let (positional, attr_block): (&str, &str) = if let Some(pos) = trimmed_args.find('{') {
-        // char-aligned: pos points to ASCII '{' from str::find — safe to slice.
-        #[allow(clippy::string_slice)]
-        (trimmed_args[..pos].trim(), &trimmed_args[pos..])
-    } else {
-        (trimmed_args, "")
-    };
+    while i < table.len() {
+        let Some(mline) = mask_lines.get(i) else { break };
+        let Some((arity, name, single_line_args)) = parse_shortcode_opener(mline.trim()) else {
+            i += 1;
+            continue;
+        };
 
-    // Parse the attribute block, if present.
-    let parsed = if attr_block.is_empty() {
-        Default::default()
-    } else {
-        super::attrs::parse_attrs(attr_block).unwrap_or_default()
-    };
-    let classes = parsed.class_string();
-    let width = parsed.width.map(str::to_string);
-    let mobile = parsed.get("mobile").map(str::to_string);
+        // Where does the opener's attribute block end? Reuse the extractor's
+        // own ladder so a multi-line `{ … }` is measured identically.
+        let (_, opener_lines_consumed) =
+            gather_multi_line_attrs(single_line_args, &mask_lines[i + 1..]);
+        let body_start = i + 1 + opener_lines_consumed;
 
-    // Priority 1: `image=` attribute.
-    if let Some(image_value) = parsed.get("image") {
-        let (path, attrs_str) = crate::media::split_pipe(image_value);
-        let overlay_text = body.trim().to_string();
-        let overlay = parse_overlay_to_blocks(&overlay_text, config);
-        return (
-            HeroShortcode {
-                image: if path.trim().is_empty() {
-                    None
-                } else {
-                    Some(Url::unresolved(path.trim().to_string()))
-                },
-                extra_images: Vec::new(),
-                attrs: attrs_str.to_string(),
-                classes,
-                overlay,
-                overlay_text,
-                width,
-                mobile,
-            },
-            false,
-        );
-    }
-
-    // Priority 2: directive-line path (legacy syntax). When the
-    // positional text is non-empty, treat it as the image path with
-    // optional `|attrs` pipe suffix. Body becomes pure overlay markdown.
-    if !positional.is_empty() {
-        let (path, attrs_str) = crate::media::split_pipe(positional);
-        let overlay_text = body.trim().to_string();
-        let overlay = parse_overlay_to_blocks(&overlay_text, config);
-        return (
-            HeroShortcode {
-                image: if path.trim().is_empty() {
-                    None
-                } else {
-                    Some(Url::unresolved(path.trim().to_string()))
-                },
-                extra_images: Vec::new(),
-                attrs: attrs_str.to_string(),
-                classes,
-                overlay,
-                overlay_text,
-                width,
-                mobile,
-            },
-            false,
-        );
-    }
-
-    // Priority 3: body-image fallback. Every CONSECUTIVE leading media
-    // line is a background slide (2026-07-27 multi-image hero) — the
-    // first is the primary image, the rest `extra_images`; blank lines
-    // between media lines don't end the run. The first non-media,
-    // non-empty line starts the overlay.
-    let mut overlay_lines: Vec<&str> = Vec::new();
-    let mut image_path: Option<String> = None;
-    let mut image_attrs = String::new();
-    let mut extra_images: Vec<Url> = Vec::new();
-    let mut in_media_run = true;
-    let mut used_priority_3 = false;
-    for line in body.lines() {
-        if in_media_run {
-            if line.trim().is_empty() {
-                continue;
+        // Matching closer at this arity.
+        let mut close = None;
+        for j in body_start..table.len() {
+            if is_close_fence(mask_lines.get(j).map_or("", |l| l.trim()), arity) {
+                close = Some(j);
+                break;
             }
-            if let Some((path, attrs_str)) = parse_hero_media_line(line) {
-                // A bare filename containing whitespace on a CONTINUATION
-                // line is almost certainly prose that happens to end in a
-                // media extension ("Photo: alpine-meadow.jpg") — treat it
-                // as overlay rather than silently eating a caption. The
-                // first line keeps the historical bare-filename grammar.
-                let bare = !line.trim_start().starts_with("![");
-                if image_path.is_some() && bare && path.contains(char::is_whitespace) {
-                    // fall through: the line below ends the media run.
-                } else if image_path.is_none() {
-                    image_path = Some(path);
-                    // Frame-level media attrs (object-fit/position) come
-                    // from the primary slide and apply to every slide.
-                    image_attrs = attrs_str;
-                    used_priority_3 = true;
-                    continue;
-                } else {
-                    extra_images.push(Url::unresolved(path));
-                    continue;
+        }
+        let Some(j) = close else {
+            // Unclosed: `extract_with_state` emits the block verbatim, so
+            // nothing inside it is live. Descend in place.
+            i += 1;
+            continue;
+        };
+
+        match name {
+            "gallery" => {
+                for k in body_start..j {
+                    if let Some(span) = gallery_body_span(source, &table, k) {
+                        out.push(span);
+                    }
                 }
+                i = j + 1;
             }
-            // First non-media, non-empty line — overlay starts here.
-            in_media_run = false;
+            "hero" => {
+                super::extract_hero::hero_asset_spans(source, &mask, &table, i, body_start, j, &mut out);
+                i = j + 1;
+            }
+            // Unknown / CssRegion / other typed block: descend in place so a
+            // gallery nested inside it is still found.
+            _ => i += 1,
         }
-        overlay_lines.push(line);
     }
-    let overlay_text = overlay_lines.join("\n").trim().to_string();
-    let overlay = parse_overlay_to_blocks(&overlay_text, config);
-    (
-        HeroShortcode {
-            image: image_path.map(Url::unresolved),
-            extra_images,
-            attrs: image_attrs,
-            classes,
-            overlay,
-            overlay_text,
-            width,
-            mobile,
-        },
-        used_priority_3,
-    )
+
+    out
 }
 
-/// Parse a hero overlay's raw markdown source into `Vec<Block>`.
+/// One `:::gallery` body line → an [`AssetPathSpan`], or `None`.
 ///
-/// Phase 4 PR4.5 (2026-05-28): mirrors `parse_cell_to_blocks` for the
-/// grid-cell path but without compound-link detection (an overlay is not
-/// a compound-link surface; the SoCiviC pattern is grid-cell-specific).
-/// Returns an empty vec when the overlay is empty.
-fn parse_overlay_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
-    if raw.is_empty() {
-        return Vec::new();
+/// The **emission filter** lives here, not in [`gallery_item_span`]: a
+/// gallery body line is only reported as an asset reference when it carried
+/// markdown reference syntax or its bare path has a known media extension
+/// ([`HERO_MEDIA_EXTENSIONS`], the SSOT — extending that list extends gallery
+/// rename tracking). Without it, every line of prose in a gallery body would
+/// show up in the delete-confirmation modal.
+fn gallery_body_span(
+    source: &str,
+    table: &[(usize, usize, usize)],
+    k: usize,
+) -> Option<AssetPathSpan> {
+    let (base, content_len, term_len) = *table.get(k)?;
+    #[allow(clippy::string_slice)]
+    // `base` and `base + content_len` are line boundaries from `line_table`,
+    // which splits on ASCII '\n'/'\r' only.
+    let line = &source[base..base + content_len];
+    let it = gallery_item_span(line)?;
+    if !it.is_token && !super::extract_hero::is_bare_hero_media(&it.path) {
+        return None;
     }
-    let doc = parse_fragment_with_config(raw, config);
-    doc.blocks
+    Some(AssetPathSpan {
+        path: crate::media::strip_wikilink(&it.path).to_string(),
+        attrs: it.value_attrs,
+        quote: None,
+        value: base + it.value.start..base + it.value.end,
+        outer: base..base + content_len + term_len,
+        container: PathContainer::GalleryBody,
+    })
 }
 
-/// File extensions recognized as media for hero body-image fallback.
-const HERO_MEDIA_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "avif", "svg", "mp4", "webm", "mov",
-];
-
-fn is_bare_hero_media(s: &str) -> bool {
-    let (path_part, _) = crate::media::split_pipe(s);
-    let path = path_part.trim();
-    path.rfind('.')
-        .map(|dot| {
-            // char-aligned: dot points to ASCII '.' from str::rfind — `dot + 1`
-            // lands on the byte after '.', which is also a char boundary.
-            #[allow(clippy::string_slice)]
-            let ext = &path[dot + 1..];
-            HERO_MEDIA_EXTENSIONS
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(ext))
-        })
-        .unwrap_or(false)
-}
-
-/// Parse a line as a media reference. Returns `(path, attrs_str)`.
-fn parse_hero_media_line(line: &str) -> Option<(String, String)> {
+/// Recognize one `:::gallery` body line, with LINE-RELATIVE byte offsets.
+///
+/// This is the single grammar for a gallery body line: [`parse_gallery_body`]
+/// is a thin loop over it, and [`shortcode_asset_spans`] lifts its offsets to
+/// absolute. The three arms and their ORDER mirror the historical parser
+/// exactly — `![[…]]` first, then the pipe split, then the markdown-image
+/// pattern — because that ordering is observable (`![alt](x.png|cover)`
+/// splits on the pipe first and therefore is NOT a markdown image).
+///
+/// Returns a span for every non-blank line, prose included; the media filter
+/// lives in [`shortcode_asset_spans`], which is what must not put prose in
+/// the delete-confirmation modal.
+pub(crate) fn gallery_item_span(line: &str) -> Option<MediaLineSpan> {
+    let lead = line.len() - line.trim_start().len();
     let trimmed = line.trim();
-
-    // Wikilink embed: ![[path|attrs]]
-    if let Some(inner) = trimmed
-        .strip_prefix("![[")
-        .and_then(|s| s.strip_suffix("]]"))
-    {
-        let (path, attrs_str) = crate::media::split_pipe(inner);
-        return Some((path.trim().to_string(), attrs_str.to_string()));
+    if trimmed.is_empty() {
+        return None;
     }
 
-    // Standard markdown image: ![alt](path|attrs)
-    if trimmed.starts_with("![") {
-        if let Some(paren_open) = trimmed.find("](") {
-            if trimmed.ends_with(')') {
-                // char-aligned: paren_open points to ASCII "](" from str::find
-                // (paren_open + 2 lands on first byte after `](`, char boundary);
-                // `trimmed.len() - 1` is the byte before the trailing ASCII ')'.
-                #[allow(clippy::string_slice)]
-                let inner = &trimmed[paren_open + 2..trimmed.len() - 1];
-                let (path, attrs_str) = crate::media::split_pipe(inner);
-                return Some((path.trim().to_string(), attrs_str.to_string()));
-            }
+    // Wikilink embed: ![[path|attrs]] — checked BEFORE the generic pipe
+    // split below, mirroring `hero_media_line_span`'s ordering (the
+    // wikilink's own `|` separates path from attrs and must be split on
+    // the INNER content, not the whole `![[...]]` line).
+    if let Some(inner) = trimmed.strip_prefix("![[").and_then(|s| s.strip_suffix("]]")) {
+        let (src_raw, attrs) = split_pipe(inner);
+        // `![[` is 3 ASCII bytes; the inner text is contiguous.
+        let inner_start = lead + 3;
+        return Some(MediaLineSpan {
+            path: src_raw.trim().to_string(),
+            alt: String::new(),
+            attrs: attrs.to_string(),
+            value: inner_start..inner_start + inner.len(),
+            value_attrs: attrs.to_string(),
+            is_token: true,
+        });
+    }
+
+    // Each line: `path|attrs`, `![alt](path)|attrs`, or bare `path`.
+    // The pipe split (if any) is BEFORE the markdown-image pattern check.
+    let (src_raw, attrs) = split_pipe(trimmed);
+    match parse_markdown_image(src_raw) {
+        Some((alt, path)) => {
+            // The rename span is the destination inside the parens only. A
+            // `|attrs` suffix here sits AFTER the closing paren, outside the
+            // span, so `value_attrs` is empty and the suffix is left alone.
+            let s2 = src_raw.trim();
+            let s2_lead = lead + (src_raw.len() - src_raw.trim_start().len());
+            // `](` is ASCII and `parse_markdown_image` already matched it.
+            let path_start = s2_lead + s2.find("](").map_or(0, |i| i + 2);
+            Some(MediaLineSpan {
+                value: path_start..path_start + path.len(),
+                path,
+                alt,
+                attrs: attrs.to_string(),
+                value_attrs: String::new(),
+                is_token: true,
+            })
+        }
+        None => {
+            let path = src_raw.trim().to_string();
+            let path_start = lead + (src_raw.len() - src_raw.trim_start().len());
+            // With attrs, the span covers `path|attrs` so a rewrite can
+            // rebuild the pair; without, just the path.
+            let value_end = if attrs.is_empty() {
+                path_start + path.len()
+            } else {
+                lead + trimmed.len()
+            };
+            Some(MediaLineSpan {
+                value: path_start..value_end,
+                path,
+                alt: String::new(),
+                attrs: attrs.to_string(),
+                value_attrs: attrs.to_string(),
+                is_token: false,
+            })
         }
     }
-
-    // Bare media filename: photo.jpg or photo.jpg|contain
-    if is_bare_hero_media(trimmed) {
-        let (path, attrs_str) = crate::media::split_pipe(trimmed);
-        return Some((path.trim().to_string(), attrs_str.to_string()));
-    }
-
-    None
 }
 
 fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
@@ -845,35 +829,13 @@ fn parse_gallery_body(args: &str, body: &str) -> GalleryShortcode {
     };
     let mut items: Vec<GalleryItem> = Vec::new();
     for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Wikilink embed: ![[path|attrs]] — checked BEFORE the generic pipe
-        // split below, mirroring `parse_hero_media_line`'s ordering (the
-        // wikilink's own `|` separates path from attrs and must be split on
-        // the INNER content, not the whole `![[...]]` line).
-        if let Some(inner) = trimmed.strip_prefix("![[").and_then(|s| s.strip_suffix("]]")) {
-            let (src_raw, attrs) = split_pipe(inner);
+        if let Some(it) = gallery_item_span(line) {
             items.push(GalleryItem {
-                src: Url::unresolved(src_raw.trim().to_string()),
-                alt: String::new(),
-                attrs: attrs.to_string(),
+                src: Url::unresolved(it.path),
+                alt: it.alt,
+                attrs: it.attrs,
             });
-            continue;
         }
-        // Each line: `path|attrs`, `![alt](path)|attrs`, or bare `path`.
-        // The pipe split (if any) is BEFORE the markdown-image pattern check.
-        let (src_raw, attrs) = split_pipe(trimmed);
-        let (src_url, alt) = match parse_markdown_image(src_raw) {
-            Some((alt, path)) => (path, alt),
-            None => (src_raw.trim().to_string(), String::new()),
-        };
-        items.push(GalleryItem {
-            src: Url::unresolved(src_url),
-            alt,
-            attrs: attrs.to_string(),
-        });
     }
     GalleryShortcode {
         columns,
@@ -1404,7 +1366,7 @@ fn html_escape_attr(s: &str) -> String {
 /// to render the block as a plain styling wrapper. Empty name without
 /// a following `{` is rejected (just colons followed by content is not
 /// an opener).
-fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
+pub(crate) fn parse_shortcode_opener(trimmed: &str) -> Option<(usize, &str, &str)> {
     let colons = trimmed.chars().take_while(|&c| c == ':').count();
     if colons < 3 {
         return None;

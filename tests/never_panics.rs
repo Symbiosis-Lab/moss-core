@@ -202,6 +202,19 @@ proptest! {
         let _ = moss_core::ast::parser::parse(&markdown);
     }
 
+    /// `any_str()` almost never produces `[![[`, so the linked-embed
+    /// substitution (`ast::linked_embed`, byte-index arithmetic over a masked
+    /// copy) would be untested by `ast_parse_never_panics` above. This draws
+    /// from the alphabet that pass actually scans — brackets, `!`, parens, the
+    /// pothole `|`, the escape `\`, a newline, and a multi-byte char to catch
+    /// any offset that lands mid-UTF-8.
+    #[test]
+    fn ast_parse_never_panics_on_linked_embed_soup(
+        markdown in r"([\[\]!()|\\\n ]|x|好){0,64}".prop_map(String::from)
+    ) {
+        let _ = moss_core::ast::parser::parse(&markdown);
+    }
+
     #[test]
     fn extract_shortcodes_never_panics(markdown in any_str()) {
         let _ = moss_core::ast::shortcode_extract::extract_shortcodes(&markdown);
