@@ -14,7 +14,7 @@
 
 use super::document::Document;
 use super::node::{Block, Inline};
-use super::shortcode::ShortcodeKind;
+use super::shortcode::{Shortcode, ShortcodeKind};
 use super::url::Url;
 
 /// Visit every URL in the document with a callback that may mutate it
@@ -296,6 +296,138 @@ pub fn has_shortcode_recursive(doc: &Document, kind: ShortcodeKind) -> bool {
     found
 }
 
+/// True if any block in the document is a callout (recursive — a callout
+/// nested inside a list item or another callout counts).
+///
+/// Gates the `callouts` site stylesheet partial: a build whose every page
+/// answers `false` here never ships `assets/css/site/callouts.css`. The
+/// query is a lowering of the typed tree, never a scan of emitted HTML —
+/// see NORTH-STAR "parse once, lower to many".
+///
+/// # The four shapes it matches
+///
+/// The gate is only as complete as the typed tree, and three documented paths
+/// reach a `class="callout"` element without a `Block::Callout`:
+///
+/// 1. **`:::recent` fallback text.** `Recent.fallback_markdown` is a raw
+///    `String`, not `Vec<Block>` like `Grid.cells` and `Hero.overlay` — it is
+///    parsed at HTML-emit time. `visit_blocks` cannot descend into it, so this
+///    function re-parses it for callout syntax below. Promoting the field to
+///    `Vec<Block>` would delete that special case; until then it is the one
+///    place this query looks at text rather than structure.
+/// 2. **The pure-CSS region `:::{.callout}`.** `shortcode_extract` lowers an
+///    empty-name fenced div to a literal `<div class="callout">` in a
+///    `Block::Other` — see [`html_opens_a_callout`]. This is documented
+///    authoring syntax, not hand-rolled markup, so it must gate the partial.
+/// 3. **`{.callout}` on a typed shortcode** (`:::grid 2 {.callout}`), whose
+///    classes live in the typed struct — see [`shortcode_classes`].
+///
+/// # What it still cannot see
+///
+/// A `.moss/theme/` script that injects a callout at runtime is outside the
+/// AST entirely, and so is HTML a **plugin** adds in the `enhance` hook —
+/// which runs after `SiteAssets` is folded, so even an AST query could not
+/// help. Both are outside the "declared, never inferred" contract the
+/// stylesheet module states: a site that hand-rolls moss's internal markup at
+/// runtime is asking for the class without asking for the feature.
+pub fn has_callout_recursive(doc: &Document) -> bool {
+    let mut found = false;
+    visit_blocks(doc, |block| {
+        match block {
+            Block::Callout { .. } => {
+                found = true;
+                return false; // short-circuit
+            }
+            Block::Shortcode(Shortcode::Recent(r)) if markdown_has_callout(&r.fallback_markdown) => {
+                found = true;
+                return false;
+            }
+            Block::Other(html) if html_opens_a_callout(html) => {
+                found = true;
+                return false;
+            }
+            Block::Shortcode(sc) if shortcode_classes(sc).is_some_and(has_callout_class) => {
+                found = true;
+                return false;
+            }
+            _ => {}
+        }
+        true
+    });
+    found
+}
+
+/// True if `class_list` (a space-separated `{.a .b}` or `class="…"` value)
+/// contains `callout` as a whole token.
+///
+/// Token-wise, not substring: `callout-note` is a different class and a site
+/// using only it has not asked for the callout partial.
+fn has_callout_class(class_list: &str) -> bool {
+    class_list.split_whitespace().any(|c| c == "callout")
+}
+
+/// The classes a typed shortcode puts on its wrapper, for the variants that
+/// accept `{.foo}` class args.
+fn shortcode_classes(sc: &Shortcode) -> Option<&str> {
+    match sc {
+        Shortcode::Buttons(b) => Some(b.classes.as_str()),
+        Shortcode::Gallery(g) => Some(g.classes.as_str()),
+        Shortcode::Grid(g) => Some(g.classes.as_str()),
+        Shortcode::Hero(h) => Some(h.classes.as_str()),
+        _ => None,
+    }
+}
+
+/// True if a raw-HTML block opens an element carrying the `callout` class.
+///
+/// This is the pure-CSS region form — `:::{.callout}` — which
+/// `shortcode_extract` lowers to a literal `<div class="callout">` in a
+/// `Block::Other`, never to `Block::Callout`. It is documented authoring
+/// syntax (`docs/authoring/customization.md`, styling rung 3), so a site whose
+/// only callouts are written that way must still get the partial.
+///
+/// A crude `contains` on the whole block would fire on prose that merely
+/// mentions the word; matching inside a `class="…"` attribute value keeps the
+/// over-approximation to markup the author actually wrote.
+///
+/// moss's own lowering always produces lowercase, double-quoted `class="…"`,
+/// but a `Block::Other` can also be HTML the author typed into the markdown by
+/// hand. So this tolerates `CLASS`, single quotes, unquoted values, and spaces
+/// around the `=`. Erring toward matching is the cheap direction: a false
+/// positive costs 4 kB of CSS, a false negative renders an unstyled grey box.
+fn html_opens_a_callout(html: &str) -> bool {
+    let lowered = html.to_ascii_lowercase();
+    lowered.match_indices("class").any(|(i, _)| {
+        // Skip past `class` and any space before the `=`.
+        let after = lowered[i + "class".len()..].trim_start();
+        let Some(value) = after.strip_prefix('=') else {
+            return false; // `classname="…"`, or the bare word in prose.
+        };
+        let value = value.trim_start();
+        let mut chars = value.chars();
+        match chars.next() {
+            Some(q @ ('"' | '\'')) => chars
+                .as_str()
+                .split_once(q)
+                .is_some_and(|(list, _)| has_callout_class(list)),
+            // Unquoted value: one token, ending at whitespace or the tag's
+            // close — including the `/` of a self-closing tag.
+            _ => value.split([' ', '\t', '\n', '\r', '>', '/']).next() == Some("callout"),
+        }
+    })
+}
+
+/// True if raw markdown contains Obsidian callout syntax (`> [!type]`).
+///
+/// Deliberately loose in the over-shipping direction: a false positive costs
+/// 4 KB of CSS, a false negative renders an unstyled grey box.
+fn markdown_has_callout(markdown: &str) -> bool {
+    markdown.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with('>') && line.trim_start_matches(['>', ' ']).starts_with("[!")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::node::Inline;
@@ -507,6 +639,104 @@ mod tests {
             _ => {}
         });
         assert_eq!(seen, vec!["h".to_string(), "r".to_string()]);
+    }
+
+    /// The gate for the `callouts` stylesheet partial. A false negative here
+    /// ships a `class="callout"` element with no rules — an unstyled grey box.
+    #[test]
+    fn detects_a_callout_anywhere_it_can_appear() {
+        let callout = || Block::Callout {
+            kind: super::super::node::CalloutKind::Note,
+            fold: None,
+            title: None,
+            children: vec![Block::Paragraph(vec![Inline::Text("x".into())])],
+        };
+        // Top level.
+        assert!(has_callout_recursive(&Document::from_blocks(vec![callout()])));
+        // Nested inside a list item — `visit_blocks` has to descend.
+        assert!(has_callout_recursive(&Document::from_blocks(vec![Block::List {
+            ordered: false,
+            start: None,
+            items: vec![vec![callout()]],
+            item_source_lines: Vec::new(),
+        }])));
+        // A document with no callout must answer false, or the gate is a
+        // constant and the partial always ships.
+        assert!(!has_callout_recursive(&Document::from_blocks(vec![Block::Paragraph(vec![
+            Inline::Text("no callout here".into())
+        ])])));
+    }
+
+    /// `Recent.fallback_markdown` is a raw `String`, parsed at HTML-emit time,
+    /// so `visit_blocks` cannot descend into it. A site whose ONLY callout is
+    /// in a `:::recent` fallback still emits `class="callout"`, so the gate
+    /// has to re-parse the text.
+    #[test]
+    fn detects_a_callout_in_a_recent_shortcode_fallback() {
+        use super::super::shortcode::RecentShortcode;
+        let with = Document::from_blocks(vec![Block::Shortcode(Shortcode::Recent(
+            RecentShortcode {
+                fallback_markdown: "> [!warning] Heads up\n> Nothing published yet.".into(),
+                ..Default::default()
+            },
+        ))]);
+        assert!(has_callout_recursive(&with), "a fallback callout must gate the partial on");
+
+        let without = Document::from_blocks(vec![Block::Shortcode(Shortcode::Recent(
+            RecentShortcode {
+                fallback_markdown: "> Just a quote, no callout.".into(),
+                ..Default::default()
+            },
+        ))]);
+        assert!(!has_callout_recursive(&without), "a plain blockquote is not a callout");
+    }
+
+    /// `:::{.callout}` — the pure-CSS region — never becomes `Block::Callout`.
+    /// `shortcode_extract` lowers it to a literal `<div class="callout">` in a
+    /// `Block::Other`, so a gate that only matched the typed variant shipped
+    /// no rules for a site that styles exclusively this way. It is documented
+    /// authoring syntax (customization.md, styling rung 3), not hand-rolled
+    /// markup, which is what separates it from the runtime-injection cases the
+    /// gate deliberately ignores.
+    #[test]
+    fn detects_a_callout_written_as_a_css_region() {
+        let other = |html: &str| Document::from_blocks(vec![Block::Other(html.into())]);
+        assert!(has_callout_recursive(&other("<div class=\"callout\">\n")));
+        assert!(has_callout_recursive(&other("<div class=\"lead callout wide\">\n")));
+        assert!(has_callout_recursive(&other("<div id=\"x\" class='callout'>\n")));
+        assert!(has_callout_recursive(&other("<div class=callout>\n")));
+
+        // A `Block::Other` can also be HTML the author typed by hand, which is
+        // not held to moss's lowering conventions.
+        assert!(has_callout_recursive(&other("<div CLASS=\"callout\">\n")));
+        assert!(has_callout_recursive(&other("<div class = \"callout\">\n")));
+        assert!(has_callout_recursive(&other("<span class=callout/>")));
+        // Second element in the same block still counts.
+        assert!(has_callout_recursive(&other("<p class=\"lead\">hi</p><div class=\"callout\">")));
+
+        // Token-wise, not substring: a different class, and prose that merely
+        // says the word, must both leave the partial off.
+        assert!(!has_callout_recursive(&other("<div class=\"callout-ish\">\n")));
+        assert!(!has_callout_recursive(&other("<p>I love a good callout.</p>")));
+        assert!(!has_callout_recursive(&other("<div class=\"grid\">\n")));
+        assert!(!has_callout_recursive(&other("<div classname=\"callout\">\n")));
+    }
+
+    /// A typed shortcode can carry `{.callout}` too (`:::grid 2 {.callout}`);
+    /// those classes live in the struct, not in any `Block::Other`.
+    #[test]
+    fn detects_a_callout_class_on_a_typed_shortcode() {
+        use super::super::shortcode::GridShortcode;
+        let grid = |classes: &str| {
+            Document::from_blocks(vec![Block::Shortcode(Shortcode::Grid(GridShortcode {
+                classes: classes.into(),
+                ..Default::default()
+            }))])
+        };
+        assert!(has_callout_recursive(&grid("callout")));
+        assert!(has_callout_recursive(&grid("wide callout")));
+        assert!(!has_callout_recursive(&grid("wide")));
+        assert!(!has_callout_recursive(&grid("")));
     }
 
     #[test]
