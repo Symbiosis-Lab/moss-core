@@ -121,6 +121,19 @@ fn key_with_negative_int_value() {
     assert_eq!(b.get("offset"), Some("-5"));
 }
 
+// A non-ASCII filename is a bareword like any other. When `is_bareword` was
+// ASCII-only this parsed as `EmptyValue`, and because every caller does
+// `parse_attrs(...).unwrap_or_default()` the WHOLE block was discarded — so
+// `:::hero {image=頭像.png .big}` lost its classes and width too, and the hero
+// rendered with no image at all. The `.big` assertion is the load-bearing one:
+// it fails if the block is being dropped wholesale rather than just the value.
+#[test]
+fn key_with_non_ascii_bareword_path_value() {
+    let b = ok("{image=頭像.png .big}");
+    assert_eq!(b.get("image"), Some("頭像.png"));
+    assert_eq!(b.classes, vec!["big"]);
+}
+
 #[test]
 fn multiple_kvs() {
     let b = ok("{cols=3 image=hero.jpg gap=2}");
