@@ -397,10 +397,11 @@ fn shortcode_classes(sc: &Shortcode) -> Option<&str> {
 /// positive costs 4 kB of CSS, a false negative renders an unstyled grey box.
 fn html_opens_a_callout(html: &str) -> bool {
     let lowered = html.to_ascii_lowercase();
-    lowered.match_indices("class").any(|(i, _)| {
-        // Skip past `class` and any space before the `=`.
-        let after = lowered[i + "class".len()..].trim_start();
-        let Some(value) = after.strip_prefix('=') else {
+    // `split` rather than `match_indices` + slice: `clippy::string_slice` is
+    // denied in this crate, and the iterator hands back the tail directly.
+    lowered.split("class").skip(1).any(|after| {
+        // Tolerate a space before the `=`.
+        let Some(value) = after.trim_start().strip_prefix('=') else {
             return false; // `classname="…"`, or the bare word in prose.
         };
         let value = value.trim_start();
