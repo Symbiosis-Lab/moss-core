@@ -195,4 +195,16 @@ pub const SCOPE_ATTRS: &[ScopeAttr] = &[
         values: &["body", "wide", "page", "screen"],
         description: "Set by block shortcodes to escape the text column. The width resolves through `--moss-escape`, clamped by `min(…, 100cqw)` so a narrow viewport stays safe.",
     },
+    ScopeAttr {
+        selector: "body",
+        name: "data-typesetting",
+        values: &["vertical"],
+        description: "Present as `vertical` when the page is set in vertical CJK writing mode, from `[site] typesetting` in `.moss/config.toml` or a page's `typesetting:` frontmatter. Absent means horizontal. It reorients roughly 50 rules — nav, article flow, scroll direction — so a theme for a vertical site scopes to `body[data-typesetting=\"vertical\"]` rather than reinventing the mode.",
+    },
+    ScopeAttr {
+        selector: "body",
+        name: "data-content-width",
+        values: &["wide", "full"],
+        description: "Present when a page widens its column via `content_width:` frontmatter; absent at the default reading measure. This is what `--moss-content-width` — and therefore `--moss-nav-width`, which tracks it — resolves against, so it is the hook for a layout that should respond to the preset rather than to a fixed width.",
+    },
 ];

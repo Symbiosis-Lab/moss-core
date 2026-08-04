@@ -967,13 +967,13 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-mobile",
                 values: &["overlay"],
                 default: "",
-                description: "Below 32rem, `overlay` keeps the title on top of the image instead of stacking it underneath. Present when the hero carries overlay text; absent means the mobile layout stacks. The selector to fight if you want the other behaviour is `.moss-hero[data-mobile=\"overlay\"]`.",
+                description: "Below **48rem** (moss's mobile threshold), `overlay` keeps the title on top of the image instead of stacking it underneath. Emitted **only** for `:::hero {mobile=overlay}` — an author must ask for it; a hero with overlay text does not get it by default. The selector to fight if you want the other behaviour is `.moss-hero[data-mobile=\"overlay\"]`.",
             },
         ],
         example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
 </section>"#,
-        example_markdown: ":::hero {image=cover.jpg}\n:::\n",
+        example_markdown: ":::hero {image=cover.jpg}\n:::\n\n:::hero {image=cover.jpg full mobile=overlay}\n# Title over the image\n:::\n",
         status: Status::Confirmed,
         since: "0",
         description: "Hero banner section at the top of a page (cover image + title). v1 adds `data-width` for author-controlled sizing.",
@@ -1146,7 +1146,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-columns",
                 values: &[],
                 default: "",
-                description: "Column count, from `:::gallery N` — the author names it rather than moss inferring it. Same collapse-to-one-column rule below 768px as `.moss-grid[data-columns]`.",
+                description: "Column count, from `:::gallery N` — the author names it rather than moss inferring it. The **opposite** of `.moss-grid[data-columns]` on mobile: below 48rem the grid collapses to one column, while the gallery uses `auto-fill` to keep as many tracks as clear 88px. N becomes a maximum rather than a mandate, and a gallery that already fits stays at its authored count. Collapsing a wall of thumbnails to one column is wrong; collapsing prose cells is right.",
             },
         ],
         example_html: r#"<div class="moss-gallery" data-width="page">
