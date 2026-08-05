@@ -248,6 +248,23 @@ impl<'a> DescribePayload<'a> {
         }
     }
 
+    /// Builder method: report the version of the moss binary that is answering,
+    /// rather than the version of this crate.
+    ///
+    /// `env!("CARGO_PKG_VERSION")` expands where it is *written*, so the default
+    /// set in [`DescribePayload::new`] is moss-core's version — a different
+    /// number from the app's, on its own release cadence. `describe --json`
+    /// therefore reported `0.4.0` while `moss --version` reported `0.8.0`,
+    /// under a field named `moss_binary_version`. An agent keying a vocabulary
+    /// cache on it saw a version that never matched the binary and did not move
+    /// when the app was upgraded.
+    ///
+    /// Only the host crate can answer this, so it has to be passed in.
+    pub fn with_binary_version(mut self, version: &'static str) -> Self {
+        self.moss_binary_version = version;
+        self
+    }
+
     /// Builder method: attach plugin contract data (hooks, manifest fields,
     /// slots, CLI commands). Called by the Tauri-layer describe.rs after
     /// constructing the base payload, since those types live outside moss-core.
