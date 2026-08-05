@@ -57,6 +57,26 @@ pub struct Document {
     /// typed-AST migration; in Phase A it's available but not yet
     /// consumed by src-tauri.
     pub slot_only: bool,
+    /// Non-fatal problems found while parsing this body — today, every
+    /// `:::name` fence whose name is not a registered shortcode.
+    ///
+    /// The extractor has collected these since the unknown-name fallback
+    /// landed, but nothing carried them out of the parse, so the only trace
+    /// a misspelling left was a `moss-unknown-shortcode` div in the built
+    /// HTML. An author (or an agent) got a page that had silently lost its
+    /// gallery and a build that said nothing. This field is that missing
+    /// hop; `build::markdown::pipeline` prints each entry against the file.
+    ///
+    /// Scope, precisely: top-level fences, and fences nested inside an
+    /// *unknown* fence (that branch recurses through `extract_with_state`,
+    /// threading one collection). Any shortcode body that's re-parsed as an
+    /// independent fragment — grid cells, the hero overlay body, and every
+    /// other call site that returns `Vec<Block>` and drops the fragment's
+    /// `Document` — does not reach here yet, so a misspelling inside
+    /// `:::grid` or `:::hero` warns about nothing; pinned by
+    /// `unknown_shortcode_inside_a_valid_shortcode_does_not_yet_warn`.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 impl Document {
@@ -74,6 +94,7 @@ impl Document {
             blocks,
             block_meta,
             slot_only: false,
+            warnings: Vec::new(),
         }
     }
 
@@ -89,6 +110,7 @@ impl Document {
             blocks,
             block_meta,
             slot_only: false,
+            warnings: Vec::new(),
         }
     }
 
@@ -147,6 +169,7 @@ mod tests {
             "hello".to_string(),
         )]));
         original.slot_only = true;
+        original.warnings.push("unknown shortcode `:::nope`".to_string());
         let s = serde_json::to_string(&original).expect("serialize");
         let back: Document = serde_json::from_str(&s).expect("deserialize");
         assert_eq!(original, back);

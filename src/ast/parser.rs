@@ -364,6 +364,9 @@ fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds)
     }
 
     let mut doc = Document::from_blocks_with_meta(blocks, block_meta);
+    // Carry the extractor's findings out of the parse. Collected since the
+    // unknown-name fallback landed, dropped here until now.
+    doc.warnings = extraction.warnings;
 
     // Obsidian parity: a single newline inside a paragraph becomes `<br>`.
     // Runs last, over the finished tree, because pulldown-cmark 0.13 has no

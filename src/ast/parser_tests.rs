@@ -2133,3 +2133,64 @@ fn nested_image_alone_in_a_paragraph_promotes_to_a_figure_with_a_real_nested_ima
         other => panic!("expected Figure, got {other:?}"),
     }
 }
+
+/// The extractor has always collected unknown-shortcode warnings; until
+/// 2026-08-05 nothing carried them out of the parse, so a misspelled
+/// `:::gallry` produced a styled-but-empty div and a build that said nothing.
+/// The only trace was `moss-unknown-shortcode` in the emitted HTML, which an
+/// author has no reason to go looking for.
+#[test]
+fn unknown_shortcode_warning_reaches_the_caller() {
+    let doc = crate::ast::parse(":::gallry\nbody\n:::\n");
+    assert!(
+        doc.warnings.iter().any(|w| w.contains("gallry")),
+        "an unrecognized shortcode name must surface a warning on the Document, got {:?}",
+        doc.warnings
+    );
+}
+
+/// A misspelling nested inside an *unknown* shortcode still warns: that branch
+/// recurses through `extract_with_state`, threading one collection.
+#[test]
+fn unknown_shortcode_warning_survives_unknown_nesting() {
+    let doc = crate::ast::parse("::::outr\n:::gallry\nbody\n:::\n::::\n");
+    assert!(
+        doc.warnings.iter().filter(|w| w.contains("gallry")).count() == 1,
+        "a misspelling nested inside another unknown shortcode must warn once, got {:?}",
+        doc.warnings
+    );
+}
+
+/// FALSIFIER — pins a known boundary, not a desired behaviour.
+///
+/// A *valid* shortcode's body is re-parsed as a fragment
+/// (`parse_cell_blocks` → `parse_fragment_with_config`), and those call sites
+/// return `Vec<Block>`, dropping the fragment's `Document` and its warnings
+/// with it. So a misspelling inside `:::grid` or `:::hero` still warns about
+/// nothing.
+///
+/// **When this test starts failing, the plumbing landed — invert it** (assert
+/// the warning IS present) rather than deleting it. Tracked as the follow-up
+/// to the 2026-08-05 agent-surface audit.
+#[test]
+fn unknown_shortcode_inside_a_valid_shortcode_does_not_yet_warn() {
+    let doc = crate::ast::parse("::::grid\n:::gallry\nbody\n:::\n::::\n");
+    assert!(
+        doc.warnings.is_empty(),
+        "boundary moved: warnings now propagate out of a valid shortcode's body \
+         ({:?}). Invert this assertion — the limitation it pinned is fixed.",
+        doc.warnings
+    );
+}
+
+/// The complement: a clean document must not acquire warnings, or the build
+/// log becomes noise and authors learn to ignore it.
+#[test]
+fn valid_shortcodes_produce_no_warnings() {
+    let doc = crate::ast::parse("::::grid\n:::hero\nbody\n:::\n::::\n");
+    assert!(
+        doc.warnings.is_empty(),
+        "registered shortcode names must not warn, got {:?}",
+        doc.warnings
+    );
+}
