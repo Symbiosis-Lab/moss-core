@@ -2161,24 +2161,38 @@ fn unknown_shortcode_warning_survives_unknown_nesting() {
     );
 }
 
-/// FALSIFIER — pins a known boundary, not a desired behaviour.
-///
-/// A *valid* shortcode's body is re-parsed as a fragment
-/// (`parse_cell_blocks` → `parse_fragment_with_config`), and those call sites
-/// return `Vec<Block>`, dropping the fragment's `Document` and its warnings
-/// with it. So a misspelling inside `:::grid` or `:::hero` still warns about
-/// nothing.
-///
-/// **When this test starts failing, the plumbing landed — invert it** (assert
-/// the warning IS present) rather than deleting it. Tracked as the follow-up
-/// to the 2026-08-05 agent-surface audit.
+/// Closed 2026-08-05: a *valid* shortcode's body is re-parsed as a fragment
+/// (`parse_cell_to_blocks` → `parse_fragment_with_config`), and that call
+/// site used to return only `Vec<Block>`, dropping the fragment's `Document`
+/// and its warnings with it — so a misspelling inside `:::grid` warned about
+/// nothing. This test used to pin that boundary
+/// (`unknown_shortcode_inside_a_valid_shortcode_does_not_yet_warn`, asserting
+/// `warnings.is_empty()`); now `parse_cell_to_blocks` returns
+/// `(Vec<Block>, Vec<String>)`, `parse_grid` threads the warnings through,
+/// and `parse_shortcode_block`'s `"grid"` arm merges them — so they reach
+/// `Document::warnings` the same way a top-level misspelling does.
 #[test]
-fn unknown_shortcode_inside_a_valid_shortcode_does_not_yet_warn() {
+fn unknown_shortcode_inside_a_valid_shortcode_warns() {
     let doc = crate::ast::parse("::::grid\n:::gallry\nbody\n:::\n::::\n");
     assert!(
-        doc.warnings.is_empty(),
-        "boundary moved: warnings now propagate out of a valid shortcode's body \
-         ({:?}). Invert this assertion — the limitation it pinned is fixed.",
+        doc.warnings.iter().any(|w| w.contains("gallry")),
+        "a misspelling nested inside a valid shortcode's body must warn, got {:?}",
+        doc.warnings
+    );
+}
+
+/// The hero-overlay counterpart: `parse_hero`'s body is re-parsed via
+/// `parse_overlay_to_blocks`, a second, independent call site that used to
+/// drop the fragment's warnings the same way `parse_cell_to_blocks` did.
+/// Closed alongside the grid case — `parse_overlay_to_blocks` now returns
+/// `(Vec<Block>, Vec<String>)`, `parse_hero` threads the warnings through,
+/// and `parse_shortcode_block`'s `"hero"` arm merges them.
+#[test]
+fn unknown_shortcode_inside_a_hero_overlay_warns() {
+    let doc = crate::ast::parse("::::hero\n:::gallry\nbody\n:::\n::::\n");
+    assert!(
+        doc.warnings.iter().any(|w| w.contains("gallry")),
+        "a misspelling nested inside a hero overlay must warn, got {:?}",
         doc.warnings
     );
 }

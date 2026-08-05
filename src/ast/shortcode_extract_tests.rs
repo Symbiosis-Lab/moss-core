@@ -2503,7 +2503,7 @@ fn spans_agree_with_parsers() {
         let opener = src.lines().next().unwrap();
         let args = opener.trim_start_matches(':').trim_start_matches("hero");
         let body: Vec<&str> = src.lines().skip(1).take_while(|l| l.trim() != ":::").collect();
-        let (hero, _) = crate::ast::extract_hero::parse_hero(
+        let (hero, _, _) = crate::ast::extract_hero::parse_hero(
             args,
             &body.join("\n"),
             &crate::ast::parser::ParseConfig::default(),

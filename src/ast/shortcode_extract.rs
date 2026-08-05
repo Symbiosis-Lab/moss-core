@@ -94,8 +94,8 @@ fn parse_shortcode_block(
             // only way to express a crossfading hero), not a deprecated
             // fallback — the old Priority-3 deprecation warning retired
             // with the multi-image hero.
-            let (sc, _used_p3) = super::extract_hero::parse_hero(args, body, config);
-            let mut warns = vec![];
+            let (sc, _used_p3, fragment_warnings) = super::extract_hero::parse_hero(args, body, config);
+            let mut warns = fragment_warnings;
             if let Some(ref v) = sc.mobile {
                 if v != "overlay" {
                     warns.push(format!(
@@ -107,8 +107,8 @@ fn parse_shortcode_block(
             (Some(Shortcode::Hero(sc)), warns)
         }
         "grid" => {
-            let (sc, legacy) = parse_grid(args, body, config);
-            let mut warns = vec![];
+            let (sc, legacy, fragment_warnings) = parse_grid(args, body, config);
+            let mut warns = fragment_warnings;
             if legacy {
                 warns.push(
                     "shortcode `:::grid` uses `---` cell dividers (deprecated). Migrate to `+++`.\n\
@@ -160,9 +160,12 @@ pub fn parse_recent_args(args: &str, body: &str) -> RecentShortcode {
 /// in moss-releases content; the parser accepts both during the
 /// migration window.
 ///
-/// Returns `(GridShortcode, bool)` where the bool is `true` when any
-/// `---` legacy divider was encountered (triggers a deprecation warning).
-fn parse_grid(args: &str, body: &str, config: &ParseConfig) -> (GridShortcode, bool) {
+/// Returns `(GridShortcode, bool, Vec<String>)` where the bool is `true`
+/// when any `---` legacy divider was encountered (triggers a deprecation
+/// warning), and the `Vec<String>` carries warnings collected while
+/// re-parsing cell bodies as fragments (e.g. a misspelled shortcode nested
+/// inside a cell) — see [`parse_cell_to_blocks`].
+fn parse_grid(args: &str, body: &str, config: &ParseConfig) -> (GridShortcode, bool, Vec<String>) {
     let trimmed = args.trim();
     let (positional, attr_block): (&str, &str) = if let Some(pos) = trimmed.find('{') {
         // char-aligned: pos points to ASCII '{' from str::find — safe to slice.
@@ -224,9 +227,14 @@ fn parse_grid(args: &str, body: &str, config: &ParseConfig) -> (GridShortcode, b
     // - A plain markdown cell. Parse via [`super::parser::parse`] (which
     //   re-runs extract_shortcodes so any nested `::::buttons` etc. get
     //   substituted) and drop the wrapping `Document`.
+    let mut fragment_warnings: Vec<String> = Vec::new();
     let cells: Vec<Vec<Block>> = raw_cells
         .iter()
-        .map(|raw| parse_cell_to_blocks(raw, config))
+        .map(|raw| {
+            let (blocks, warns) = parse_cell_to_blocks(raw, config);
+            fragment_warnings.extend(warns);
+            blocks
+        })
         .collect();
 
     (
@@ -238,6 +246,7 @@ fn parse_grid(args: &str, body: &str, config: &ParseConfig) -> (GridShortcode, b
             width,
         },
         found_legacy_dash,
+        fragment_warnings,
     )
 }
 
@@ -250,7 +259,15 @@ fn parse_grid(args: &str, body: &str, config: &ParseConfig) -> (GridShortcode, b
 /// where `children` is the inner parsed as blocks and any trailing caption
 /// content is appended as sibling blocks after the card. On no match,
 /// parses the cell directly via [`super::parser::parse`].
-fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
+///
+/// Returns `(Vec<Block>, Vec<String>)`: the parsed blocks, plus any
+/// warnings collected by the fragment parse(s) underneath (e.g. a
+/// misspelled `:::name` shortcode nested inside this cell). Each internal
+/// [`parse_fragment_with_config`] call produces its own independent
+/// `Document`, whose `warnings` would otherwise be dropped on the floor —
+/// this is the plumbing that carries them out to [`parse_shortcode_block`],
+/// which already merges its `Vec<String>` into `doc.warnings`.
+fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> (Vec<Block>, Vec<String>) {
     if let Some((url, inner, trailing)) = detect_compound_link(raw) {
         let inner_trimmed = inner.trim();
         let trailing_trimmed = trailing.trim();
@@ -276,9 +293,11 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
             // Re-emit as standard markdown link inside a paragraph so the
             // host's link-preview pass owns the rendering.
             let linkified = format!("[{}]({})", inner_trimmed, url);
-            return parse_fragment_with_config(&linkified, config).blocks;
+            let doc = parse_fragment_with_config(&linkified, config);
+            return (doc.blocks, doc.warnings);
         }
         let inner_doc = parse_fragment_with_config(inner_trimmed, config);
+        let mut warnings = inner_doc.warnings;
         let mut blocks = vec![Block::LinkCard {
             url: Url::unresolved(url),
             children: inner_doc.blocks,
@@ -286,8 +305,9 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
         if !trailing_trimmed.is_empty() {
             let trailing_doc = parse_fragment_with_config(trailing_trimmed, config);
             blocks.extend(trailing_doc.blocks);
+            warnings.extend(trailing_doc.warnings);
         }
-        return blocks;
+        return (blocks, warnings);
     }
     // Phase 4 PR4.5 (2026-05-28): bare-URL cell auto-promotion. When the
     // entire cell content is a single bare URL on its own line (no
@@ -305,10 +325,10 @@ fn parse_cell_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
     if let Some(url) = detect_bare_url_cell(raw) {
         let linkified = format!("[]({})", url);
         let doc = parse_fragment_with_config(&linkified, config);
-        return doc.blocks;
+        return (doc.blocks, doc.warnings);
     }
     let doc = parse_fragment_with_config(raw, config);
-    doc.blocks
+    (doc.blocks, doc.warnings)
 }
 
 /// Detect a "bare URL cell": the entire cell content (after trim) is a

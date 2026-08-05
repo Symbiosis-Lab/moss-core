@@ -67,14 +67,18 @@ pub struct Document {
     /// gallery and a build that said nothing. This field is that missing
     /// hop; `build::markdown::pipeline` prints each entry against the file.
     ///
-    /// Scope, precisely: top-level fences, and fences nested inside an
+    /// Scope, precisely: top-level fences, fences nested inside an
     /// *unknown* fence (that branch recurses through `extract_with_state`,
-    /// threading one collection). Any shortcode body that's re-parsed as an
-    /// independent fragment — grid cells, the hero overlay body, and every
-    /// other call site that returns `Vec<Block>` and drops the fragment's
-    /// `Document` — does not reach here yet, so a misspelling inside
-    /// `:::grid` or `:::hero` warns about nothing; pinned by
-    /// `unknown_shortcode_inside_a_valid_shortcode_does_not_yet_warn`.
+    /// threading one collection), AND fences nested inside a *valid*
+    /// shortcode's body — grid cells (`parse_cell_to_blocks`) and the hero
+    /// overlay (`parse_overlay_to_blocks`) each re-parse their body as an
+    /// independent fragment via `parse_fragment_with_config`; both now
+    /// return that fragment `Document`'s `warnings` alongside its blocks,
+    /// and `parse_shortcode_block` merges them into the `Vec<String>` it
+    /// already threads into `extract_with_state`'s shared collection. So a
+    /// misspelling inside `:::grid` or `:::hero` warns exactly like a
+    /// top-level one; see `unknown_shortcode_inside_a_valid_shortcode_warns`
+    /// and `unknown_shortcode_inside_a_hero_overlay_warns`.
     #[serde(default)]
     pub warnings: Vec<String>,
 }

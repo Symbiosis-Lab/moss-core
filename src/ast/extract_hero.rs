@@ -202,10 +202,13 @@ fn first_paragraph_plain_text(blocks: &[Block]) -> String {
 ///    these to use the `image=` attribute.
 /// 4. None — renderer emits a `<section>` with no `<img>`.
 ///
-/// Returns `(HeroShortcode, bool)` where the bool is `true` when the
-/// body-image fallback (Priority 3) fired, signaling the caller to
-/// emit a deprecation warning.
-pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, bool) {
+/// Returns `(HeroShortcode, bool, Vec<String>)` where the bool is `true`
+/// when the body-image fallback (Priority 3) fired, signaling the caller
+/// to emit a deprecation warning, and the `Vec<String>` carries warnings
+/// collected while re-parsing the overlay body as a fragment (e.g. a
+/// misspelled `:::name` shortcode nested inside the overlay) — see
+/// [`parse_overlay_to_blocks`].
+pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroShortcode, bool, Vec<String>) {
     let trimmed_args = args.trim();
 
     // Split args on the first `{` to separate the directive-line path
@@ -232,7 +235,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
     if let Some(image_value) = parsed.get("image") {
         let (path, attrs_str) = crate::media::split_pipe(image_value);
         let overlay_text = body.trim().to_string();
-        let overlay = parse_overlay_to_blocks(&overlay_text, config);
+        let (overlay, overlay_warnings) = parse_overlay_to_blocks(&overlay_text, config);
         return (
             HeroShortcode {
                 image: if path.trim().is_empty() {
@@ -249,6 +252,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
                 mobile,
             },
             false,
+            overlay_warnings,
         );
     }
 
@@ -258,7 +262,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
     if !positional.is_empty() {
         let (path, attrs_str) = crate::media::split_pipe(positional);
         let overlay_text = body.trim().to_string();
-        let overlay = parse_overlay_to_blocks(&overlay_text, config);
+        let (overlay, overlay_warnings) = parse_overlay_to_blocks(&overlay_text, config);
         return (
             HeroShortcode {
                 image: if path.trim().is_empty() {
@@ -275,6 +279,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
                 mobile,
             },
             false,
+            overlay_warnings,
         );
     }
 
@@ -314,7 +319,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
         .join("\n")
         .trim()
         .to_string();
-    let overlay = parse_overlay_to_blocks(&overlay_text, config);
+    let (overlay, overlay_warnings) = parse_overlay_to_blocks(&overlay_text, config);
     (
         HeroShortcode {
             image: image_path.map(Url::unresolved),
@@ -327,6 +332,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
             mobile,
         },
         used_priority_3,
+        overlay_warnings,
     )
 }
 
@@ -335,13 +341,18 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
 /// Phase 4 PR4.5 (2026-05-28): mirrors `parse_cell_to_blocks` for the
 /// grid-cell path but without compound-link detection (an overlay is not
 /// a compound-link surface; the SoCiviC pattern is grid-cell-specific).
-/// Returns an empty vec when the overlay is empty.
-fn parse_overlay_to_blocks(raw: &str, config: &ParseConfig) -> Vec<Block> {
+/// Returns an empty vec (and no warnings) when the overlay is empty.
+/// Otherwise returns `(blocks, warnings)` — the fragment `Document`'s
+/// warnings (e.g. a misspelled `:::name` shortcode nested inside the
+/// overlay body) are carried out here rather than dropped, so they reach
+/// [`parse_hero`] → [`super::shortcode_extract::parse_shortcode_block`],
+/// which already merges its `Vec<String>` into `doc.warnings`.
+fn parse_overlay_to_blocks(raw: &str, config: &ParseConfig) -> (Vec<Block>, Vec<String>) {
     if raw.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let doc = parse_fragment_with_config(raw, config);
-    doc.blocks
+    (doc.blocks, doc.warnings)
 }
 
 /// File extensions recognized as media for hero body-image fallback.
