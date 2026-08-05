@@ -116,6 +116,40 @@ pub fn strip_lang_suffix(stem: &str) -> Option<&str> {
     }
 }
 
+/// The language suffix itself — the other half of [`strip_lang_suffix`].
+///
+/// ```
+/// assert_eq!(moss_core::home::lang_suffix("index.ja"), Some("ja"));
+/// assert_eq!(moss_core::home::lang_suffix("index.v2"), None);
+/// ```
+pub fn lang_suffix(stem: &str) -> Option<&str> {
+    let (_, suffix) = stem.rsplit_once('.')?;
+    if KNOWN_LANG_SUFFIXES.contains(&suffix.to_lowercase().as_str()) {
+        Some(suffix)
+    } else {
+        None
+    }
+}
+
+/// Whether `code` is a language moss recognizes at all.
+///
+/// "Recognizes" is a wider question than "has an interface for". moss ships UI
+/// strings in three languages; it recognizes ~50 as tree names and filename
+/// suffixes. A `ja/` tree is real — wikilinks resolve within it,
+/// [`strip_lang_suffix`] honors it, [`lang_tree_prefix`] returns it — it simply
+/// gets the default edition's chrome, because there are no Japanese strings to
+/// render it with. Keeping the two questions apart is what stopped a Japanese
+/// page being served as `lang="zh-Hant"` (#977).
+///
+/// ```
+/// assert!(moss_core::home::is_known_language_code("ja"));
+/// assert!(moss_core::home::is_known_language_code("ZH-Hant"));
+/// assert!(!moss_core::home::is_known_language_code("english"));
+/// ```
+pub fn is_known_language_code(code: &str) -> bool {
+    KNOWN_LANG_SUFFIXES.contains(&code.to_lowercase().as_str())
+}
+
 /// Check if a filename stem (without extension) is a recognized home file.
 ///
 /// Matching is case-insensitive.
