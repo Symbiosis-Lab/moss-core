@@ -2062,7 +2062,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: ":::recent {count=5 since=\"2026-01-01\"}\n:::\n",
         status: Status::Emerging,
         since: "0",
-        description: "Auto-generated list of recent posts emitted by the `:::recent` shortcode. Sorted newest-first; date and description slots are filled per child. No default CSS in the bundled theme — theme authors style it freely.",
+        description: "Auto-generated list of recent posts. Sorted newest-first; date and description slots are filled per child. No default CSS in the bundled theme — theme authors style it freely. IMPORTANT: emitted by the EMAIL/newsletter path only. On a web page, `:::recent` renders its fallback body as ordinary markdown and emits no list, because the per-page processor has no access to the build's aggregate document slice; a `:::recent` block with an empty body therefore produces nothing at all on a web page. To list posts on a page today, rely on the automatic child listing a folder home emits (`moss-cards`), and give any `:::recent` block a fallback body.",
     },
     ComponentEntry {
         class: "moss-recent__date",
