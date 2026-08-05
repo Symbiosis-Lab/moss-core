@@ -245,3 +245,45 @@ fn custom_properties_declare_a_default_and_an_owner() {
         }
     }
 }
+
+/// The shipped skill tells an agent to get the language allowlist from
+/// `moss describe --json`. That instruction is only safe while the field is
+/// actually there, so pin it.
+///
+/// The failure this guards is silent in both directions: an unrecognized
+/// language directory is not a build error (the tree becomes ordinary
+/// content), and a doc pointing at a field that does not exist costs the
+/// agent a turn and teaches it to distrust the rest of the file. moss's own
+/// styling reference shipped three dead paths for exactly that reason.
+#[test]
+fn describe_publishes_the_language_allowlist() {
+    let tokens = load_tokens().expect("tokens");
+    let payload = DescribePayload::new(&tokens);
+    let json = serde_json::to_value(&payload).expect("serialize");
+
+    let langs = json["languages"]
+        .as_array()
+        .expect("describe --json must carry a `languages` array");
+
+    // The two the nav switcher can actually resolve, plus a long-tail code
+    // and a region variant — enough to prove this is the real allowlist and
+    // not a placeholder.
+    for expected in ["en", "zh-hant", "zh-hans", "ja", "en-gb"] {
+        assert!(
+            langs.iter().any(|l| l.as_str() == Some(expected)),
+            "`{expected}` must appear in describe --json languages, got {langs:?}"
+        );
+    }
+
+    assert!(
+        langs.len() >= 40,
+        "expected the full allowlist (~51 codes), got {}",
+        langs.len()
+    );
+
+    // `english` is the name an agent invents when it cannot read the list.
+    assert!(
+        !langs.iter().any(|l| l.as_str() == Some("english")),
+        "the allowlist must not contain invented long names"
+    );
+}

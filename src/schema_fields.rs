@@ -268,7 +268,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         items_type: Some(FieldType::String),
         // Frequency=4, Importance=3 → score = 100 - (4*6 + 3*4) = 100 - 36 = 64
         score: 64,
-        description: "Content tags for organization",
+        description: "Content tags. Inline #hashtags written in the body are merged into this set. Emitted only as article:tag metadata and JSON-LD keywords - moss generates no tag archive pages and no /tags/ routes, so a link to /tags/<name>/ will 404. To group pages by topic, use folders or also_in.",
         label_key: "chip.tags.label",
         group: "This Page",
         ..FIELD_DEFAULTS

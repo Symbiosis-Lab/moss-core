@@ -53,6 +53,19 @@ const KNOWN_LANG_SUFFIXES: &[&str] = &[
     "zh-hans", "zh-hant", "zh-cn", "zh-tw", "pt-br", "en-us", "en-gb",
 ];
 
+/// Every language code moss recognizes as a language tree or filename suffix.
+///
+/// Exposed so `moss describe --json` can publish the allowlist. An agent asked
+/// to add an edition has to pick the directory name *before* it can build and
+/// see whether the name worked, and an unrecognized name fails silently — the
+/// tree is treated as ordinary content, so there is no switcher, no `<html
+/// lang>`, and no error. Inventing `english/` is the documented failure. This
+/// list is the only allowlist, so publishing it is what makes the guidance
+/// ("use one of these") checkable rather than a claim the agent has to trust.
+pub fn known_language_codes() -> &'static [&'static str] {
+    KNOWN_LANG_SUFFIXES
+}
+
 /// If `path` is rooted under a known language-tree directory (e.g.
 /// `"zh-hans/about.md"`), return that directory component (e.g. `"zh-hans"`).
 ///

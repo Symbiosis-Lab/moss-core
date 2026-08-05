@@ -1884,15 +1884,29 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Divider rule between auto-generated child sections.",
     },
     ComponentEntry {
+        // Source of truth: `crates/moss-core/src/ast/shortcode_extract.rs`
+        // (the unknown-name branch around line 1282). components_sync_test
+        // only greps emitter source for `class="moss-..."` literals — this
+        // class is assembled via `render_div_open`, so a regression here
+        // will NOT be caught by that test; keep this entry in sync by hand.
         class: "moss-unknown-shortcode",
         kind: "standalone",
         parent: "",
-        data_attrs: &[],
-        example_html: r#"<div class="moss-unknown-shortcode">Unknown shortcode: foo</div>"#,
-        example_markdown: "{{< foo >}}",
+        data_attrs: &[DataAttr {
+            name: "data-name",
+            values: &[],
+            default: "",
+            description: "The unrecognised shortcode name, as written by the author.",
+        }],
+        example_html: r#"<div class="moss-unknown-shortcode" data-name="foo">
+
+<p>body parsed as markdown</p>
+
+</div>"#,
+        example_markdown: ":::foo\nbody parsed as markdown\n:::",
         status: Status::Confirmed,
         since: "0",
-        description: "Fallback emitted when a shortcode tag is not recognised by any plugin.",
+        description: "Fallback wrapper emitted for any `:::name` fence whose name is not a registered shortcode. The body is still parsed as markdown and a build warning names the shortcode, so a misspelling degrades to a styled region rather than losing content.",
     },
     // -------------------------------------------------------------------
     // Syntax highlight tokens (emitted by syntect inside <code>).

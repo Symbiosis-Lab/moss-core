@@ -30,6 +30,19 @@ pub struct DescribePayload<'a> {
     /// — `<body data-page>`, `<html data-theme>`. Schema v6.
     pub scope_attributes: Vec<ScopeAttrJson>,
     pub frontmatter: Vec<FrontmatterFieldJson>,
+    /// Every language code that makes a directory or filename suffix a
+    /// language edition (`zh-hant/about.md`, `about.zh-hans.md`).
+    ///
+    /// Additive, so no `describe_schema_version` bump: the envelope's rule
+    /// requires one for breaking changes, and a new key breaks no reader.
+    ///
+    /// Here because the failure it prevents is silent. An unrecognized
+    /// directory name is not an error — the tree is treated as ordinary
+    /// content — so an agent that invents `english/` gets a build that
+    /// succeeds, a page that publishes, and no switcher, with nothing
+    /// anywhere saying why. The allowlist has to be readable *before* the
+    /// directory is created, and this is the only place it is published.
+    pub languages: &'static [&'static str],
     /// Plugin hook contract: each capability moss supports, with arity and context type.
     pub plugin_hooks: Vec<PluginHookInfo>,
     /// Plugin manifest fields: each field in PluginManifest, with type and required flag.
@@ -237,6 +250,7 @@ impl<'a> DescribePayload<'a> {
                 })
                 .collect(),
             frontmatter: frontmatter_fields(),
+            languages: crate::home::known_language_codes(),
             // Populated by the Tauri layer (src-tauri/src/describe.rs) which
             // has access to the Tauri-layer plugin types. Callers using
             // DescribePayload::new() directly (e.g. moss-core unit tests) get
