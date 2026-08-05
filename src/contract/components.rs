@@ -1872,6 +1872,72 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Top site navigation bar. Legacy non-`moss-` prefix kept for theme parity.",
     },
+    // The article masthead and nav interior. Legacy non-`moss-` prefixes, kept
+    // for theme parity like `main-nav` above.
+    //
+    // These were emitted but undeclared until 2026-08-05, and the omission had
+    // a measured cost: an agent restyling a journalism site reaches for the
+    // byline row first, found nothing for it in `describe --json`, and had to
+    // recover the class by reading built HTML — which the shipped guidance
+    // sanctions only as a self-check, and which silently breaks on a rename.
+    // Declaring them is what makes "never hardcode a class from memory"
+    // followable for the masthead. `components_sync_test` cannot guard these:
+    // it only matches `class="moss-..."` literals.
+    ComponentEntry {
+        class: "date-line",
+        kind: "chrome",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="date-line"><span class="date">March 3, 2026</span><div class="font-anchor">...</div></div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Byline row under an article title: the publication date on the left, the reading-size control on the right. Emitted only when the page has a `date`.",
+    },
+    ComponentEntry {
+        class: "date",
+        kind: "instance",
+        parent: "date-line",
+        data_attrs: &[],
+        example_html: r#"<span class="date">March 3, 2026</span>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "The formatted publication date inside `.date-line`. Text is localized to the page's language.",
+    },
+    ComponentEntry {
+        class: "site-name",
+        kind: "instance",
+        parent: "main-nav",
+        data_attrs: &[],
+        example_html: r#"<a href="/" class="site-name">在場</a>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "The site title link at the left of the nav bar. On a non-home page the same slot may instead carry `.breadcrumb-segment`.",
+    },
+    ComponentEntry {
+        class: "breadcrumb-segment",
+        kind: "instance",
+        parent: "main-nav",
+        data_attrs: &[],
+        example_html: r#"<a href="/awards/" class="breadcrumb-segment">獎項</a>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "One ancestor link in the nav-left breadcrumb trail, used in place of `.site-name` once the page is below the site root.",
+    },
+    ComponentEntry {
+        class: "nav-icons",
+        kind: "chrome",
+        parent: "main-nav",
+        data_attrs: &[],
+        example_html: r#"<div class="nav-icons">...</div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Right-hand icon cluster in the nav bar (search, theme toggle, and similar). Stationary chrome, present whether or not the site has nav links.",
+    },
     ComponentEntry {
         class: "moss-child-section-divider",
         kind: "instance",
