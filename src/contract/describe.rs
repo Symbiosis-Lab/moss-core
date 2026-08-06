@@ -139,8 +139,10 @@ pub struct ComponentJson {
     pub description: &'static str,
     /// True iff this class is the root class of an authorable shortcode
     /// (i.e. it appears in `ShortcodeKind::all().map(|k| k.root_class())`).
-    /// Agents can use this flag to distinguish the 6 author-facing shortcodes
-    /// from the broader theme vocabulary.
+    /// Agents can use this flag to distinguish the author-facing shortcodes
+    /// from the broader theme vocabulary. Deliberately not stated as a count:
+    /// this said "6" while `ShortcodeKind` had 7, and a number here is a second
+    /// source of truth for something the flag itself already answers.
     pub authorable: bool,
 }
 
