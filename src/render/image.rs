@@ -645,7 +645,7 @@ fn synthesize_inner(
         match resolve_ladder(assets, src, false) {
             None => format!(
                 r#"<picture><source srcset="{}" type="image/webp">{}</picture>"#,
-                html_escape(&srcset_path),
+                html_escape(&encode_srcset_url(&srcset_path)),
                 img_tag,
             ),
             Some((rungs, base_w)) => {
@@ -835,37 +835,10 @@ fn probe_normalized<T>(src: &str, probe: &mut impl FnMut(PathBuf) -> Option<T>) 
 }
 
 /// Percent-decode `%XX` byte sequences in a URL path (pure, zero-I/O).
-/// Mirrors `html_post::percent_decode_path` semantics: a lone/invalid `%` is
-/// passed through verbatim, and non-UTF-8 decode results fall back to the raw
-/// input. Returns the input unchanged when there is nothing to decode.
+/// The single implementation lives next to the encoder it inverts; see
+/// [`crate::resolve::fuzzy_path::percent_decode_path`].
 fn percent_decode(path: &str) -> String {
-    if !path.contains('%') {
-        return path.to_string();
-    }
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push((hi << 4) | lo);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| path.to_string())
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    crate::resolve::fuzzy_path::percent_decode_path(path)
 }
 
 /// Emit just the `<img>` tag with all attributes. Internal helper for

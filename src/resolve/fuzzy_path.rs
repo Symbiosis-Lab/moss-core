@@ -207,6 +207,50 @@ pub fn percent_encode_path_segments(path: &str) -> String {
     out
 }
 
+/// Percent-*decode* `%XX` byte sequences back to the on-disk name. The inverse
+/// of [`percent_encode_path_segments`], and it lives next to it so the pair
+/// cannot drift.
+///
+/// Call this at every point where a value that has already been through the
+/// encoder is used as a **filesystem path or a cache key** rather than as a
+/// URL. A cover named `封面.jpg` reaches such a reader as
+/// `%E5%B0%81%E9%9D%A2.jpg`; joining that onto a source root looks for a file
+/// whose name is literally the escape sequence and silently misses.
+///
+/// Lenient by construction: a lone or malformed `%` passes through verbatim,
+/// and a decode that isn't valid UTF-8 falls back to the input unchanged, so
+/// this is safe to call on a string that was never encoded (it is a no-op when
+/// there is no `%`).
+pub fn percent_decode_path(path: &str) -> String {
+    if !path.contains('%') {
+        return path.to_string();
+    }
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| path.to_string())
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Split a URL into its path portion and any `?query` / `#fragment` suffix.
 /// The split happens at the first occurrence of `?` or `#` (whichever appears
 /// first); if neither is present the suffix is empty. The suffix is returned
@@ -320,6 +364,47 @@ mod tests {
         b.add_file("images/photo.png", "/images/photo.png");
         b.add_file("index.md", "/");
         b.build()
+    }
+
+    // -- percent_decode_path tests --
+
+    /// The encoder and its inverse live next to each other so they cannot
+    /// drift; this asserts the round trip for the names that actually broke
+    /// production (CJK covers, spaces, commas).
+    #[test]
+    fn percent_decode_path_inverts_the_segment_encoder() {
+        for raw in [
+            "獎項/封面.jpg",
+            "News/Winter Song.mov",
+            "img/a,b.png",
+            "plain/ascii.webp",
+            "nested/深い/道/photo.jpeg",
+        ] {
+            let encoded = percent_encode_path_segments(raw);
+            assert_eq!(percent_decode_path(&encoded), raw, "round trip for {raw}");
+        }
+    }
+
+    /// Decoding must be safe to call on a value that was never encoded — the
+    /// cover-color readers call it unconditionally.
+    #[test]
+    fn percent_decode_path_is_a_noop_without_escapes() {
+        assert_eq!(percent_decode_path("images/photo.png"), "images/photo.png");
+        assert_eq!(percent_decode_path(""), "");
+    }
+
+    /// A lone or malformed `%` is a legal filename byte, not a decode error.
+    #[test]
+    fn percent_decode_path_passes_through_malformed_escapes() {
+        assert_eq!(percent_decode_path("100%.png"), "100%.png");
+        assert_eq!(percent_decode_path("a%zz b.png"), "a%zz b.png");
+        assert_eq!(percent_decode_path("trailing%2"), "trailing%2");
+    }
+
+    /// Invalid UTF-8 must fall back to the input rather than panic or lose it.
+    #[test]
+    fn percent_decode_path_falls_back_on_invalid_utf8() {
+        assert_eq!(percent_decode_path("bad%FF.png"), "bad%FF.png");
     }
 
     // -- resolve_reference tests --

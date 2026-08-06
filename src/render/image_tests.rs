@@ -1135,6 +1135,40 @@ fn comma_named_webp_source_encodes_img_srcset_commas_but_not_base_src() {
 }
 
 #[test]
+fn comma_named_raster_with_no_ladder_encodes_single_url_srcset() {
+    // Bug B (docs/archive/2026-08-06-orphan-prune-false-negative-and-parse-cache-gate.md):
+    // when dims are unknown (snapshot miss → `resolve_ladder` returns
+    // `None`), `synthesize_inner` takes the LEGACY single-URL `<source
+    // srcset="X.webp">` branch instead of the ladder branch. That branch
+    // used to skip `encode_srcset_url` entirely, so a comma-named source
+    // shipped a raw `,` in `srcset` — the browser splits one candidate
+    // into two bogus ones and both 404 (confirmed on the live site).
+    let assets = AssetSnapshot::new(); // no dims registered for "a,b.jpg"
+    let html = synthesize_image_html(
+        "a,b.jpg",
+        "cat",
+        &assets,
+        ImageContext::MarkdownInline,
+        &ImageRenderOptions::default(),
+    );
+    assert_eq!(
+        html,
+        r#"<picture><source srcset="a%2Cb.webp" type="image/webp"><img src="a,b.jpg" width="800" height="600" loading="lazy" alt="cat" /></picture>"#
+    );
+    // srcset carries a single candidate — no comma anywhere in it, so a
+    // spec-compliant candidate-list split yields exactly one entry.
+    let srcset_start = html.find("srcset=\"").unwrap() + "srcset=\"".len();
+    let srcset_end = html[srcset_start..].find('"').unwrap() + srcset_start;
+    assert!(
+        !html[srcset_start..srcset_end].contains(','),
+        "srcset candidate must not contain a literal comma; got: {html}"
+    );
+    // The base `<img src>` keeps its literal comma — safe there, and
+    // required so the deployed source path still round-trips.
+    assert!(html.contains(r#"src="a,b.jpg""#), "got: {html}");
+}
+
+#[test]
 fn no_comma_filename_srcset_is_not_over_encoded() {
     // Over-encoding guard: a comma-free filename must emit a byte-identical
     // srcset with NO `%2C` anywhere — the comma encoding only ever touches
