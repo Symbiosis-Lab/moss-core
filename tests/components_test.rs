@@ -35,20 +35,57 @@ fn components_table_is_non_empty() {
     assert!(!COMPONENTS.is_empty(), "COMPONENTS must contain at least one entry");
 }
 
+/// Classes moss emits without the `moss-` prefix, and may keep emitting.
+///
+/// This list is closed by intent: a NEW component gets a `moss-` prefix. An
+/// entry here is a class the renderer already shipped under a bare name, where
+/// renaming it would break themes in the wild for no gain. Adding to it is a
+/// decision, not a formality — which is the whole reason this is a named
+/// constant rather than another clause on a growing `||` chain.
+///
+/// `main-nav` set the precedent; the five masthead classes followed it when
+/// they were declared in the contract, and this list was not extended with
+/// them at the time. Nothing caught that: `develop` runs no CI, so the gap
+/// stayed green until the release PR.
+const LEGACY_UNPREFIXED: &[&str] = &[
+    "main-nav",
+    // Article masthead — the byline row a themer reaches for first.
+    "date-line",
+    "date",
+    "site-name",
+    "breadcrumb-segment",
+    "nav-icons",
+];
+
 #[test]
 fn every_component_has_a_class_name() {
-    // Legacy / Obsidian-compat classes that don't carry the `moss-` prefix.
     // The `callout`, `callout-title`, `callout-content`, and `callout-<type>`
     // variants are emitted alongside `moss-callout` for theme parity with
-    // Obsidian-style callouts.
+    // Obsidian-style callouts, so they are matched by shape rather than listed.
     let is_legacy_callout = |c: &str| c == "callout" || c.starts_with("callout-");
     for entry in COMPONENTS {
         assert!(
             entry.class.starts_with("moss-")
-                || entry.class == "main-nav"
+                || LEGACY_UNPREFIXED.contains(&entry.class)
                 || is_legacy_callout(entry.class),
-            "class '{}' must be moss-prefixed (or be a legacy exception)",
+            "class '{}' must be moss-prefixed, or be added to LEGACY_UNPREFIXED \
+             with a reason it cannot carry the prefix",
             entry.class
+        );
+    }
+}
+
+#[test]
+fn the_legacy_unprefixed_list_does_not_outlive_its_entries() {
+    // A stale exemption is how a list like this rots: a class gets renamed to
+    // `moss-*`, its entry here stays, and the next unprefixed class to arrive
+    // finds a hole already open for it. Every entry must still name a real
+    // component.
+    for legacy in LEGACY_UNPREFIXED {
+        assert!(
+            COMPONENTS.iter().any(|e| &e.class == legacy),
+            "'{legacy}' is exempted from the moss- prefix but is no longer in \
+             COMPONENTS — drop it from LEGACY_UNPREFIXED"
         );
     }
 }
