@@ -67,6 +67,66 @@ pub struct ComponentEntry {
     pub description: &'static str,
 }
 
+/// Classes in [`COMPONENTS`] that deliberately carry no `moss-` prefix.
+///
+/// Every other entry must be `moss-`-prefixed; `every_component_has_a_class_name`
+/// enforces that and consults this list for the exceptions. The list lives here,
+/// beside the table, rather than in the test: an unprefixed class is a decision
+/// made when the entry is *written*, and a reviewer reading the entry has to be
+/// able to see that the decision was made. It was in the test file until
+/// 2026-08-06, and the split cost a red build — declaring the masthead and nav
+/// interior added 21 unprefixed entries whose exemption had to be recorded in a
+/// file nobody editing the table had open.
+///
+/// Two families, both emitted for **theme parity** — themes written against
+/// these names predate the `moss-` convention, so renaming them would break
+/// styling moss does not own:
+///
+/// - Obsidian-style callouts (`callout`, `callout-<type>`), emitted alongside
+///   their `moss-callout` equivalents.
+/// - The nav interior and article masthead (`main-nav`, `date-line`, …).
+///
+/// Prefix matching is deliberate for the callout family only: `callout-<type>`
+/// is an open set that grows with the callout vocabulary. The chrome names are
+/// a closed set and are listed exactly, so a typo'd new one still fails.
+pub const UNPREFIXED_LEGACY_CLASSES: &[&str] = &[
+    // Obsidian callout parity — `callout-*` is matched by prefix, see below.
+    "callout",
+    // Nav interior.
+    "main-nav",
+    "nav-left",
+    "nav-right",
+    "nav-links",
+    "nav-icons",
+    "nav-search-btn",
+    "nav-theme-btn",
+    "nav-lang-toggle",
+    "nav-lang-current",
+    "nav-lang-link",
+    "search-icon",
+    "theme-toggle-icon",
+    "mobile-menu-button",
+    "site-name",
+    "site-logo",
+    "breadcrumb-segment",
+    "breadcrumb-label",
+    "breadcrumb-separator",
+    // Article masthead.
+    "date-line",
+    "date",
+    // Default footer.
+    "footer-default",
+    "footer-link",
+];
+
+/// Whether `class` is exempt from the `moss-` prefix rule.
+///
+/// See [`UNPREFIXED_LEGACY_CLASSES`]. The `callout-` prefix arm covers the
+/// open-ended Obsidian callout types (`callout-note`, `callout-warning`, …).
+pub fn is_unprefixed_legacy(class: &str) -> bool {
+    class.starts_with("callout-") || UNPREFIXED_LEGACY_CLASSES.contains(&class)
+}
+
 /// The full contract surface — every `moss-*` class moss currently emits.
 ///
 /// Phase 0b seeds this with the CURRENT emitted vocabulary (not the

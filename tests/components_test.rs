@@ -2,7 +2,9 @@
 // public API surface of the module, even though they're only used through
 // field/value access on `COMPONENTS` entries below.
 #[allow(unused_imports)]
-use moss_core::contract::components::{ComponentEntry, Status, COMPONENTS};
+use moss_core::contract::components::{
+    is_unprefixed_legacy, ComponentEntry, Status, COMPONENTS, UNPREFIXED_LEGACY_CLASSES,
+};
 
 #[test]
 fn is_public_returns_false_for_retired_entries() {
@@ -37,18 +39,32 @@ fn components_table_is_non_empty() {
 
 #[test]
 fn every_component_has_a_class_name() {
-    // Legacy / Obsidian-compat classes that don't carry the `moss-` prefix.
-    // The `callout`, `callout-title`, `callout-content`, and `callout-<type>`
-    // variants are emitted alongside `moss-callout` for theme parity with
-    // Obsidian-style callouts.
-    let is_legacy_callout = |c: &str| c == "callout" || c.starts_with("callout-");
+    // The exemption list lives beside the table in `components.rs`, not here —
+    // an unprefixed class is a decision made when the entry is written, and it
+    // has to be visible to whoever writes it. See `UNPREFIXED_LEGACY_CLASSES`.
     for entry in COMPONENTS {
         assert!(
-            entry.class.starts_with("moss-")
-                || entry.class == "main-nav"
-                || is_legacy_callout(entry.class),
-            "class '{}' must be moss-prefixed (or be a legacy exception)",
+            entry.class.starts_with("moss-") || is_unprefixed_legacy(entry.class),
+            "class '{}' must be moss-prefixed, or be added to \
+             UNPREFIXED_LEGACY_CLASSES with a reason",
             entry.class
+        );
+    }
+}
+
+/// The exemption list must not outlive the entries it exempts.
+///
+/// Without this, removing an unprefixed class from `COMPONENTS` leaves a name
+/// in `UNPREFIXED_LEGACY_CLASSES` that silently pre-authorizes re-adding it
+/// unprefixed later — the allowlist would only ever grow, and would stop
+/// describing what moss actually emits.
+#[test]
+fn no_exemption_outlives_its_entry() {
+    for exempt in UNPREFIXED_LEGACY_CLASSES {
+        assert!(
+            COMPONENTS.iter().any(|e| e.class == *exempt),
+            "'{exempt}' is exempted from the moss- prefix rule but is no longer \
+             in COMPONENTS — drop it from UNPREFIXED_LEGACY_CLASSES"
         );
     }
 }
