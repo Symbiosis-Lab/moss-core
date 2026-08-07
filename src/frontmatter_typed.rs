@@ -651,15 +651,23 @@ pub fn simplified_frontmatter_delimiter(content: &str) -> Option<usize> {
 /// `<h2>`, ordinary in an Obsidian vault, and accepting it would let uid
 /// stamping rewrite that heading on disk. Strictness costs nothing here — a
 /// bare word outside [`SIMPLIFIED_BARE_FLAGS`] never meant anything anyway.
+///
+/// The colon must be followed by a space or end the line — YAML's own rule for
+/// what makes a line a mapping rather than a plain string. Without it a bare
+/// link, `https://example.com`, reads as the field `https` and the setext `---`
+/// underneath it reads as the delimiter, so uid stamping splices `uid:` between
+/// an author's link and its own heading underline. The same rule covers
+/// `mailto:`, `tel:` and every other scheme for free.
 fn is_frontmatter_field_line(trimmed: &str) -> bool {
     match trimmed.split_once(':') {
         None => trimmed.is_empty() || SIMPLIFIED_BARE_FLAGS.contains(&trimmed),
         // Only the key is judged; the value is unconstrained. Lowercase initial
         // because every `BUILTIN_FIELDS` entry has one, and it is what tells
         // `url: x` apart from a sentence like `Note: x`.
-        Some((key, _)) => {
+        Some((key, value)) => {
             let key = key.trim_end();
-            key.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+            (value.is_empty() || value.starts_with([' ', '\t']))
+                && key.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
                 && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         }
     }
@@ -1453,6 +1461,19 @@ mod url_path_tests {
         assert_eq!(simplified_frontmatter_delimiter("Note: this matters\n\n---\n"), None);
         // A known flag in the same position IS frontmatter.
         assert_eq!(simplified_frontmatter_delimiter("draft\n---\n\nText.\n"), Some(6));
+    }
+
+    #[test]
+    fn simplified_frontmatter_ignores_a_url_above_a_setext_underline() {
+        // `https://example.com` split on its first colon reads as the field
+        // `https`, so the `---` underneath it read as the delimiter and uid
+        // stamping wrote `uid:` between an author's link and its own heading
+        // underline. YAML says a mapping needs a space after the colon; a URL
+        // scheme has none, and neither does `mailto:` or `tel:`.
+        assert_eq!(simplified_frontmatter_delimiter("https://example.com/x\n---\n\nText.\n"), None);
+        assert_eq!(simplified_frontmatter_delimiter("mailto:hi@example.com\n---\n"), None);
+        // A key with nothing after the colon is still a field (`title:`).
+        assert_eq!(simplified_frontmatter_delimiter("title:\n---\nBody\n"), Some(7));
     }
 
     #[test]
