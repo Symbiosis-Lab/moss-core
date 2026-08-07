@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A bare link at the top of a file is no longer read as frontmatter.** A file beginning `https://example.com` followed by `---` was parsed as the field `https` closed by a delimiter. It is neither — in CommonMark that is a heading and its setext underline — and because `simplified_frontmatter_delimiter` is what tells uid stamping where to write, moss spliced a `uid:` line between an author's link and its own underline, editing the file on disk. `is_frontmatter_field_line` now applies YAML's own rule: a mapping needs a space (or end of line) after the colon. A URL scheme has none, and neither does `mailto:` or `tel:`, so one condition covers every scheme. The stricter reading also stops accepting `title:Hi` in simplified frontmatter — never valid YAML, and rejected by `---`-delimited frontmatter already, so the two forms now agree. Affects `simplified_frontmatter_delimiter`, `is_simplified_frontmatter`, `simplified_frontmatter_keys` and `parse_simplified_frontmatter`; no signature changes.
+
 ## [0.5.1] - 2026-08-07
 
 ### Added
