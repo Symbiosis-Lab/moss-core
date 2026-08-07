@@ -1879,25 +1879,38 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         kind: "chrome",
         parent: "",
         data_attrs: &[],
-        example_html: r#"<footer class="moss-colophon">
-  <span class="moss-colophon-icon"></span>
-  Built with moss
-</footer>"#,
+        example_html: r#"<div class="moss-colophon">
+  <a href="https://mosspub.com">
+    <svg class="moss-colophon-icon"></svg>
+    <span class="moss-colophon-label">Published with moss</span>
+  </a>
+</div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Footer colophon credit appended by moss.",
+        description: "Footer colophon credit appended by moss. Shows the moss mark alone at rest; the wording slides open on hover or keyboard focus.",
     },
     ComponentEntry {
         class: "moss-colophon-icon",
         kind: "instance",
         parent: "moss-colophon",
         data_attrs: &[],
-        example_html: r#"<span class="moss-colophon-icon"></span>"#,
+        example_html: r#"<svg class="moss-colophon-icon"></svg>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Icon slot inside `.moss-colophon`.",
+        description: "The moss mark inside `.moss-colophon`. Decorative (`aria-hidden`) — `.moss-colophon-label` carries the accessible name.",
+    },
+    ComponentEntry {
+        class: "moss-colophon-label",
+        kind: "instance",
+        parent: "moss-colophon",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-colophon-label">Published with moss</span>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Localized attribution wording inside `.moss-colophon`. Collapsed to zero inline size at rest and revealed on hover/focus — it stays in the DOM because it is the link's accessible name.",
     },
     ComponentEntry {
         class: "moss-shell-frame",
