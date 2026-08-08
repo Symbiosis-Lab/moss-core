@@ -76,6 +76,12 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         description: "Crop anchor for hero media, which is `object-fit: cover`. The default anchors the top, which suits landscapes; use `center` for portraits and faces.",
     },
     CustomProp {
+        name: "--moss-nav-island-display",
+        owner: "moss-nav-island",
+        default: "block",
+        description: "Set to `none` to turn the floating nav island off site-wide — the page then behaves as it did before ADR-049: the masthead scrolls away and nothing replaces it. This is the island's whole tuning surface on purpose; its measure already tracks `--moss-nav-width`/`--moss-content-width`, so widening the nav widens the island with it.",
+    },
+    CustomProp {
         name: "--moss-grid-image-ratio",
         owner: "moss-grid-card",
         default: "1 / 1",
