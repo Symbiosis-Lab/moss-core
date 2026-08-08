@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-08
+
+### Added
+- **Two frontmatter fields, `byline` and `colophon`.** Both are credit rows an author writes — one per line of a block scalar, or one per list entry — rendered as inline markdown so a row may carry links. `byline` lands under the article title, `colophon` at the foot. They are display strings, not structured data: moss makes no machine claim about who did what, and neither field is connected to `author`. Adds `FrontMatter::byline` and `FrontMatter::colophon` (both `Option<Vec<String>>`), the public helpers `frontmatter_union::normalize_credit_rows` and `deserialize_credit_rows`, and two `BUILTIN_FIELDS` entries — so `builtin_schema()` now reports 38 fields instead of 36. **Constructing `FrontMatter` with a struct literal needs the two new fields**; `..Default::default()` is unaffected.
+- Sixteen `COMPONENTS` entries for the floating nav island (`moss-nav-island` and its bar, trail, current, more, actions, sections, menu and progress parts) plus the credit rows (`moss-byline`, `moss-byline-row`, `moss-article-colophon`, `moss-article-colophon-row`, `moss-colophon-label`) and `moss-collection-description`.
+- The custom property `--moss-nav-island-display`. Setting it to `none` turns the floating nav island off site-wide; that is the island's entire tuning surface on purpose, since its measure already tracks `--moss-nav-width` / `--moss-content-width`.
+
 ### Fixed
+- **A footnote back-link is text, not emoji.** The return arrow now emits `&#8617;&#xFE0E;` — U+21A9 plus VARIATION SELECTOR-15 — because without the selector Chrome on Android and iOS picks the emoji form and the arrow renders as a coloured glyph next to plain body text.
 - **A bare link at the top of a file is no longer read as frontmatter.** A file beginning `https://example.com` followed by `---` was parsed as the field `https` closed by a delimiter. It is neither — in CommonMark that is a heading and its setext underline — and because `simplified_frontmatter_delimiter` is what tells uid stamping where to write, moss spliced a `uid:` line between an author's link and its own underline, editing the file on disk. `is_frontmatter_field_line` now applies YAML's own rule: a mapping needs a space (or end of line) after the colon. A URL scheme has none, and neither does `mailto:` or `tel:`, so one condition covers every scheme. The stricter reading also stops accepting `title:Hi` in simplified frontmatter — never valid YAML, and rejected by `---`-delimited frontmatter already, so the two forms now agree. Affects `simplified_frontmatter_delimiter`, `is_simplified_frontmatter`, `simplified_frontmatter_keys` and `parse_simplified_frontmatter`; no signature changes.
 
 ## [0.5.1] - 2026-08-07
