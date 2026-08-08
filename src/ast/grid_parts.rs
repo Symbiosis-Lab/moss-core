@@ -105,13 +105,28 @@ pub fn render_grid_parts<H: RenderHooks + ?Sized>(
         open_tag.push_str(r#"" data-columns=""#);
         open_tag.push_str(&args.columns.to_string());
         open_tag.push('"');
+        // A ratio rides as a CUSTOM PROPERTY, never as an inline
+        // `grid-template-columns`. An inline declaration outranks every
+        // stylesheet rule, so `:::grid 2 1:2` used to stay two columns at
+        // every viewport — the mobile collapse (`@media (max-width: 768px)
+        // .moss-grid[data-columns] { grid-template-columns: 1fr }`) could
+        // never reach it. Handing the value over as `--moss-grid-ratio` puts
+        // it back in the cascade: the column rules read
+        // `grid-template-columns: var(--moss-grid-ratio, <default>)`, and the
+        // mobile rule simply doesn't read the variable. Same shape as
+        // `--moss-gallery-columns` next door.
+        //
+        // `minmax(0, Nfr)` rather than a bare `Nfr` for the reason spelled out
+        // over `.moss-grid[data-columns="1"]` in site.css: a bare `fr` track
+        // floors at the item's min-content width, so one wide image in a
+        // ratio grid overflows the page sideways.
         if let Some(r) = &args.ratio {
             let cols = r
                 .split(':')
-                .map(|n| format!("{}fr", n.trim()))
+                .map(|n| format!("minmax(0, {}fr)", n.trim()))
                 .collect::<Vec<_>>()
                 .join(" ");
-            open_tag.push_str(r#" style="grid-template-columns:"#);
+            open_tag.push_str(r#" style="--moss-grid-ratio:"#);
             open_tag.push_str(&cols);
             open_tag.push('"');
         }

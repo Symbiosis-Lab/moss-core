@@ -230,6 +230,9 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
     let classes = parsed.class_string();
     let width = parsed.width.map(str::to_string);
     let mobile = parsed.get("mobile").map(str::to_string);
+    // Read once, for all three image-source branches below — a caption belongs
+    // to the hero, not to whichever syntax named its image.
+    let caption = parsed.get("caption").unwrap_or_default().trim().to_string();
 
     // Priority 1: `image=` attribute.
     if let Some(image_value) = parsed.get("image") {
@@ -250,6 +253,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
                 overlay_text,
                 width,
                 mobile,
+                caption,
             },
             false,
             overlay_warnings,
@@ -277,6 +281,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
                 overlay_text,
                 width,
                 mobile,
+                caption,
             },
             false,
             overlay_warnings,
@@ -330,6 +335,7 @@ pub(super) fn parse_hero(args: &str, body: &str, config: &ParseConfig) -> (HeroS
             overlay_text,
             width,
             mobile,
+            caption,
         },
         used_priority_3,
         overlay_warnings,

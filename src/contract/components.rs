@@ -1029,6 +1029,12 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 default: "",
                 description: "Below **48rem** (moss's mobile threshold), `overlay` keeps the title on top of the image instead of stacking it underneath. Emitted **only** for `:::hero {mobile=overlay}` — an author must ask for it; a hero with overlay text does not get it by default. The selector to fight if you want the other behaviour is `.moss-hero[data-mobile=\"overlay\"]`.",
             },
+            DataAttr {
+                name: "data-captioned",
+                values: &[""],
+                default: "",
+                description: "Present when the hero carries `caption=\"…\"`. Such a hero is a photograph on display rather than a backdrop for overlay text, and a caption that names a subject is a promise the subject is in frame — so site.css shows the whole image instead of the default crop-to-fill: the box takes the picture's own shape, centred, bounded by `--moss-hero-max-height` rather than filling the frame. Put the crop back on the image itself (`image=cover.jpg|cover top`), which lands as an inline style and wins.",
+            },
         ],
         example_html: r#"<section class="moss-hero" data-width="page">
   <div class="moss-hero-content">...</div>
@@ -1047,7 +1053,18 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Text content slot inside `.moss-hero`.",
+        description: "Text content slot inside `.moss-hero` — text laid ON the image. For text ABOUT the image, see `.moss-hero-caption`.",
+    },
+    ComponentEntry {
+        class: "moss-hero-caption",
+        kind: "standalone",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<p class="moss-hero-caption">封面：基輔米迦勒修道院門口的陣亡將士紀念牆（拍攝：糜緒洋）</p>"#,
+        example_markdown: ":::hero {image=cover.jpg caption=\"Cover: the memorial wall (photo: A. Photographer)\"}\n:::\n",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Caption or credit for a hero image, from `:::hero {caption=\"…\"}`. A SIBLING of `.moss-hero`, immediately after it — not a child: the section is a fixed-height cropping frame, and a photographer's credit has to survive as text below the picture rather than be printed across it. Rendered as inline markdown, so a credit can be a link, exactly like a `byline:` / `colophon:` row.",
     },
     ComponentEntry {
         class: "moss-hero-slides",
@@ -1162,7 +1179,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-columns",
                 values: &["1", "2", "3", "4"],
                 default: "",
-                description: "Column count, from `:::grid N`. Note the responsive default: below 768px moss collapses `[data-columns]` to a single column, which is right for a grid of cards and wrong for a grid of short text lines. Re-assert `grid-template-columns` inside your own media query if yours is the latter.",
+                description: "Column count, from `:::grid N`. Note the responsive default: below 768px moss collapses `[data-columns]` to a single column, which is right for a grid of cards and wrong for a grid of short text lines. Re-assert `grid-template-columns` inside your own media query if yours is the latter. A ratio (`:::grid 2 1:2`) arrives as the custom property `--moss-grid-ratio` on the element, so it stays overridable — the collapse applies to ratio grids too.",
             },
         ],
         example_html: r#"<div class="moss-grid" data-width="wide">
@@ -1596,6 +1613,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Confirmed,
         since: "0",
         description: "Row inside the collection listing of series nav.",
+    },
+    ComponentEntry {
+        class: "moss-series-nav-position",
+        kind: "instance",
+        parent: "moss-series-nav-collection-row",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-series-nav-position">2 of 3</span>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Where this page sits in its series — \"2 of 3\" / 「第 2 篇，共 3 篇」. Counts only the pages still in the reading order, so a page that stepped out with `series: false` is not in the total. Omitted when the folder holds a single page.",
     },
     // -------------------------------------------------------------------
     // Collection cover (collection landing pages).

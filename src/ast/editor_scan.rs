@@ -3,8 +3,8 @@
 //! Companion to `extract_shortcodes` (which returns typed AST nodes for the
 //! build pipeline). `editor_scan` returns source-position information needed
 //! by the CodeMirror plugin: opening-fence ranges, closing-fence ranges,
-//! cell-divider ranges, and a flag indicating whether legacy `---` dividers
-//! were used.
+//! cell-divider ranges (each marked canonical `+++` or deprecated `---`),
+//! and a document-level flag saying whether any deprecated divider was used.
 //!
 //! Pure, no I/O. Safe to call from any Tauri thread.
 
@@ -27,6 +27,20 @@ pub struct EditorRange {
     pub to: u32,
 }
 
+/// One cell divider line, and whether the author used the old spelling.
+///
+/// `legacy_dash` on the whole result says "somewhere in this document";
+/// this says *which line*, which is what the editor needs to put a hint
+/// next to the divider the author actually typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct EditorDivider {
+    /// Source range covering the `+++` or `---` characters only.
+    pub range: EditorRange,
+    /// True for the deprecated `---` form, false for canonical `+++`.
+    pub legacy: bool,
+}
+
 /// One shortcode block as seen by the editor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -41,7 +55,7 @@ pub struct EditorShortcodeBlock {
     pub args: String,
     /// Top-level cell divider lines (only the dividers at this block's depth;
     /// nested-block dividers belong to their own block entry).
-    pub dividers: Vec<EditorRange>,
+    pub dividers: Vec<EditorDivider>,
 }
 
 /// Result of editor-side shortcode scanning.
@@ -50,8 +64,9 @@ pub struct EditorShortcodeBlock {
 pub struct EditorScanResult {
     pub blocks: Vec<EditorShortcodeBlock>,
     /// True if any divider line in any grid block used the deprecated `---`
-    /// form. The build pipeline emits a stronger warning; the editor uses
-    /// this to surface a UI hint or console message.
+    /// form — including inside a block that never closed, whose dividers are
+    /// dropped. Per-divider detail lives on [`EditorDivider::legacy`]; this
+    /// stays as the cheap document-level answer.
     pub legacy_dash: bool,
 }
 
@@ -148,11 +163,11 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
             } else if depth == 1 && current_is_grid {
                 // Divider check only applies at depth 1 inside a grid block,
                 // and only on lines that are not open/close fences.
-                if let Some(divider_range) =
+                if let Some(divider) =
                     match_divider(line_content, line_start, &mut legacy_dash)
                 {
                     if let Some(c) = current.as_mut() {
-                        c.dividers.push(divider_range);
+                        c.dividers.push(divider);
                     }
                 }
             }
@@ -171,40 +186,37 @@ pub fn editor_scan(markdown: &str) -> EditorScanResult {
 /// exactly `---` (deprecated, sets `legacy_dash` to true). Both allow
 /// surrounding whitespace but the line must contain nothing else.
 ///
-/// Returns the source range covering the `+++` or `---` characters only,
+/// The returned range covers the `+++` or `---` characters only,
 /// excluding leading/trailing whitespace.
 fn match_divider(
     line: &str,
     line_start: u32,
     legacy_dash: &mut bool,
-) -> Option<EditorRange> {
-    let trimmed = line.trim();
-    let kind = match trimmed {
-        "+++" => DividerKind::Canonical,
-        "---" => DividerKind::LegacyDash,
+) -> Option<EditorDivider> {
+    let legacy = match line.trim() {
+        "+++" => false,
+        "---" => true,
         _ => return None,
     };
 
     let leading_ws = (line.len() - line.trim_start().len()) as u32;
-    if matches!(kind, DividerKind::LegacyDash) {
+    if legacy {
         *legacy_dash = true;
     }
-    Some(EditorRange {
-        from: line_start + leading_ws,
-        to: line_start + leading_ws + 3,
+    Some(EditorDivider {
+        range: EditorRange {
+            from: line_start + leading_ws,
+            to: line_start + leading_ws + 3,
+        },
+        legacy,
     })
-}
-
-enum DividerKind {
-    Canonical,
-    LegacyDash,
 }
 
 struct PartialBlock {
     open: EditorRange,
     name: String,
     args: String,
-    dividers: Vec<EditorRange>,
+    dividers: Vec<EditorDivider>,
 }
 
 /// Match `:::name args...` or `::::name args...` etc. (arity ≥ 3).
@@ -317,18 +329,36 @@ mod tests {
         let b = &r.blocks[0];
         assert_eq!(b.dividers.len(), 1);
         // "+++" starts after ":::grid 2\nleft\n" (10 + 5 = 15) and is 3 chars long.
-        assert_eq!(b.dividers[0], EditorRange { from: 15, to: 18 });
+        assert_eq!(b.dividers[0].range, EditorRange { from: 15, to: 18 });
+        assert!(!b.dividers[0].legacy);
         assert!(!r.legacy_dash);
     }
 
     #[test]
-    fn grid_with_legacy_dash_divider_sets_flag() {
+    fn grid_with_legacy_dash_divider_is_marked_per_divider_and_document_wide() {
         let md = ":::grid 2\nleft\n---\nright\n:::\n";
         let r = editor_scan(md);
 
         assert_eq!(r.blocks.len(), 1);
         assert_eq!(r.blocks[0].dividers.len(), 1);
+        assert!(r.blocks[0].dividers[0].legacy);
         assert!(r.legacy_dash, "expected legacy_dash flag for --- divider");
+    }
+
+    #[test]
+    fn mixed_dividers_are_flagged_individually() {
+        // The editor decorates only the offending line, so a grid that mixes
+        // both spellings must say which divider is which — not just that the
+        // document contains one somewhere.
+        let md = ":::grid 3\na\n+++\nb\n---\nc\n:::\n";
+        let r = editor_scan(md);
+
+        let dividers = &r.blocks[0].dividers;
+        assert_eq!(dividers.iter().map(|d| d.legacy).collect::<Vec<_>>(), vec![false, true]);
+        // The flagged range points at the `---` the author actually typed.
+        let d = dividers[1].range;
+        assert_eq!(&md[d.from as usize..d.to as usize], "---");
+        assert!(r.legacy_dash);
     }
 
     #[test]
@@ -364,7 +394,7 @@ mod tests {
         assert_eq!(r.blocks.len(), 1);
         assert_eq!(r.blocks[0].dividers.len(), 1);
         // Range covers the "+++" only, not the leading spaces.
-        let div = r.blocks[0].dividers[0];
+        let div = r.blocks[0].dividers[0].range;
         let line_text = &md[div.from as usize..div.to as usize];
         assert_eq!(line_text, "+++");
     }

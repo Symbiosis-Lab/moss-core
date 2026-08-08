@@ -150,8 +150,12 @@ pub struct GridShortcode {
     /// Column count. Defaults to 1 when neither positional nor `cols=`
     /// attribute is provided.
     pub columns: u32,
-    /// Optional ratio string like `"1:2"` or `"1:1:2"`. When present,
-    /// the renderer emits `style="grid-template-columns:1fr 2fr"` etc.
+    /// Optional ratio string like `"1:2"` or `"1:1:2"`. When present, the
+    /// renderer emits it as a custom property —
+    /// `style="--moss-grid-ratio:minmax(0, 1fr) minmax(0, 2fr)"` — which the
+    /// stylesheet reads. Never as an inline `grid-template-columns`: that
+    /// outranks every rule, so the mobile single-column collapse could not
+    /// reach a ratio grid.
     /// `cols=1:2:3` is equivalent to setting both `columns` (count = 3)
     /// and `ratio` to `"1:2:3"`.
     pub ratio: Option<String>,
@@ -235,6 +239,23 @@ pub struct HeroShortcode {
     /// (image full-width at natural ratio, text block below).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mobile: Option<String>,
+    /// Caption or credit for the image, from `caption="…"`. Rendered as a
+    /// line of text BELOW the hero, never over it.
+    ///
+    /// The overlay and the caption answer different questions. The overlay is
+    /// text laid *on* the photograph — a title, a standfirst — and it is
+    /// styled to be read against the image. A caption says what the
+    /// photograph is and who took it, and printing that across someone's
+    /// picture is both unreadable and, for a credit, wrong: a photographer's
+    /// name has to survive as text, not as part of the composition. So a hero
+    /// carrying a cover credit («封面：…（拍攝：…）») has somewhere to put it
+    /// that is not on top of the subject.
+    ///
+    /// A display string, rendered as inline markdown by the host — the same
+    /// treatment `byline:` / `colophon:` rows get — so a credit can be a link.
+    /// Empty when the author wrote no caption.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub caption: String,
 }
 
 /// Arguments for [`Shortcode::Apply`].
