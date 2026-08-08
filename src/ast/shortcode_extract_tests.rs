@@ -268,6 +268,9 @@ fn extracts_grid_with_nested_buttons_via_arity() {
     // in `parse_cell_to_blocks`), not at render time.
     let md = ":::grid 2\n::::buttons\n[Tickets](go/)\n::::\n+++\nfooter cell\n:::\n";
     let result = extract_shortcodes(md);
+    // A HIGHER-arity inner is supported nesting — the #1014 warning
+    // must stay silent here.
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(result.extracted.len(), 1);
     match &result.extracted[0].shortcode {
         Shortcode::Grid(grid) => {
@@ -1426,7 +1429,8 @@ fn nested_css_region_outer_closes_at_first_inner_close() {
     // (`::::{.outer}` containing `:::{.inner}`).
     //
     // This test pins the current behavior so a future regression
-    // surfaces.
+    // surfaces. Since #1014 the author is also warned (the warning's
+    // own wording is pinned below in the same-arity section).
     let md = ":::{.outer}\n:::{.inner}\nbody\n:::\n:::\n";
     let result = extract_shortcodes(md);
     let out = &result.markdown_with_placeholders;
@@ -1435,6 +1439,18 @@ fn nested_css_region_outer_closes_at_first_inner_close() {
     // The inner `:::{.inner}` opener is left as literal text in the
     // outer body — the outer fence closed at the first arity-3 `:::`.
     assert!(out.contains(":::{.inner}"));
+    assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
+
+    // Same mechanism with a TYPED inner: the outer consumes the
+    // arity-3 closer at `:::subscribe`'s fence, so subscribe is never
+    // seen by the extractor.
+    let typed = ":::{.wrapper}\n:::subscribe\n:::\n:::\n";
+    let typed_result = extract_shortcodes(typed);
+    assert!(typed_result
+        .markdown_with_placeholders
+        .contains("<div class=\"wrapper\""));
+    assert!(typed_result.extracted.is_empty());
+    assert_eq!(typed_result.warnings.len(), 1, "{:?}", typed_result.warnings);
 }
 
 #[test]
@@ -1450,22 +1466,6 @@ fn nested_css_region_higher_arity_outer_recurses_into_inner() {
     assert!(out.contains("<div class=\"inner\""));
     // No literal `:::{.inner}` should leak into the body.
     assert!(!out.contains(":::{.inner}"));
-}
-
-#[test]
-fn css_region_containing_typed_subscribe_is_not_recursively_extracted() {
-    // Same-arity nesting: outer `:::{.wrapper}` closes at the first
-    // matching `:::`, so the inner `:::subscribe` is never seen.
-    let md = ":::{.wrapper}\n:::subscribe\n:::\n:::\n";
-    let result = extract_shortcodes(md);
-    // The wrapper opens. No subscribe is extracted because the
-    // outer block consumed its arity-3 closer at the inner block's
-    // first `:::`.
-    assert!(result
-        .markdown_with_placeholders
-        .contains("<div class=\"wrapper\""));
-    // Subscribe is NOT extracted in Step 1.
-    assert!(result.extracted.is_empty());
 }
 
 #[test]
@@ -1616,11 +1616,57 @@ fn grid_legacy_dash_emits_deprecation_warning() {
     assert!(result.warnings[0].contains("+++"));
 }
 
+// ---- Same-arity nesting warns (#1014) ----
+//
+// A `:::` fence nested inside another `:::` fence steals the outer
+// block's closer: the outer ends early and the rest of it — dividers
+// included — spills into the prose as literal text. The page still
+// builds, so before #1014 nothing said a word. The parse is unchanged;
+// these tests pin the diagnostic and, just as importantly, its silence
+// on documents that are fine.
+
 #[test]
-fn grid_plus_plus_plus_no_deprecation_warning() {
+fn same_arity_nesting_inside_grid_warns_and_names_the_higher_arity_fix() {
+    // The #1014 reproduction. `:::grid 2` is closed by the nested
+    // `::: {.some-class}` block's fence, so `+++` and `Cell two` land
+    // outside the grid.
+    let md = ":::grid 2\nCell one\n\n::: {.some-class}\nquiet text\n:::\n+++\nCell two\n:::\n";
+    let result = extract_shortcodes(md);
+    assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
+    let w = &result.warnings[0];
+    // Says which block ended early, and which nested block took its fence.
+    assert!(w.contains("`:::grid 2`"), "{w}");
+    assert!(w.contains("`::: {.some-class}`"), "{w}");
+    // Names the replacement to type, the way the `---` deprecation does.
+    assert!(w.contains("`::::grid 2`"), "{w}");
+    assert!(w.contains("`::::`"), "{w}");
+}
+
+#[test]
+fn higher_arity_outer_grid_around_a_nested_fence_does_not_warn() {
+    // The documented correct form: more colons outside than inside.
+    let md = "::::grid 2\nCell one\n\n::: {.some-class}\nquiet text\n:::\n+++\nCell two\n::::\n";
+    let result = extract_shortcodes(md);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+}
+
+#[test]
+fn plain_grid_with_no_nesting_does_not_warn() {
+    // The regression guard: a warning that fires on ordinary documents
+    // teaches authors to ignore warnings. Also pins that `+++` cell
+    // dividers carry no deprecation notice (only `---` does).
     let md = ":::grid 2\ncell A\n+++\ncell B\n:::\n";
     let result = extract_shortcodes(md);
-    assert!(result.warnings.is_empty());
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+}
+
+#[test]
+fn a_bare_closer_in_a_code_fence_does_not_warn() {
+    // Inert lines carry no live `:::` syntax, so a fenced example of a
+    // shortcode inside a grid cell must not look like nesting.
+    let md = ":::grid 1\n```\n:::gallery 2\nx.png\n:::\n```\n:::\n";
+    let result = extract_shortcodes(md);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
 }
 
 #[test]

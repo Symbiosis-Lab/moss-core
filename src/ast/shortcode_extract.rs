@@ -1229,16 +1229,30 @@ fn extract_with_state(
             let body_start = i + 1 + opener_lines_consumed;
 
             // Look for the matching closer (same arity) on a subsequent line.
+            //
+            // While scanning, remember the first body line that is itself an
+            // OPENER at the same arity. First-closer-wins means the closer we
+            // are about to accept is that inner block's, not ours — see
+            // `nested_same_arity` below.
             let mut body_lines: Vec<&str> = Vec::new();
             let mut j = body_start;
             let mut closed = false;
+            let mut nested_same_arity: Option<&str> = None;
             while j < lines.len() {
                 // An inert line cannot close the block either: a bare `:::`
                 // inside a code fence or a comment in the body used to end
                 // the shortcode early and strand the rest of it as prose.
-                if !is_inert(j) && is_close_fence(lines[j].trim(), arity) {
+                let body_trimmed = lines[j].trim();
+                if !is_inert(j) && is_close_fence(body_trimmed, arity) {
                     closed = true;
                     break;
+                }
+                if nested_same_arity.is_none() && !is_inert(j) {
+                    if let Some((inner_arity, _, _)) = parse_shortcode_opener(body_trimmed) {
+                        if inner_arity == arity {
+                            nested_same_arity = Some(body_trimmed);
+                        }
+                    }
                 }
                 body_lines.push(lines[j]);
                 j += 1;
@@ -1251,6 +1265,15 @@ fn extract_with_state(
                 output.push('\n');
                 i += 1;
                 continue;
+            }
+
+            // The block closed — but if a same-arity opener sat in the body,
+            // the fence we just stopped on belongs to THAT block, and this
+            // one ended early. Nothing about the parse changes; the author
+            // just gets told, because the page still builds and only looks
+            // wrong (stray `+++`, cells outside the grid). See #1014.
+            if let Some(inner) = nested_same_arity {
+                warnings.push(nested_arity_warning(arity, trimmed, inner));
             }
 
             let body = body_lines.join("\n");
@@ -1354,6 +1377,39 @@ fn extract_with_state(
     }
 
     output
+}
+
+/// Word the "this block ended at someone else's fence" warning (#1014).
+///
+/// `arity` and `outer_line` describe the OUTER opener; `inner_line` is the
+/// trimmed text of the nested opener that has the same colon count. Says what
+/// went wrong in plain words first, then exactly what to type: one more colon
+/// on the outer fence, nested fences left alone.
+///
+/// The suggestion is built by prefixing one `:` to the author's own opener
+/// line, so it reads back in their words (`:::grid 2` → `::::grid 2`) and
+/// works for a nameless CSS region (`:::{.band}` → `::::{.band}`) too.
+fn nested_arity_warning(arity: usize, outer_line: &str, inner_line: &str) -> String {
+    let colons = ":".repeat(arity);
+    let wider = ":".repeat(arity + 1);
+    let outer_short = clip_for_warning(outer_line);
+    let inner_short = clip_for_warning(inner_line);
+    format!(
+        "shortcode `{outer_short}` ends at the nested `{inner_short}` block's closing fence \
+         instead of its own, so everything after that point falls outside the block.\n\
+         A nested fence needs FEWER colons than the block around it: write `:{outer_short}` … \
+         `{wider}` for the outer block and leave the nested one as `{colons}`."
+    )
+}
+
+/// Opener lines are short; cap anyway so a pathological one can't flood the
+/// build log.
+fn clip_for_warning(line: &str) -> String {
+    let mut s: String = line.chars().take(48).collect();
+    if line.chars().count() > 48 {
+        s.push('…');
+    }
+    s
 }
 
 /// Render the opening `<div>` tag for a CssRegion or Unknown wrapper.
