@@ -592,31 +592,58 @@ pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String, S
 /// Step 3 of #613 rewrites `---` to `+++` in moss-releases content;
 /// after that, this helper retires in favor of `split_cells`.
 ///
+/// **A divider only counts when it belongs to THIS grid.** A `+++` inside a
+/// nested block, a code fence or an HTML comment is somebody else's. It used
+/// to split this grid anyway, so `::::grid` around `:::grid` — the nesting
+/// the grammar recommends — handed the inner grid's cells to the outer one,
+/// with no warning and plausible-looking output. Nested bodies pass through
+/// verbatim and are re-extracted when the cell is parsed, which is where the
+/// inner block gets its own dividers. Depth is tracked as
+/// [`super::editor_scan`] tracks it: an opener pushes its arity, a closer of
+/// the innermost arity pops it. Same-arity nesting is a different bug with
+/// its own warning (`nested_arity_warning`).
+///
 /// Returns `(cells, found_legacy_dash)` where `found_legacy_dash` is
-/// `true` when at least one `---` divider was encountered, signaling
-/// the caller to emit a deprecation warning.
+/// `true` when at least one `---` divider **of this grid** was encountered,
+/// signaling the caller to emit a deprecation warning. A `---` belonging to
+/// a nested block is reported when that block is parsed, not here.
 fn split_grid_cells(body: &str) -> (Vec<String>, bool) {
     if body.is_empty() {
         return (vec![String::new()], false);
     }
+    // One flag per line, aligned with `str::lines`, which agrees index-for-
+    // index with `split_inclusive('\n')` for every input.
+    let inert = crate::inert_regions::inert_lines(body);
     let mut cells = Vec::new();
     let mut current = String::new();
     let mut first_line_in_cell = true;
     let mut found_legacy_dash = false;
+    // Arities of the nested blocks we are currently inside; empty means
+    // "at this grid's own depth", which is the only place a divider counts.
+    let mut nested_arities: Vec<usize> = Vec::new();
 
-    for line in body.split_inclusive('\n') {
+    for (idx, line) in body.split_inclusive('\n').enumerate() {
         let content_no_eol = line.strip_suffix('\n').unwrap_or(line);
         let trimmed = content_no_eol.trim();
-        if trimmed == "+++" || trimmed == "---" {
-            if trimmed == "---" {
-                found_legacy_dash = true;
+        let live = !inert.get(idx).copied().unwrap_or(false);
+        if live {
+            if let Some((inner_arity, _, _)) = parse_shortcode_opener(trimmed) {
+                nested_arities.push(inner_arity);
+            } else if let Some(&innermost) = nested_arities.last() {
+                if is_close_fence(trimmed, innermost) {
+                    nested_arities.pop();
+                }
+            } else if trimmed == "+++" || trimmed == "---" {
+                if trimmed == "---" {
+                    found_legacy_dash = true;
+                }
+                if let Some(stripped) = current.strip_suffix('\n') {
+                    current.truncate(stripped.len());
+                }
+                cells.push(std::mem::take(&mut current));
+                first_line_in_cell = true;
+                continue;
             }
-            if let Some(stripped) = current.strip_suffix('\n') {
-                current.truncate(stripped.len());
-            }
-            cells.push(std::mem::take(&mut current));
-            first_line_in_cell = true;
-            continue;
         }
         if first_line_in_cell {
             first_line_in_cell = false;
@@ -1202,16 +1229,30 @@ fn extract_with_state(
             let body_start = i + 1 + opener_lines_consumed;
 
             // Look for the matching closer (same arity) on a subsequent line.
+            //
+            // While scanning, remember the first body line that is itself an
+            // OPENER at the same arity. First-closer-wins means the closer we
+            // are about to accept is that inner block's, not ours — see
+            // `nested_same_arity` below.
             let mut body_lines: Vec<&str> = Vec::new();
             let mut j = body_start;
             let mut closed = false;
+            let mut nested_same_arity: Option<&str> = None;
             while j < lines.len() {
                 // An inert line cannot close the block either: a bare `:::`
                 // inside a code fence or a comment in the body used to end
                 // the shortcode early and strand the rest of it as prose.
-                if !is_inert(j) && is_close_fence(lines[j].trim(), arity) {
+                let body_trimmed = lines[j].trim();
+                if !is_inert(j) && is_close_fence(body_trimmed, arity) {
                     closed = true;
                     break;
+                }
+                if nested_same_arity.is_none() && !is_inert(j) {
+                    if let Some((inner_arity, _, _)) = parse_shortcode_opener(body_trimmed) {
+                        if inner_arity == arity {
+                            nested_same_arity = Some(body_trimmed);
+                        }
+                    }
                 }
                 body_lines.push(lines[j]);
                 j += 1;
@@ -1224,6 +1265,15 @@ fn extract_with_state(
                 output.push('\n');
                 i += 1;
                 continue;
+            }
+
+            // The block closed — but if a same-arity opener sat in the body,
+            // the fence we just stopped on belongs to THAT block, and this
+            // one ended early. Nothing about the parse changes; the author
+            // just gets told, because the page still builds and only looks
+            // wrong (stray `+++`, cells outside the grid). See #1014.
+            if let Some(inner) = nested_same_arity {
+                warnings.push(nested_arity_warning(arity, trimmed, inner));
             }
 
             let body = body_lines.join("\n");
@@ -1327,6 +1377,39 @@ fn extract_with_state(
     }
 
     output
+}
+
+/// Word the "this block ended at someone else's fence" warning (#1014).
+///
+/// `arity` and `outer_line` describe the OUTER opener; `inner_line` is the
+/// trimmed text of the nested opener that has the same colon count. Says what
+/// went wrong in plain words first, then exactly what to type: one more colon
+/// on the outer fence, nested fences left alone.
+///
+/// The suggestion is built by prefixing one `:` to the author's own opener
+/// line, so it reads back in their words (`:::grid 2` → `::::grid 2`) and
+/// works for a nameless CSS region (`:::{.band}` → `::::{.band}`) too.
+fn nested_arity_warning(arity: usize, outer_line: &str, inner_line: &str) -> String {
+    let colons = ":".repeat(arity);
+    let wider = ":".repeat(arity + 1);
+    let outer_short = clip_for_warning(outer_line);
+    let inner_short = clip_for_warning(inner_line);
+    format!(
+        "shortcode `{outer_short}` ends at the nested `{inner_short}` block's closing fence \
+         instead of its own, so everything after that point falls outside the block.\n\
+         A nested fence needs FEWER colons than the block around it: write `:{outer_short}` … \
+         `{wider}` for the outer block and leave the nested one as `{colons}`."
+    )
+}
+
+/// Opener lines are short; cap anyway so a pathological one can't flood the
+/// build log.
+fn clip_for_warning(line: &str) -> String {
+    let mut s: String = line.chars().take(48).collect();
+    if line.chars().count() > 48 {
+        s.push('…');
+    }
+    s
 }
 
 /// Render the opening `<div>` tag for a CssRegion or Unknown wrapper.

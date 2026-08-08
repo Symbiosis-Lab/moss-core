@@ -46,12 +46,31 @@ pub enum LinkType {
     Standard,
 }
 
+/// What a resolve diagnostic is about.
+///
+/// Only one variant carries a consequence today: `MissingAsset` is what moss
+/// refuses to publish over. Everything else is a warning the build logs and
+/// moves past, so it stays lumped under `Other` until something needs to act on
+/// it — a kind nobody branches on is a kind that drifts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiagnosticKind {
+    /// An image/video/audio reference that resolves to no file on disk. A
+    /// published site cannot contain one, so a build that produces any of these
+    /// cannot be deployed.
+    MissingAsset,
+    /// Anything else — an unresolved wikilink, a broken embed, a bad heading
+    /// anchor. Logged, never blocking.
+    #[default]
+    Other,
+}
+
 /// A diagnostic message from the resolve phase.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub message: String,
     pub source_path: String,
     pub reference: String,
+    pub kind: DiagnosticKind,
 }
 
 /// Result of resolving all Obsidian syntax in a markdown file.
@@ -506,6 +525,7 @@ pub fn resolve_frontmatter_wikilinks(
                             message: format!("Unresolved frontmatter wikilink: [[{}]]", ref_part),
                             source_path: source_path.to_string(),
                             reference: ref_part.to_string(),
+                            kind: DiagnosticKind::Other,
                         });
                         // Strip brackets, use the path text as-is
                         let mut fallback = ref_part.to_string();
