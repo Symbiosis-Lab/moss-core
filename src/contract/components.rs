@@ -1635,17 +1635,6 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Body content slot inside `.moss-collection-cover`.",
     },
-    ComponentEntry {
-        class: "moss-collection-description",
-        kind: "standalone",
-        parent: "",
-        data_attrs: &[],
-        example_html: r#"<p class="moss-collection-description">Notes on typography and the printed page.</p>"#,
-        example_markdown: "---\ntitle: Typography\ndescription: Notes on typography and the printed page.\n---\n",
-        status: Status::Emerging,
-        since: "1",
-        description: "The standfirst on a folder-index page: the frontmatter `description:` printed once, under the page title. Folder indexes only — article pages never emit it, because an article's `description:` is usually a scraped first paragraph and printing it would repeat the paragraph directly below. Sits inside `.moss-collection-cover-body` when the folder has a `cover:`, and directly after `.moss-folder-title` when it does not. Plain text, HTML-escaped, not markdown-rendered — the same string that goes into `<meta name=\"description\">`.",
-    },
     // -------------------------------------------------------------------
     // Form primitives (input, label, field, link).
     // -------------------------------------------------------------------
@@ -1998,7 +1987,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Credit block under the article title, below `.date-line`. Emitted from the `byline` frontmatter field, one `.moss-byline-row` per authored line. Absent when the field is.",
+        description: "Credit block under the page title, below `.date-line` when there is one. Emitted from the `byline` frontmatter field on any page kind — articles and folder-index pages alike — one `.moss-byline-row` per authored line. Absent when the field is.",
     },
     ComponentEntry {
         class: "moss-byline-row",
@@ -2020,7 +2009,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Credit block at the FOOT of the article, emitted from the `colophon` frontmatter field — where the piece first ran, contributor biographies, production credits. Same rows as `.moss-byline`, different end of the page. Unrelated to `.review-colophon`, which is the review feature's book card.",
+        description: "Credit block at the FOOT of the page, emitted from the `colophon` frontmatter field — where the piece first ran, contributor biographies, production credits. Same rows as `.moss-byline`, different end of the page. Emitted on any page kind: inside `<article>` on an article page, and after the children listing on a folder-index page, where the enclosing element is not an `<article>` despite the class name. Unrelated to `.review-colophon`, which is the review feature's book card.",
     },
     ComponentEntry {
         class: "moss-article-colophon-row",

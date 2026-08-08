@@ -173,7 +173,7 @@ pub struct FrontMatter {
     #[serde(default, deserialize_with = "deserialize_credit_rows")]
     pub byline: Option<Vec<String>>,
     /// Colophon: the same kind of credit rows as `byline`, rendered at the
-    /// FOOT of the article instead of under the title.
+    /// FOOT of the page instead of under the title.
     ///
     /// ```yaml
     /// colophon: |

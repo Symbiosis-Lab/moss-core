@@ -263,7 +263,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         one_of_members: Some(CREDIT_ROW_MEMBERS),
         // Frequency=2, Importance=3 → score = 100 - (2*6 + 3*4) = 76
         score: 76,
-        description: "Credit lines shown under the article title, one row per line (or per list entry). Rendered as inline markdown, so a row may carry links. A display string, not structured data — moss makes no machine claim about who did what, and this is independent of `author`.",
+        description: "Credit lines shown under the page title — articles and folder-index pages alike — one row per line (or per list entry). Rendered as inline markdown, so a row may carry links. A display string, not structured data — moss makes no machine claim about who did what, and this is independent of `author`.",
         label_key: "chip.byline.label",
         group: "This Page",
         ..FIELD_DEFAULTS
@@ -276,7 +276,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         one_of_members: Some(CREDIT_ROW_MEMBERS),
         // Frequency=2, Importance=2 → score = 100 - (2*6 + 2*4) = 80
         score: 78,
-        description: "Credit lines shown at the foot of the article — where the piece first ran, contributor biographies, production credits. Same shapes and inline-markdown rendering as `byline`; the difference is only where it lands. Everything a reader does not need before the piece belongs here.",
+        description: "Credit lines shown at the foot of the page — where the piece first ran, contributor biographies, production credits. Same shapes and inline-markdown rendering as `byline`; the difference is only where it lands. Everything a reader does not need before the piece belongs here.",
         label_key: "chip.colophon.label",
         group: "This Page",
         ..FIELD_DEFAULTS
