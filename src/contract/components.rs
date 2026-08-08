@@ -1971,7 +1971,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Credit block under the page title, below `.date-line` when there is one. Emitted from the `byline` frontmatter field on any page kind — articles and folder-index pages alike — one `.moss-byline-row` per authored line. Absent when the field is.",
+        description: "Credit block under the page title, below `.date-line` when there is one. Emitted from the `byline` frontmatter field on every page kind — articles, folder indexes, the homepage and plain pages alike — one `.moss-byline-row` per authored line. On a page moss gives no title of its own (the homepage, a `home: true` folder page, a plain page) it sits under the author's own opening `<h1>`, or at the top of the page content when the body has none. Absent when the field is.",
     },
     ComponentEntry {
         class: "moss-byline-row",
@@ -1993,7 +1993,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "Credit block at the FOOT of the page, emitted from the `colophon` frontmatter field — where the piece first ran, contributor biographies, production credits. Same rows as `.moss-byline`, different end of the page. Emitted on any page kind: inside `<article>` on an article page, and after the children listing on a folder-index page, where the enclosing element is not an `<article>` despite the class name. Unrelated to `.review-colophon`, which is the review feature's book card.",
+        description: "Credit block at the FOOT of the page, emitted from the `colophon` frontmatter field — where the piece first ran, contributor biographies, production credits. Same rows as `.moss-byline`, different end of the page. Emitted on every page kind: inside `<article>` on an article page, and last in the page content everywhere else — after the children listing on a folder index or the homepage — where the enclosing element is not an `<article>` despite the class name. Unrelated to `.review-colophon`, which is the review feature's book card.",
     },
     ComponentEntry {
         class: "moss-article-colophon-row",
