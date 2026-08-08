@@ -1858,22 +1858,6 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Excerpt slot inside `.moss-preview-popup` (auto-extracted from the linked article body).",
     },
-    // -------------------------------------------------------------------
-    // Missing-image fallback marker — added by the inline
-    // `#moss-img-fallback` script in shell.html at runtime, when an <img>
-    // fails to load.
-    // -------------------------------------------------------------------
-    ComponentEntry {
-        class: "moss-img-fallback",
-        kind: "chrome",
-        parent: "",
-        data_attrs: &[],
-        example_html: r#"<img class="site-logo moss-img-fallback" src="data:image/svg+xml,..." alt="" aria-hidden="true">"#,
-        example_markdown: "",
-        status: Status::Confirmed,
-        since: "0",
-        description: "Marker class a capture-phase `error` listener (inlined in shell.html, not a separate hashed asset) adds to any <img> whose load fails (deleted/renamed/typo'd source — never enters moss's AssetRegistry, so nothing server-side can placeholder it). The browser's native broken-image icon never appears: the script swaps the <img>'s OWN `src` in place to a self-contained blueprint-grid-pattern SVG data URI (same blueprint-blue as the animated frontend/app/components/blueprint-grid.ts canvas, without the per-instance canvas/RAF cost) and strips any enclosing <picture>'s <source> children — it does NOT replace the element, so every context-specific sizing/fit rule (.moss-card-cover > img, .moss-hero img, .site-logo, …) keeps applying because the <img>'s tag, class list, and other attributes are untouched.",
-    },
     ComponentEntry {
         class: "moss-colophon",
         kind: "chrome",
