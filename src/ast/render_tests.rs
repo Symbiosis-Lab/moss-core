@@ -571,12 +571,116 @@ fn figure_renders_with_caption() {
         "expected figure wrap, got: {html}"
     );
     assert!(html.contains(r#"src="logo.png""#), "got: {html}");
-    assert!(html.contains(r#"alt="A logo""#), "got: {html}");
+    // The visible caption is the image's description, so the `alt` must
+    // not say it a second time — a screen reader would announce the same
+    // sentence twice (once as the accessible name, once as the caption).
+    assert!(html.contains(r#"alt="""#), "got: {html}");
     assert!(
         html.contains("<figcaption>A logo</figcaption>"),
         "got: {html}"
     );
+    assert_eq!(
+        html.matches("A logo").count(),
+        1,
+        "caption text must appear exactly once (caption only): {html}"
+    );
     assert!(html.ends_with("</figure>\n"), "got: {html}");
+}
+
+#[test]
+fn figure_without_caption_keeps_alt_as_the_accessible_name() {
+    // The other half of the rule: no `<figcaption>` means nothing else
+    // describes the image, so `alt` is its ONLY accessible name and must
+    // survive. (Reachable via a width-only embed, e.g. `![[p.jpg|55%]]`
+    // carrying an alt, and via any future caption-less figure.)
+    let html = render(vec![Block::Figure {
+        image: Inline::Image {
+            src: Url::resolved("p.jpg", UrlKind::Asset),
+            alt: "A photo of the wall".into(),
+            title: None,
+            is_wikilink: true,
+            wikilink_pothole: None,
+        },
+        caption: None,
+        width: Some("55%".to_string()),
+        align: None,
+        class_names: Vec::new(),
+        img_style: None,
+    }]);
+    assert!(
+        html.contains(r#"alt="A photo of the wall""#),
+        "an uncaptioned figure must keep its alt: {html}"
+    );
+    assert!(!html.contains("<figcaption"), "got: {html}");
+}
+
+#[test]
+fn wikilink_alias_lands_in_the_caption_only_not_also_in_alt() {
+    // The reported defect: `![[cover.jpg|credit line]]` put the alias in
+    // BOTH `alt=` and `<figcaption>`, so assistive tech read it twice.
+    // This is the no-graph (parser) twin of the dispatcher path in
+    // `resolve::wikilink_dispatch`; both build the same `Block::Figure`
+    // and both are de-duplicated by the one renderer.
+    let md = "![[cover.jpg|Photo: Kyiv memorial wall]]\n";
+    let mut doc = super::super::parser::parse(md);
+    super::super::visit::visit_urls_mut(&mut doc, |u| {
+        if let Url::Unresolved(s) = u {
+            *u = Url::resolved(s.clone(), UrlKind::Asset)
+        }
+    });
+    let html = render_document(&doc, &DefaultHooks::new());
+    assert!(
+        html.contains("<figcaption>Photo: Kyiv memorial wall</figcaption>"),
+        "alias must still be the visible caption: {html}"
+    );
+    assert!(
+        html.contains(r#"alt="""#),
+        "alias must NOT repeat in alt: {html}"
+    );
+}
+
+#[test]
+fn uncaptioned_wikilink_alias_stays_in_alt() {
+    // The trap case: with `implicit_figure = false` there is no figure and
+    // no caption, so the alias is the image's only accessible name. It
+    // must stay in `alt=` — stripping it here would silently un-name every
+    // image on an opted-out site.
+    let md = "![[cover.jpg|Photo: Kyiv memorial wall]]\n";
+    let cfg = super::super::parser::ParseConfig {
+        implicit_figure: false,
+        ..Default::default()
+    };
+    let mut doc = super::super::parser::parse_with_config(md, &cfg);
+    super::super::visit::visit_urls_mut(&mut doc, |u| {
+        if let Url::Unresolved(s) = u {
+            *u = Url::resolved(s.clone(), UrlKind::Asset)
+        }
+    });
+    let html = render_document(&doc, &DefaultHooks::new());
+    assert!(!html.contains("<figure"), "got: {html}");
+    assert!(
+        html.contains(r#"alt="Photo: Kyiv memorial wall""#),
+        "an uncaptioned image keeps the alias as its accessible name: {html}"
+    );
+}
+
+#[test]
+fn inline_wikilink_alias_inside_prose_stays_in_alt() {
+    // Same trap, different shape: an image embedded mid-paragraph never
+    // becomes a figure, so its alias is the only accessible name.
+    let md = "Text before ![[cover.jpg|Photo: Kyiv memorial wall]] text after\n";
+    let mut doc = super::super::parser::parse(md);
+    super::super::visit::visit_urls_mut(&mut doc, |u| {
+        if let Url::Unresolved(s) = u {
+            *u = Url::resolved(s.clone(), UrlKind::Asset)
+        }
+    });
+    let html = render_document(&doc, &DefaultHooks::new());
+    assert!(!html.contains("<figcaption"), "got: {html}");
+    assert!(
+        html.contains(r#"alt="Photo: Kyiv memorial wall""#),
+        "got: {html}"
+    );
 }
 
 #[test]

@@ -676,7 +676,7 @@ fn dispatch_image_plain_emits_figure_block() {
 }
 
 #[test]
-fn dispatch_image_caption_text_sets_alt_and_figcaption() {
+fn dispatch_image_caption_text_keeps_alt_in_the_node_but_not_in_the_html() {
     use crate::ast::node::{Block, Inline};
     let emit = dispatch_img(Some("My caption"));
     match figure_of(&emit) {
@@ -687,6 +687,9 @@ fn dispatch_image_caption_text_sets_alt_and_figcaption() {
                 Inline::Text(t) => assert_eq!(t, "My caption"),
                 other => panic!("expected caption Text, got {other:?}"),
             }
+            // The NODE keeps the alias in `alt` — it is the alias's only
+            // home, and consumers that never see a caption (plain-text
+            // extraction, an unwound figure) read it from here.
             match image {
                 Inline::Image { alt, .. } => assert_eq!(alt, "My caption"),
                 other => panic!("expected Image, got {other:?}"),
@@ -694,8 +697,12 @@ fn dispatch_image_caption_text_sets_alt_and_figcaption() {
         }
         other => panic!("expected Figure, got {other:?}"),
     }
+    // The HTML does not: the `<figcaption>` is already announced as part
+    // of the figure, so repeating it in `alt` makes a screen reader say
+    // the same sentence twice. The renderer drops it — see
+    // `ast::render`'s Figure arm.
     let html = render_figure(&emit);
-    assert!(html.contains(r#"alt="My caption""#), "got: {html}");
+    assert!(html.contains(r#"alt="""#), "got: {html}");
     assert!(
         html.contains("<figcaption>My caption</figcaption>"),
         "got: {html}"
