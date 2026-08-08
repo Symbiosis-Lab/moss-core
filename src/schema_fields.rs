@@ -167,6 +167,26 @@ const SERIES_MEMBERS: &[BuiltinField] = &[
     },
 ];
 
+/// Union members shared by `byline` and `colophon`: one credit string
+/// (typically a block scalar, one credit per line) OR a list of credit
+/// strings. Both forms normalize to the same row list via
+/// `frontmatter_union::normalize_credit_rows`.
+const CREDIT_ROW_MEMBERS: &[BuiltinField] = &[
+    BuiltinField {
+        name: "",
+        field_type: FieldType::String,
+        widget: Widget::TextArea,
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "",
+        field_type: FieldType::Array,
+        widget: Widget::TagInput,
+        items_type: Some(FieldType::String),
+        ..FIELD_DEFAULTS
+    },
+];
+
 /// All builtin frontmatter fields recognized by moss.
 ///
 /// This table drives the editor schema (via `builtin_schema()`). The `FrontMatter`
@@ -227,6 +247,37 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         score: 70,
         description: "Author name (or 'A and B' / 'A, B, and C' for co-authors). Captured by moss import from JSON-LD / OpenGraph.",
         label_key: "chip.author.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "byline",
+        // OneOf, but NOT the union WIDGET. The type is a union because the
+        // field genuinely accepts a string or a list of strings, and the
+        // validator would otherwise flag the list form on a valid file. The
+        // widget is a plain text area because the union chip editor is a
+        // bool toggle plus a wikilink picker (`children` / `series`), which
+        // is the wrong instrument for credit text.
+        field_type: FieldType::OneOf,
+        widget: Widget::TextArea,
+        one_of_members: Some(CREDIT_ROW_MEMBERS),
+        // Frequency=2, Importance=3 → score = 100 - (2*6 + 3*4) = 76
+        score: 76,
+        description: "Credit lines shown under the article title, one row per line (or per list entry). Rendered as inline markdown, so a row may carry links. A display string, not structured data — moss makes no machine claim about who did what, and this is independent of `author`.",
+        label_key: "chip.byline.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "colophon",
+        // Same shape as `byline` (see the note there on OneOf + TextArea).
+        field_type: FieldType::OneOf,
+        widget: Widget::TextArea,
+        one_of_members: Some(CREDIT_ROW_MEMBERS),
+        // Frequency=2, Importance=2 → score = 100 - (2*6 + 2*4) = 80
+        score: 78,
+        description: "Credit lines shown at the foot of the article — where the piece first ran, contributor biographies, production credits. Same shapes and inline-markdown rendering as `byline`; the difference is only where it lands. Everything a reader does not need before the piece belongs here.",
+        label_key: "chip.colophon.label",
         group: "This Page",
         ..FIELD_DEFAULTS
     },

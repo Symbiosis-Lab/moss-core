@@ -224,6 +224,15 @@ fn repeated_reference_gets_one_note_and_one_backref_each() {
     assert_backrefs_resolve(&html);
 }
 
+/// The back-arrow must carry VARIATION SELECTOR-15 (`&#xFE0E;`) right after
+/// U+21A9. Without it, Chrome on Android/iOS picks the emoji presentation and
+/// the link renders as a coloured glyph instead of matching the body text.
+#[test]
+fn backref_arrow_forces_text_presentation() {
+    let html = render("A[^1].\n\n[^1]: note\n");
+    assert!(html.contains("&#8617;&#xFE0E;</a>"), "{html}");
+}
+
 #[test]
 fn marker_inside_a_note_body_is_numbered_and_backlinked() {
     // The ordering trap: note 1's body carries a marker, so the back-link

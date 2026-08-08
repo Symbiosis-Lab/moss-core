@@ -423,6 +423,12 @@ pub fn render_section<H: RenderHooks + ?Sized>(
 }
 
 /// One return arrow per marker, so a note referenced twice ends with two.
+///
+/// The arrow is `&#8617;&#xFE0E;`: U+21A9 followed by VARIATION SELECTOR-15,
+/// which forces text presentation. Without it, Chrome on Android/iOS picks the
+/// emoji form and the back-link renders as a coloured glyph instead of matching
+/// the surrounding body text. Same treatment as the comment reply button
+/// (`build/features/comment/render.rs`).
 fn push_backrefs(out: &mut String, n: usize, count: usize) {
     for k in 1..=count {
         let id = marker_id(n, k);
@@ -433,7 +439,7 @@ fn push_backrefs(out: &mut String, n: usize, count: usize) {
         };
         let _ = write!(
             out,
-            r##" <a class="moss-footnote-backref" href="#{id}" role="doc-backlink" aria-label="Back to reference {n}{nth}">&#8617;</a>"##
+            r##" <a class="moss-footnote-backref" href="#{id}" role="doc-backlink" aria-label="Back to reference {n}{nth}">&#8617;&#xFE0E;</a>"##
         );
     }
 }

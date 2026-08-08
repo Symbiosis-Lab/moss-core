@@ -1635,6 +1635,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Body content slot inside `.moss-collection-cover`.",
     },
+    ComponentEntry {
+        class: "moss-collection-description",
+        kind: "standalone",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<p class="moss-collection-description">Notes on typography and the printed page.</p>"#,
+        example_markdown: "---\ntitle: Typography\ndescription: Notes on typography and the printed page.\n---\n",
+        status: Status::Emerging,
+        since: "1",
+        description: "The standfirst on a folder-index page: the frontmatter `description:` printed once, under the page title. Folder indexes only — article pages never emit it, because an article's `description:` is usually a scraped first paragraph and printing it would repeat the paragraph directly below. Sits inside `.moss-collection-cover-body` when the folder has a `cover:`, and directly after `.moss-folder-title` when it does not. Plain text, HTML-escaped, not markdown-rendered — the same string that goes into `<meta name=\"description\">`.",
+    },
     // -------------------------------------------------------------------
     // Form primitives (input, label, field, link).
     // -------------------------------------------------------------------
@@ -1964,6 +1975,50 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Confirmed,
         since: "0",
         description: "The formatted publication date inside `.date-line`. Text is localized to the page's language.",
+    },
+    ComponentEntry {
+        class: "moss-byline",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-byline"><div class="moss-byline-row">作者　糜緒洋</div><div class="moss-byline-row">編輯　謝丁</div></div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "Credit block under the article title, below `.date-line`. Emitted from the `byline` frontmatter field, one `.moss-byline-row` per authored line. Absent when the field is.",
+    },
+    ComponentEntry {
+        class: "moss-byline-row",
+        kind: "instance",
+        parent: "moss-byline",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-byline-row">首發媒體　<a href="https://theinitium.com/a">端傳媒</a></div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "One credit line. Its content is the author's text rendered as inline markdown, so a row may contain links or emphasis. moss does not know which part is a role and which is a name — style the whole row.",
+    },
+    ComponentEntry {
+        class: "moss-article-colophon",
+        kind: "container",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-article-colophon"><div class="moss-article-colophon-row">首發媒體　<a href="https://theinitium.com/a">端傳媒</a></div></div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "Credit block at the FOOT of the article, emitted from the `colophon` frontmatter field — where the piece first ran, contributor biographies, production credits. Same rows as `.moss-byline`, different end of the page. Unrelated to `.review-colophon`, which is the review feature's book card.",
+    },
+    ComponentEntry {
+        class: "moss-article-colophon-row",
+        kind: "instance",
+        parent: "moss-article-colophon",
+        data_attrs: &[],
+        example_html: r#"<div class="moss-article-colophon-row">封面　基輔米迦勒修道院門口的陣亡將士紀念牆（拍攝：糜緒洋）</div>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "One foot-credit line, rendered as inline markdown exactly like `.moss-byline-row`.",
     },
     ComponentEntry {
         class: "site-name",
@@ -2558,7 +2613,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         data_attrs: &[],
         example_html: r##"<section class="moss-footnotes" role="doc-endnotes">
 <ol>
-<li id="fn-1"><p>The note. <a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;</a></p>
+<li id="fn-1"><p>The note. <a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;&#xFE0E;</a></p>
 </li>
 </ol>
 </section>"##,
@@ -2583,11 +2638,11 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         kind: "instance",
         parent: "moss-footnotes",
         data_attrs: &[],
-        example_html: r##"<a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;</a>"##,
+        example_html: r##"<a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;&#xFE0E;</a>"##,
         example_markdown: "Text[^1].\n\n[^1]: The note.",
         status: Status::Emerging,
         since: "1",
-        description: "The return arrow at the end of a note, linking back to the marker that sent the reader there. One per marker, so a note referenced twice ends with two arrows. A note nobody referenced has none.",
+        description: "The return arrow at the end of a note, linking back to the marker that sent the reader there. One per marker, so a note referenced twice ends with two arrows. A note nobody referenced has none. The arrow carries VARIATION SELECTOR-15 (`&#xFE0E;`) so mobile Chrome renders it as plain text rather than a coloured emoji.",
     },
 ];
 

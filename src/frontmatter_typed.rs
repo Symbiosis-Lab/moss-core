@@ -154,6 +154,41 @@ pub struct FrontMatter {
     /// Author name. Single name or pre-formatted list ("A and B", "A, B, and C").
     /// Captured automatically by `moss import` from JSON-LD / OpenGraph metadata.
     pub author: Option<String>,
+    /// Byline shown under the article title: the credit lines a reader sees,
+    /// as the author wrote them. One row per list entry, or per line of a
+    /// block scalar:
+    ///
+    /// ```yaml
+    /// byline: |
+    ///   作者　糜緒洋
+    ///   編輯　謝丁
+    ///   首發媒體　[端傳媒](https://…)
+    /// ```
+    ///
+    /// A display string, not structured data: moss renders each row as inline
+    /// markdown and makes no machine claim about who did what. That is
+    /// deliberate — `author:` is used for the *editor* on real sites, so
+    /// asserting roles from credit text would put false statements in
+    /// structured data. Independent of `author:`, which stays a plain name.
+    #[serde(default, deserialize_with = "deserialize_credit_rows")]
+    pub byline: Option<Vec<String>>,
+    /// Colophon: the same kind of credit rows as `byline`, rendered at the
+    /// FOOT of the article instead of under the title.
+    ///
+    /// ```yaml
+    /// colophon: |
+    ///   首發媒體　[端傳媒](https://…)、[單讀](https://…)
+    ///   封面　基輔米迦勒修道院門口的陣亡將士紀念牆（拍攝：糜緒洋）
+    ///   編輯　謝丁，記者、作家，曾任《正午》主編
+    /// ```
+    ///
+    /// Two fields rather than one because publications agree on the split: a
+    /// byline holds the two or three names a reader needs before the piece,
+    /// and everything else — contributor biographies, where it first ran,
+    /// production credits — belongs after it. Same shapes, same inline
+    /// markdown, same "display string, no machine claims" rule.
+    #[serde(default, deserialize_with = "deserialize_credit_rows")]
+    pub colophon: Option<Vec<String>>,
     /// Publishing outlet name (for imported pages). `moss import` resolves this
     /// from schema.org `publisher` (via `@id` ref to an `Organization` entry)
     /// or OpenGraph `og:site_name`, falling back to the URL host.
@@ -365,6 +400,30 @@ pub fn project_typed(values: &serde_yaml::Mapping) -> (FrontMatter, Vec<FieldWar
     let fm = serde_yaml::from_value::<FrontMatter>(serde_yaml::Value::Mapping(sanitized))
         .unwrap_or_default();
     (fm, warnings)
+}
+
+/// Deserialize a credit-row union (`byline`, `colophon`): one string, or a
+/// list of strings.
+///
+/// Hand-rolled rather than `#[serde(untagged)]`. An untagged enum reports
+/// every mismatch as "data did not match any variant of untagged enum" — a
+/// message that names neither the field nor what was wrong, and which
+/// `project_typed`'s per-field isolation would then hand to the author
+/// verbatim. Going through [`crate::frontmatter_union::normalize_credit_rows`]
+/// gives the author "byline: expected a string or a list of strings, found a
+/// number" AND keeps one definition of what the shapes mean, shared with the
+/// editor.
+///
+/// An empty result (`byline: ""`, `byline: []`, blank lines only) is `None`:
+/// nothing to display is the same as absent, and no empty row is emitted.
+pub fn deserialize_credit_rows<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = Value::deserialize(deserializer)?;
+    let rows = crate::frontmatter_union::normalize_credit_rows(&value).map_err(D::Error::custom)?;
+    Ok(if rows.is_empty() { None } else { Some(rows) })
 }
 
 /// Deserialize a bool that may be a YAML string ("true"/"false") or a native bool.
@@ -1050,6 +1109,78 @@ mod project_typed_tests {
         let keys: std::collections::HashSet<_> = warnings.iter().map(|w| w.key.as_str()).collect();
         assert!(keys.contains("weight"));
         assert!(keys.contains("tags"));
+    }
+
+    // --- byline / colophon: the shapes an author actually writes, parsed from
+    //     real YAML.
+    //     Row-splitting rules live in frontmatter_union's decision table; what
+    //     these pin is that the hand-rolled deserializer is wired to it and
+    //     that a bad value drops only itself. ---
+
+    fn byline_of(yaml: &str) -> (Option<Vec<String>>, Vec<FieldWarning>) {
+        let m: serde_yaml::Mapping = serde_yaml::from_str(yaml).expect("test yaml parses");
+        let (fm, warnings) = project_typed(&m);
+        (fm.byline, warnings)
+    }
+
+    #[test]
+    fn byline_accepts_a_block_scalar_with_a_markdown_link() {
+        let (byline, warnings) = byline_of(
+            "byline: |\n  作者　糜緒洋\n  編輯　謝丁\n  首發媒體　[端傳媒](https://theinitium.com/a)\n",
+        );
+        assert_eq!(
+            byline.unwrap(),
+            vec![
+                "作者　糜緒洋",
+                "編輯　謝丁",
+                "首發媒體　[端傳媒](https://theinitium.com/a)"
+            ]
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn byline_accepts_a_list() {
+        let (byline, warnings) = byline_of("byline:\n  - 作者　糜緒洋\n  - 編輯　謝丁\n");
+        assert_eq!(byline.unwrap(), vec!["作者　糜緒洋", "編輯　謝丁"]);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn byline_absent_or_empty_is_none() {
+        assert_eq!(byline_of("title: T\n").0, None, "absent");
+        assert_eq!(byline_of("byline: \"\"\n").0, None, "empty string");
+        assert_eq!(byline_of("byline: []\n").0, None, "empty list");
+    }
+
+    #[test]
+    fn colophon_parses_like_byline_and_is_independent_of_it() {
+        let m: serde_yaml::Mapping = serde_yaml::from_str(
+            "byline: 作者　糜緒洋\ncolophon: |\n  首發媒體　[端傳媒](https://theinitium.com/a)\n  封面　拍攝：糜緒洋\n",
+        )
+        .expect("yaml parses");
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.byline.unwrap(), vec!["作者　糜緒洋"]);
+        assert_eq!(
+            fm.colophon.unwrap(),
+            vec!["首發媒體　[端傳媒](https://theinitium.com/a)", "封面　拍攝：糜緒洋"]
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn byline_of_the_wrong_shape_drops_only_itself() {
+        let m: serde_yaml::Mapping =
+            serde_yaml::from_str("title: T\nbyline: 42\n").expect("yaml parses");
+        let (fm, warnings) = project_typed(&m);
+        assert_eq!(fm.title.as_deref(), Some("T"), "neighbour survives");
+        assert_eq!(fm.byline, None);
+        let w = warnings.iter().find(|w| w.key == "byline").expect("byline flagged");
+        assert!(
+            w.message.contains("a string or a list of strings"),
+            "the author is told what byline accepts, not 'untagged enum': {}",
+            w.message
+        );
     }
 }
 

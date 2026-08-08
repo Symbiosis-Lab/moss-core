@@ -332,7 +332,9 @@ mod tests {
         // (`listed` added 2026-06 — off-feed-but-indexable axis, orthogonal to `draft`.)
         // (`layout` un-hidden 2026-07-31 — it was mismarked skip_schema, which
         // hid it from the editor chip bar despite being a real per-page control.)
-        assert_eq!(schema.frontmatter.fields.len(), 36);
+        // (`byline`/`colophon` added 2026-08 — authored credit rows rendered at
+        // the head and the foot of an article.)
+        assert_eq!(schema.frontmatter.fields.len(), 38);
     }
 
     #[test]

@@ -1,7 +1,9 @@
-//! Normalization for union-typed frontmatter fields (`children`, `series`).
+//! Normalization for union-typed frontmatter fields (`children`, `series`,
+//! `byline`, `colophon`).
 //!
 //! These fields accept more than one authored shape — `children` is a bool OR a
-//! wikilink/path string; `series` is a bool OR an ordered list of wikilinks. The
+//! wikilink/path string; `series` is a bool OR an ordered list of wikilinks;
+//! `byline` and `colophon` are one credit string OR a list of them. The
 //! schema models them as [`crate::schema::FieldType::OneOf`]; this module is the
 //! SINGLE place that maps an authored value to its canonical resolved form.
 //!
@@ -95,6 +97,83 @@ pub fn normalize_series(v: &Value) -> SeriesNorm {
             SeriesNorm { series: true, order: Some(order) }
         }
         _ => SeriesNorm { series: false, order: None },
+    }
+}
+
+/// Normalize an authored credit value — `byline:` or `colophon:` — into its
+/// display rows.
+///
+/// Both are plain display strings, one row per authored entry, and they differ
+/// only in where they render (head vs foot), so they share this one rule. A
+/// single string is one row; a YAML block scalar is one row per line (real
+/// bylines run to three: writer, editor, first publisher); a list is one row
+/// per item, and an item that itself spans lines splits further. Blank lines
+/// are dropped and every row is trimmed, so the trailing newline a block
+/// scalar always carries never becomes an empty row.
+///
+/// | Input value                                | Output                       |
+/// |--------------------------------------------|------------------------------|
+/// | `String("作者 糜緒洋")`                      | `["作者 糜緒洋"]`             |
+/// | block scalar `"作者 X\n編輯 Y\n"`            | `["作者 X", "編輯 Y"]`        |
+/// | `Sequence(["作者 X", "編輯 Y"])`             | `["作者 X", "編輯 Y"]`        |
+/// | `String("")` / whitespace / empty sequence  | `[]`                         |
+/// | `Null`                                      | `[]`                         |
+/// | `Bool` / `Number` / `Mapping`               | `Err(_)`                     |
+/// | sequence holding a non-string item          | `Err(_)`                     |
+///
+/// Errors carry an author-facing message naming the shape that was found.
+/// This is why the field does NOT use `#[serde(untagged)]`: an untagged enum
+/// collapses every failure into "data did not match any variant of untagged
+/// enum", which names neither the field nor the problem.
+pub fn normalize_credit_rows(v: &Value) -> Result<Vec<String>, String> {
+    fn push_rows(out: &mut Vec<String>, raw: &str) {
+        for line in raw.lines() {
+            let t = line.trim();
+            if !t.is_empty() {
+                out.push(t.to_string());
+            }
+        }
+    }
+
+    let mut rows = Vec::new();
+    match v {
+        Value::Null => {}
+        Value::String(s) => push_rows(&mut rows, s),
+        Value::Sequence(items) => {
+            for it in items {
+                match it {
+                    Value::String(s) => push_rows(&mut rows, s),
+                    Value::Null => {}
+                    other => {
+                        return Err(format!(
+                            "expected a string or a list of strings, found a list holding {}",
+                            shape_name(other)
+                        ))
+                    }
+                }
+            }
+        }
+        other => {
+            return Err(format!(
+                "expected a string or a list of strings, found {}",
+                shape_name(other)
+            ))
+        }
+    }
+    Ok(rows)
+}
+
+/// Author-facing name for a YAML value's shape, used in `normalize_credit_rows`
+/// errors. Deliberately plain words, not serde type names.
+fn shape_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "nothing",
+        Value::Bool(_) => "a true/false value",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Sequence(_) => "a list",
+        Value::Mapping(_) => "a set of key/value pairs",
+        Value::Tagged(_) => "a tagged value",
     }
 }
 
@@ -232,5 +311,54 @@ mod tests {
         let raw = s("[[News]]");
         let reexpressed = serde_yaml::to_value("[[News]]").unwrap();
         assert_eq!(normalize_children(&raw), normalize_children(&reexpressed));
+    }
+
+    // --- normalize_credit_rows: one assertion per decision-table row ---
+
+    #[test]
+    fn credit_single_string_is_one_row() {
+        assert_eq!(normalize_credit_rows(&s("作者 糜緒洋")).unwrap(), vec!["作者 糜緒洋"]);
+    }
+
+    #[test]
+    fn credit_block_scalar_is_one_row_per_line() {
+        // What `byline: |` yields: lines plus the trailing newline it always carries.
+        let block = s("作者　糜緒洋\n編輯　謝丁\n首發媒體　[端傳媒](https://x)\n");
+        assert_eq!(
+            normalize_credit_rows(&block).unwrap(),
+            vec!["作者　糜緒洋", "編輯　謝丁", "首發媒體　[端傳媒](https://x)"]
+        );
+    }
+
+    #[test]
+    fn credit_list_is_one_row_per_item() {
+        let seq = Value::Sequence(vec![s("作者 X"), s("編輯 Y")]);
+        assert_eq!(normalize_credit_rows(&seq).unwrap(), vec!["作者 X", "編輯 Y"]);
+    }
+
+    #[test]
+    fn credit_rows_are_trimmed_and_blank_lines_dropped() {
+        assert_eq!(
+            normalize_credit_rows(&s("  作者 X  \n\n   \n編輯 Y\n")).unwrap(),
+            vec!["作者 X", "編輯 Y"]
+        );
+    }
+
+    #[test]
+    fn credit_empty_shapes_yield_no_rows() {
+        assert!(normalize_credit_rows(&s("")).unwrap().is_empty());
+        assert!(normalize_credit_rows(&s("   \n  ")).unwrap().is_empty());
+        assert!(normalize_credit_rows(&Value::Sequence(vec![])).unwrap().is_empty());
+        assert!(normalize_credit_rows(&Value::Null).unwrap().is_empty());
+    }
+
+    #[test]
+    fn credit_wrong_shapes_report_what_was_found() {
+        let err = normalize_credit_rows(&Value::Bool(true)).unwrap_err();
+        assert!(err.contains("true/false"), "message names the shape: {err}");
+        let err = normalize_credit_rows(&Value::Mapping(Default::default())).unwrap_err();
+        assert!(err.contains("key/value"), "message names the shape: {err}");
+        let err = normalize_credit_rows(&Value::Sequence(vec![s("作者 X"), Value::Bool(true)])).unwrap_err();
+        assert!(err.contains("list holding"), "message names the offending item: {err}");
     }
 }
