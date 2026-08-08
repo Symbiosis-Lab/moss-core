@@ -653,6 +653,47 @@ mod tests {
         assert_eq!(arr_errs.len(), 1);
     }
 
+    /// `sort:` takes an axis name or a list of child stems. The build has
+    /// always honoured both and the field's own description documents both,
+    /// but the schema declared a bare string — so a real site emitted
+    /// "field 'sort' has wrong type: expected string, got array" on every
+    /// folder index that spelled its order out. Both forms validate clean;
+    /// a bad axis name is still an error.
+    #[test]
+    fn sort_accepts_an_axis_name_or_an_explicit_list() {
+        let schema = builtin_schema();
+        let errors = |fm: &HashMap<String, serde_yaml::Value>| -> Vec<String> {
+            validate_frontmatter(fm, &schema)
+                .into_iter()
+                .filter(|d| d.severity == Severity::Error)
+                .map(|d| d.message)
+                .collect()
+        };
+
+        let list = make_fm(&[
+            ("title", str_val("Test")),
+            (
+                "sort",
+                serde_yaml::Value::Sequence(vec![
+                    str_val("上篇"),
+                    str_val("中篇"),
+                    str_val("下篇"),
+                ]),
+            ),
+        ]);
+        assert!(errors(&list).is_empty(), "list form: {:?}", errors(&list));
+
+        let axis = make_fm(&[("title", str_val("Test")), ("sort", str_val("weight"))]);
+        assert!(errors(&axis).is_empty(), "axis form: {:?}", errors(&axis));
+
+        let bogus = make_fm(&[("title", str_val("Test")), ("sort", str_val("banana"))]);
+        assert!(
+            errors(&bogus).iter().any(|m| m.contains("invalid value 'banana'")),
+            "an unknown axis name must still be rejected: {:?}",
+            errors(&bogus)
+        );
+    }
+
     #[test]
     fn test_valid_integer_field() {
         let schema = builtin_schema();

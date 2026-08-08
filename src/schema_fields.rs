@@ -167,6 +167,29 @@ const SERIES_MEMBERS: &[BuiltinField] = &[
     },
 ];
 
+/// Union members for `sort`: a named axis (`date` / `weight` / `title`) OR a
+/// list of child stems giving the explicit order. Both forms have always been
+/// honoured by the build and both are documented in the field's own
+/// description; declaring the field as a bare string made the list form —
+/// `sort: [上篇, 中篇, 下篇]` — report "wrong type: expected string, got array"
+/// on every folder index that used it.
+const SORT_MEMBERS: &[BuiltinField] = &[
+    BuiltinField {
+        name: "",
+        field_type: FieldType::String,
+        widget: Widget::Select,
+        enum_values: Some(&["date", "weight", "title"]),
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "",
+        field_type: FieldType::Array,
+        widget: Widget::TagInput,
+        items_type: Some(FieldType::String),
+        ..FIELD_DEFAULTS
+    },
+];
+
 /// Union members shared by `byline` and `colophon`: one credit string
 /// (typically a block scalar, one credit per line) OR a list of credit
 /// strings. Both forms normalize to the same row list via
@@ -537,8 +560,15 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
     },
     BuiltinField {
         name: "sort",
-        field_type: FieldType::String,
+        // OneOf, but NOT the union WIDGET — same reasoning as `byline`. The
+        // type is a union because the field genuinely accepts an axis name or
+        // a list of child stems; the widget stays a select over the three axes
+        // because that is what an author picks from in the common case.
+        // `enum_values` stays on the parent so `sort: banana` is still an
+        // error: the enum check only fires on string values and ignores lists.
+        field_type: FieldType::OneOf,
         widget: Widget::Select,
+        one_of_members: Some(SORT_MEMBERS),
         enum_values: Some(&["date", "weight", "title"]),
         // Frequency=3, Importance=3 → score = 100 - (3*6 + 3*4) = 70
         score: 70,
@@ -554,7 +584,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         one_of_members: Some(SERIES_MEMBERS),
         // Frequency=0, Importance=2 → score=92
         score: 92,
-        description: "Declares children as sequential series. Use true for weight-based ordering, or a list of wikilinks for explicit order.",
+        description: "Declares children as a sequential series. On a folder index: true turns prev/next on for its children, a list of wikilinks declares their order, false turns the sequence off. On a page inside such a folder, `series: false` takes that page out of the reading order entirely — it keeps its place in the folder listing, shows no prev/next of its own, and stops being any sibling's prev or next, so an appendix or an editor's note no longer follows the last chapter. Position (\"2 / 3\") counts only the pages still in the order, so a series still being published reads its own length, not its planned one.",
         label_key: "chip.series.label",
         group: "Child Pages",
         ..FIELD_DEFAULTS
