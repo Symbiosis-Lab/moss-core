@@ -892,6 +892,56 @@ fn unresolvable_image_ref_reports_instead_of_guessing() {
 }
 
 #[test]
+fn every_kind_of_missing_media_is_reported_as_blocking() {
+    // "Media" is not just images. A video, an audio file, a PDF and a bare
+    // wikilink embed all reach the reader as a hole in the page, so all four
+    // produce the one diagnostic kind the publish gate refuses on
+    // (`missing_media::refuse_publish`). Marking only images would ship a site
+    // with a dead <video> and call it clean.
+    let graph = graph_with(&["assets/photo.jpg", "post.md"]);
+    for markdown in [
+        "![](clip.mp4)",
+        "![](take.mov)",
+        "![](song.m4a)",
+        "![](paper.pdf)",
+        "![[clip.mp4]]",
+    ] {
+        let mut doc = parse(markdown);
+        let found = resolve_urls(&mut doc, &graph, "post.md");
+        let blocking: Vec<_> = found
+            .diagnostics
+            .iter()
+            .filter(|d| d.kind == DiagnosticKind::MissingAsset)
+            .collect();
+        assert_eq!(
+            blocking.len(),
+            1,
+            "{markdown} must report exactly one missing reference, got {:?}",
+            found.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_resolvable_reference_reports_nothing_to_block_on() {
+    // The other half of the gate: a site whose media all exist must publish.
+    // A false positive here has no override — it would trap the author.
+    let graph = graph_with(&["assets/photo.jpg", "assets/clip.mp4", "post.md"]);
+    for markdown in ["![](photo.jpg)", "![[clip.mp4]]"] {
+        let mut doc = parse(markdown);
+        let found = resolve_urls(&mut doc, &graph, "post.md");
+        assert!(
+            !found
+                .diagnostics
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::MissingAsset),
+            "{markdown} resolves, so nothing may block the publish: {:?}",
+            found.diagnostics
+        );
+    }
+}
+
+#[test]
 fn image_bare_unchanged_from_today() {
     // Gate: bare-filename resolution must find the SAME file via the engine as
     // the old resolve_reference path did. `photo.jpg` from `post.md` →
