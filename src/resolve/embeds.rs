@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use crate::heading::anchor::obsidian_heading_anchor;
 
-use super::Diagnostic;
+use super::{Diagnostic, DiagnosticKind};
 
 /// Maximum recursion depth for nested embeds.
 ///
@@ -106,6 +106,7 @@ fn resolve_embeds_inner(
                     ),
                     source_path: from_path.to_string(),
                     reference: target.to_string(),
+                    kind: DiagnosticKind::Other,
                 });
                 output.push_str(line);
                 output.push('\n');
@@ -118,6 +119,7 @@ fn resolve_embeds_inner(
                     message: format!("Circular embed detected: '{file_path}'"),
                     source_path: from_path.to_string(),
                     reference: target.to_string(),
+                    kind: DiagnosticKind::Other,
                 });
                 output.push_str(line);
                 output.push('\n');
@@ -131,6 +133,7 @@ fn resolve_embeds_inner(
                         message: format!("Embed target not found: '{file_path}'"),
                         source_path: from_path.to_string(),
                         reference: target.to_string(),
+                        kind: DiagnosticKind::Other,
                     });
                     output.push_str(line);
                     output.push('\n');
@@ -150,6 +153,7 @@ fn resolve_embeds_inner(
                                         ),
                                         source_path: from_path.to_string(),
                                         reference: target.to_string(),
+                                        kind: DiagnosticKind::Other,
                                     });
                                     body.to_string()
                                 }
@@ -165,6 +169,7 @@ fn resolve_embeds_inner(
                                         ),
                                         source_path: from_path.to_string(),
                                         reference: target.to_string(),
+                                        kind: DiagnosticKind::Other,
                                     });
                                     body.to_string()
                                 }
@@ -1009,6 +1014,7 @@ mod tests {
                     message: format!("synthetic failure for {}", t),
                     source_path: "".to_string(),
                     reference: t.to_string(),
+                    kind: DiagnosticKind::Other,
                 });
                 "<div class=\"error\"></div>".to_string()
             }),

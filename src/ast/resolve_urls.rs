@@ -32,7 +32,7 @@ use super::visit::visit_urls_mut;
 use crate::content_graph::ContentGraph;
 use crate::resolve::asset_class::{resolve_asset_ref, AssetIndex, AssetResolution};
 use crate::resolve::fuzzy_path::{resolve_reference, ResolvedRef};
-use crate::resolve::{Diagnostic, LinkType, OutgoingLink};
+use crate::resolve::{Diagnostic, DiagnosticKind, LinkType, OutgoingLink};
 
 // ---------------------------------------------------------------------------
 // GraphAssetIndex: adapts ContentGraph to the AssetIndex trait so the pure
@@ -247,6 +247,9 @@ fn resolve_asset_url(
                 message: format!("Unresolved asset reference: {raw}"),
                 source_path: source_path.to_string(),
                 reference: raw.clone(),
+                // The one blocking kind. `raw` is the author's literal
+                // spelling, which is the string they will search for.
+                kind: DiagnosticKind::MissingAsset,
             });
             *url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Asset));
         }
@@ -482,6 +485,7 @@ fn resolve_link_urls(
                     message: format!("Unresolved link target: {raw}"),
                     source_path: source_path.to_string(),
                     reference: raw.clone(),
+                    kind: DiagnosticKind::Other,
                 });
                 *link_url = Url::Resolved(ResolvedUrl::new(raw, UrlKind::Internal));
             }

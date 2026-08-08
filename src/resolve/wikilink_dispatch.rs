@@ -51,7 +51,7 @@ use super::embed_renderer::{
 };
 use super::fuzzy_path::{resolve_reference, ResolvedRef};
 use super::title_params::TitleParams;
-use super::{Diagnostic, LinkType, OutgoingLink};
+use super::{Diagnostic, DiagnosticKind, LinkType, OutgoingLink};
 
 /// Classification of pothole text (`|...` in `[[file|...]]`).
 #[derive(Debug, Clone, PartialEq)]
@@ -655,6 +655,7 @@ fn dispatch_embed_form(
                 message: format!("Unresolved embed: ![[{}]]", split.file),
                 source_path: from_path.to_string(),
                 reference: split.file.to_string(),
+                kind: DiagnosticKind::Other,
             });
 
             WikilinkEmit {
@@ -749,6 +750,7 @@ fn dispatch_wikilink_form(
                 message: format!("Unresolved wikilink: [[{}]]", split.file),
                 source_path: from_path.to_string(),
                 reference: split.file.to_string(),
+                kind: DiagnosticKind::Other,
             });
             WikilinkEmit {
                 output: EmitKind::Link(format!(
