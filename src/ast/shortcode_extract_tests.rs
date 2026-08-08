@@ -954,34 +954,101 @@ fn extracts_grid_with_empty_middle_cell() {
 }
 
 #[test]
-fn nested_grid_via_arity_is_unsupported_authoring() {
-    // Pinning test: `::::grid` (arity 4) wrapping `:::grid` (arity 3)
-    // does NOT cleanly nest. The outer fence's body captures the
-    // inner literally, but `split_grid_cells` then splits the outer's
-    // body on the inner's `+++` divider — mis-attributing the inner's
-    // cells to the outer. There's no separate "nested-cell-divider"
-    // syntax in moss, so this nesting pattern isn't supported.
+fn nested_grid_via_arity_keeps_the_inner_grids_cells_inside_it() {
+    // `::::grid` (arity 4) wrapping `:::grid` (arity 3) is the nesting
+    // form the grammar tells authors to use, and it now parses the way
+    // it reads. The inner grid's `+++` belongs to the inner grid.
     //
-    // Authors who need a "grid inside a grid" should use a CSS region
-    // wrapper (`::::{.outer-grid}`) and set CSS-only column rules.
-    // This test pins the actual extraction behavior so a future
-    // refactor that changes it is visible.
-    let md = "::::grid 1\n:::grid 2\nA\n+++\nB\n:::\n::::\n";
+    // It used to belong to the OUTER one: `split_grid_cells` split the
+    // outer body on any `+++` it saw, so a one-cell outer grid came out
+    // with two cells, each holding half of the inner block's source.
+    // Nothing warned — the page built and looked plausible. Unlike the
+    // same-arity case (#1014) there is no ambiguity here about what the
+    // author meant, so the fix is to parse it, not to warn about it.
+    let md = "::::grid 1\nOuter cell content\n\n:::grid 2\ninner a\n+++\ninner b\n:::\n::::\n";
     let result = extract_shortcodes(md);
-    // The outer ::::grid is extracted; the inner is captured as
-    // literal text and the +++ inside the inner triggers the outer's
-    // own cell split. The inner Grid is NOT a top-level entry.
+
+    // Only the outer grid is a top-level entry; the inner one is nested
+    // inside the outer's single cell.
     assert_eq!(result.extracted.len(), 1);
+    assert!(
+        result.warnings.is_empty(),
+        "correctly-nested arities must not warn: {:?}",
+        result.warnings
+    );
     match &result.extracted[0].shortcode {
         Shortcode::Grid(outer) => {
             assert_eq!(outer.columns, 1);
-            // The +++ in the inner's body split the OUTER's cells,
-            // which is the documented limitation.
-            assert!(
-                outer.cells.len() >= 2,
-                "outer's body got split by inner's +++, demonstrating the \
-                     unsupported-nesting failure mode"
+            assert_eq!(
+                outer.cells.len(),
+                1,
+                "the inner grid's `+++` must not split the outer grid"
             );
+            // The one outer cell holds the prose plus the whole inner grid.
+            let inner = outer.cells[0]
+                .iter()
+                .find_map(|b| match b {
+                    Block::Shortcode(Shortcode::Grid(g)) => Some(g),
+                    _ => None,
+                })
+                .expect("inner grid should be parsed as a nested Grid block");
+            assert_eq!(inner.columns, 2);
+            assert_eq!(inner.cells.len(), 2);
+            assert_paragraph_text(&inner.cells[0], "inner a");
+            assert_paragraph_text(&inner.cells[1], "inner b");
+        }
+        _ => panic!("expected Grid"),
+    }
+}
+
+#[test]
+fn nested_non_grid_block_keeps_its_own_dividers() {
+    // `:::buttons` splits on `+++` too. Inside a wider grid, those
+    // dividers are the buttons block's, not the grid's.
+    //
+    // Also covers the SoCiviC nesting shape end to end: a cell whose
+    // content is a nested block comes back as a typed
+    // `Block::Shortcode(Buttons)`, parsed by the recursive
+    // `parse_cell_to_blocks` call, not left as literal text.
+    let md = "::::grid 2\nleft\n+++\n:::buttons\n[Tickets](/a)\n+++\n[Info](/b)\n:::\n::::\n";
+    let result = extract_shortcodes(md);
+    assert_eq!(result.extracted.len(), 1);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => {
+            assert_eq!(
+                grid.cells.len(),
+                2,
+                "only the grid's own `+++` splits it, not the buttons block's"
+            );
+            assert_paragraph_text(&grid.cells[0], "left");
+            let buttons = grid.cells[1]
+                .iter()
+                .find_map(|b| match b {
+                    Block::Shortcode(Shortcode::Buttons(bt)) => Some(bt),
+                    _ => None,
+                })
+                .expect("second cell should hold the nested buttons block");
+            assert_eq!(
+                buttons.items.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(),
+                vec!["Tickets", "Info"]
+            );
+        }
+        _ => panic!("expected Grid"),
+    }
+}
+
+#[test]
+fn divider_inside_a_code_fence_does_not_split_a_grid_cell() {
+    // A `+++` an author is *showing* rather than *using*. The extractor
+    // has always skipped inert lines when matching fences; the cell
+    // splitter did not, so documenting the grammar inside a grid tore
+    // the example in half.
+    let md = ":::grid 1\n```\n+++\n```\n:::\n";
+    let result = extract_shortcodes(md);
+    match &result.extracted[0].shortcode {
+        Shortcode::Grid(grid) => {
+            assert_eq!(grid.cells.len(), 1, "a `+++` inside a code fence is text");
         }
         _ => panic!("expected Grid"),
     }

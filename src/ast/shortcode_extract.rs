@@ -592,31 +592,58 @@ pub(super) fn detect_compound_link(cell_text: &str) -> Option<(String, String, S
 /// Step 3 of #613 rewrites `---` to `+++` in moss-releases content;
 /// after that, this helper retires in favor of `split_cells`.
 ///
+/// **A divider only counts when it belongs to THIS grid.** A `+++` inside a
+/// nested block, a code fence or an HTML comment is somebody else's. It used
+/// to split this grid anyway, so `::::grid` around `:::grid` — the nesting
+/// the grammar recommends — handed the inner grid's cells to the outer one,
+/// with no warning and plausible-looking output. Nested bodies pass through
+/// verbatim and are re-extracted when the cell is parsed, which is where the
+/// inner block gets its own dividers. Depth is tracked as
+/// [`super::editor_scan`] tracks it: an opener pushes its arity, a closer of
+/// the innermost arity pops it. Same-arity nesting is a different bug with
+/// its own warning (`nested_arity_warning`).
+///
 /// Returns `(cells, found_legacy_dash)` where `found_legacy_dash` is
-/// `true` when at least one `---` divider was encountered, signaling
-/// the caller to emit a deprecation warning.
+/// `true` when at least one `---` divider **of this grid** was encountered,
+/// signaling the caller to emit a deprecation warning. A `---` belonging to
+/// a nested block is reported when that block is parsed, not here.
 fn split_grid_cells(body: &str) -> (Vec<String>, bool) {
     if body.is_empty() {
         return (vec![String::new()], false);
     }
+    // One flag per line, aligned with `str::lines`, which agrees index-for-
+    // index with `split_inclusive('\n')` for every input.
+    let inert = crate::inert_regions::inert_lines(body);
     let mut cells = Vec::new();
     let mut current = String::new();
     let mut first_line_in_cell = true;
     let mut found_legacy_dash = false;
+    // Arities of the nested blocks we are currently inside; empty means
+    // "at this grid's own depth", which is the only place a divider counts.
+    let mut nested_arities: Vec<usize> = Vec::new();
 
-    for line in body.split_inclusive('\n') {
+    for (idx, line) in body.split_inclusive('\n').enumerate() {
         let content_no_eol = line.strip_suffix('\n').unwrap_or(line);
         let trimmed = content_no_eol.trim();
-        if trimmed == "+++" || trimmed == "---" {
-            if trimmed == "---" {
-                found_legacy_dash = true;
+        let live = !inert.get(idx).copied().unwrap_or(false);
+        if live {
+            if let Some((inner_arity, _, _)) = parse_shortcode_opener(trimmed) {
+                nested_arities.push(inner_arity);
+            } else if let Some(&innermost) = nested_arities.last() {
+                if is_close_fence(trimmed, innermost) {
+                    nested_arities.pop();
+                }
+            } else if trimmed == "+++" || trimmed == "---" {
+                if trimmed == "---" {
+                    found_legacy_dash = true;
+                }
+                if let Some(stripped) = current.strip_suffix('\n') {
+                    current.truncate(stripped.len());
+                }
+                cells.push(std::mem::take(&mut current));
+                first_line_in_cell = true;
+                continue;
             }
-            if let Some(stripped) = current.strip_suffix('\n') {
-                current.truncate(stripped.len());
-            }
-            cells.push(std::mem::take(&mut current));
-            first_line_in_cell = true;
-            continue;
         }
         if first_line_in_cell {
             first_line_in_cell = false;
