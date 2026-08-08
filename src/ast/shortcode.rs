@@ -150,8 +150,12 @@ pub struct GridShortcode {
     /// Column count. Defaults to 1 when neither positional nor `cols=`
     /// attribute is provided.
     pub columns: u32,
-    /// Optional ratio string like `"1:2"` or `"1:1:2"`. When present,
-    /// the renderer emits `style="grid-template-columns:1fr 2fr"` etc.
+    /// Optional ratio string like `"1:2"` or `"1:1:2"`. When present, the
+    /// renderer emits it as a custom property —
+    /// `style="--moss-grid-ratio:minmax(0, 1fr) minmax(0, 2fr)"` — which the
+    /// stylesheet reads. Never as an inline `grid-template-columns`: that
+    /// outranks every rule, so the mobile single-column collapse could not
+    /// reach a ratio grid.
     /// `cols=1:2:3` is equivalent to setting both `columns` (count = 3)
     /// and `ratio` to `"1:2:3"`.
     pub ratio: Option<String>,

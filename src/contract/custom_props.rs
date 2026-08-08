@@ -82,6 +82,12 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         description: "Set to `none` to turn the floating nav island off site-wide — the page then behaves as it did before ADR-049: the masthead scrolls away and nothing replaces it. This is the island's whole tuning surface on purpose; its measure already tracks `--moss-nav-width`/`--moss-content-width`, so widening the nav widens the island with it.",
     },
     CustomProp {
+        name: "--moss-grid-ratio",
+        owner: "moss-grid",
+        default: "repeat(N, minmax(0, 1fr))",
+        description: "Track widths for a `:::grid`, as a `grid-template-columns` value. moss sets it on the element when the author writes a ratio (`:::grid 2 1:2` → `2fr 1fr`); the fallback is the even split for whatever `data-columns` says, and a ratio-less grid with no `data-columns` falls back to `initial`. It is a property rather than an inline `grid-template-columns` on purpose: an inline declaration beats every stylesheet rule, including the mobile collapse, so a ratio grid stayed multi-column on a phone. A theme setting this by hand overrides the author's ratio at every width — the mobile collapse still wins, because that rule does not read the property.",
+    },
+    CustomProp {
         name: "--moss-grid-image-ratio",
         owner: "moss-grid-card",
         default: "1 / 1",

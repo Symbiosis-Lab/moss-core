@@ -1162,7 +1162,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-columns",
                 values: &["1", "2", "3", "4"],
                 default: "",
-                description: "Column count, from `:::grid N`. Note the responsive default: below 768px moss collapses `[data-columns]` to a single column, which is right for a grid of cards and wrong for a grid of short text lines. Re-assert `grid-template-columns` inside your own media query if yours is the latter.",
+                description: "Column count, from `:::grid N`. Note the responsive default: below 768px moss collapses `[data-columns]` to a single column, which is right for a grid of cards and wrong for a grid of short text lines. Re-assert `grid-template-columns` inside your own media query if yours is the latter. A ratio (`:::grid 2 1:2`) arrives as the custom property `--moss-grid-ratio` on the element, so it stays overridable — the collapse applies to ratio grids too.",
             },
         ],
         example_html: r#"<div class="moss-grid" data-width="wide">

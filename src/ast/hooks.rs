@@ -1937,6 +1937,32 @@ mod tests {
         );
     }
 
+    /// A ratio must arrive as a variable the stylesheet reads, never as an
+    /// inline `grid-template-columns`. Inline wins over every rule, so a
+    /// `:::grid 2 1:2` used to keep two columns at 320px — the mobile collapse
+    /// had no way to reach it. Text-level assertion; the fact that the
+    /// collapse then actually happens is a render gate (grid-mobile-collapse).
+    #[test]
+    fn render_shortcode_grid_ratio_is_a_custom_property_not_inline_columns() {
+        use crate::ast::shortcode::{GridShortcode, Shortcode};
+        let sc = Shortcode::Grid(GridShortcode {
+            cells: vec![vec![], vec![]],
+            columns: 2,
+            ratio: Some("1:2".to_string()),
+            ..Default::default()
+        });
+        let mut out = String::new();
+        DefaultHooks::new().render_shortcode(&mut out, &sc, None);
+        assert!(
+            out.contains(r#"style="--moss-grid-ratio:minmax(0, 1fr) minmax(0, 2fr)""#),
+            "ratio should ride as --moss-grid-ratio; got: {out}"
+        );
+        assert!(
+            !out.contains("grid-template-columns"),
+            "an inline grid-template-columns can never be overridden; got: {out}"
+        );
+    }
+
     // --- ADR-021 Corollary 2: sizes= threading through the typed paths ---
     //
     // These pin the PRODUCTION figure/grid render paths (Block::Figure and
