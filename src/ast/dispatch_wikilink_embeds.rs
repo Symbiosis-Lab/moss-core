@@ -580,6 +580,7 @@ mod tests {
                 overlay_text: String::new(),
                 width: None,
                 mobile: None,
+                caption: String::new(),
             }))]);
         let snap = empty_snapshot();
         let graph = empty_graph();

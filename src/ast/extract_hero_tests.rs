@@ -15,7 +15,29 @@ fn hero_block(image_url: Option<&str>, overlay: Vec<Block>) -> Block {
         overlay_text: String::new(),
         width: None,
         mobile: None,
+        caption: String::new(),
     }))
+}
+
+/// A caption belongs to the hero, not to whichever of the three syntaxes
+/// named its image — so it is read the same way from all of them.
+#[test]
+fn caption_is_read_from_every_hero_syntax() {
+    let cfg = ParseConfig::default();
+    let cap = "Cover: the memorial wall (photo: A. Photographer)";
+
+    let (attr_form, _, _) = parse_hero(&format!("{{image=cover.jpg caption=\"{cap}\"}}"), "", &cfg);
+    assert_eq!(attr_form.caption, cap);
+    assert_eq!(attr_form.overlay_text, "", "a caption is not overlay text");
+
+    let (directive_form, _, _) = parse_hero(&format!("./cover.jpg {{caption=\"{cap}\"}}"), "", &cfg);
+    assert_eq!(directive_form.caption, cap);
+
+    let (body_form, _, _) = parse_hero(&format!("{{caption=\"{cap}\"}}"), "![[cover.jpg]]\n", &cfg);
+    assert_eq!(body_form.caption, cap);
+
+    let (plain, _, _) = parse_hero("{image=cover.jpg}", "", &cfg);
+    assert_eq!(plain.caption, "", "no caption written, none invented");
 }
 
 #[test]
