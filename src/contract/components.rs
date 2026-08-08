@@ -1900,7 +1900,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Footer colophon credit appended by moss. Shows the moss mark alone at rest; the wording slides open on hover or keyboard focus.",
+        description: "Footer colophon credit appended by moss. Shows the moss mark alone at rest; the wording fades in beneath it on hover or keyboard focus, without moving the mark.",
     },
     ComponentEntry {
         class: "moss-colophon-icon",
@@ -1922,7 +1922,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Localized attribution wording inside `.moss-colophon`. Collapsed to zero inline size at rest and revealed on hover/focus — it stays in the DOM because it is the link's accessible name.",
+        description: "Localized attribution wording inside `.moss-colophon`. Transparent at rest and faded in on hover/focus, positioned out of flow beneath the mark so the reveal shifts nothing — it stays in the DOM because it is the link's accessible name.",
     },
     ComponentEntry {
         class: "moss-shell-frame",
