@@ -395,14 +395,22 @@ fn parse_document(markdown: &str, config: &ParseConfig, heading_ids: HeadingIds)
 /// itself) and `Block::Table` (cells are `Vec<Inline>`, never blocks, so
 /// nothing there can be a `Figure`). Every other block-holding variant
 /// belongs in the arm below.
-fn unwrap_implicit_figure(block: &mut Block) {
-    // Replace this block if it's a Figure.
-    if let Block::Figure { image, .. } = block {
-        let img = std::mem::replace(
-            image,
-            Inline::Text(String::new()), // placeholder, overwritten below
-        );
-        *block = Block::Paragraph(vec![img]);
+///
+/// A figure the author explicitly ASKED for stays. `![pic|55%](x.png)` and
+/// `![[x.png|wide]]` need the `<figure>` to hold their `style="width:…"` /
+/// `data-width=` / align class, and none of that is implicit — the author
+/// typed it. Only an undecorated figure is the promotion this pass undoes.
+/// See [`is_implicit_figure`].
+pub(crate) fn unwrap_implicit_figure(block: &mut Block) {
+    // Replace this block if it's an undecorated Figure.
+    if is_implicit_figure(block) {
+        if let Block::Figure { image, .. } = block {
+            let img = std::mem::replace(
+                image,
+                Inline::Text(String::new()), // placeholder, overwritten below
+            );
+            *block = Block::Paragraph(vec![img]);
+        }
         return;
     }
     // Recurse into containers.
@@ -422,7 +430,66 @@ fn unwrap_implicit_figure(block: &mut Block) {
                 }
             }
         }
+        // Grid cells and a hero overlay. At parse time this is a no-op — a
+        // cell is its own parse and has already run this walk — but the
+        // post-dispatch caller needs it: `dispatch_wikilink_embeds` descends
+        // into shortcode bodies (see `dispatch_in_shortcode`), so a
+        // `![[tile.png]]` in a grid cell becomes a figure there and nowhere
+        // else. The walk is idempotent, so running it twice costs a visit.
+        Block::Shortcode(sc) => match sc {
+            Shortcode::Grid(args) => {
+                for cell in args.cells.iter_mut() {
+                    for child in cell.iter_mut() {
+                        unwrap_implicit_figure(child);
+                    }
+                }
+            }
+            Shortcode::Hero(args) => {
+                for child in args.overlay.iter_mut() {
+                    unwrap_implicit_figure(child);
+                }
+            }
+            Shortcode::Subscribe(_)
+            | Shortcode::Buttons(_)
+            | Shortcode::Gallery(_)
+            | Shortcode::Recent(_)
+            | Shortcode::Apply(_) => {}
+        },
         _ => {}
+    }
+}
+
+/// Is this block a figure moss decided on by itself?
+///
+/// True only for a `Block::Figure` carrying none of the display parameters an
+/// author can ask for. `|55%`, `|wide`, `|left` and a class all live ON the
+/// figure, so unwrapping one of those would discard what the author typed —
+/// the opt-out undoes an inference, never an instruction.
+fn is_implicit_figure(block: &Block) -> bool {
+    matches!(
+        block,
+        Block::Figure {
+            width: None,
+            align: None,
+            class_names,
+            img_style: None,
+            ..
+        } if class_names.is_empty()
+    )
+}
+
+/// Undo implicit-figure promotion across a whole document.
+///
+/// Public because it runs twice, at times only the caller knows.
+/// `parse_with_config` runs it on the blocks it just built; the build pipeline
+/// runs it again after `dispatch_wikilink_embeds`, which mints `Block::Figure`
+/// nodes of its own long after the parser finished. Without that second call
+/// `implicit_figure = false` was honoured for `![alt](x.png)` and ignored for
+/// `![[x.png]]` — one intent, two boxes, and any theme rule keyed on
+/// `.moss-image` reached only the wikilink half of a page's images.
+pub fn unwrap_implicit_figures(doc: &mut Document) {
+    for block in doc.blocks.iter_mut() {
+        unwrap_implicit_figure(block);
     }
 }
 
