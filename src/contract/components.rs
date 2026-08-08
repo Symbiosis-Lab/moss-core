@@ -1597,6 +1597,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "0",
         description: "Row inside the collection listing of series nav.",
     },
+    ComponentEntry {
+        class: "moss-series-nav-position",
+        kind: "instance",
+        parent: "moss-series-nav-collection-row",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-series-nav-position">2 of 3</span>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "Where this page sits in its series — \"2 of 3\" / 「第 2 篇，共 3 篇」. Counts only the pages still in the reading order, so a page that stepped out with `series: false` is not in the total. Omitted when the folder holds a single page.",
+    },
     // -------------------------------------------------------------------
     // Collection cover (collection landing pages).
     // -------------------------------------------------------------------
