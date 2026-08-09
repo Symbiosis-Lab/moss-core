@@ -36,6 +36,6 @@ pub mod text;
 pub use anchor::obsidian_heading_anchor;
 pub use extract::{extract_headings, extract_headings_with_config, HeadingInfo};
 pub use state::{
-    body_starts_with_hero, compute, filename_text, filename_text_with_root, HeadingInputs,
+    hero_at_top_owns_title, compute, filename_text, filename_text_with_root, HeadingInputs,
     HeadingSource, HeadingState,
 };

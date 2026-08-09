@@ -14,8 +14,10 @@
 //!     - missing → filename-mode (text from filename, source = Filename)
 //!     - non-empty → title-mode (text from title:, source = Title, visible)
 //!     - empty `""` or whitespace-only → title-mode + invisible (explicit no-heading)
-//!   - A `:::hero` block at the top of the body owns the title slot —
-//!     no auto-injection regardless of title.
+//!   - A `:::hero` block at the top of the body owns the title slot — no
+//!     auto-injection regardless of title — but only if the block has
+//!     something in it. An image-only hero renders no title of its own, so
+//!     letting it claim the slot loses the title outright.
 //!
 //! See `docs/reference/title-rendering.md`.
 
@@ -133,20 +135,54 @@ pub fn filename_text_with_root(file_path: &str, root_folder_name: Option<&str>) 
     source_name.replace('-', " ").replace('_', " ")
 }
 
-/// Whether the body begins with a `:::hero` block, after any leading blank
-/// lines. The first non-blank content line must be `:::hero` followed
-/// optionally by attributes/whitespace.
-pub fn body_starts_with_hero(body_markdown: &str) -> bool {
-    body_markdown
+/// Whether a `:::hero` at the top of the body takes over the page's title
+/// slot — meaning moss must NOT inject its own `<h1>` above it.
+///
+/// Two conditions, and the second one is the whole point:
+///
+/// 1. the first non-blank line opens a hero (`:::hero`, optionally followed by
+///    attributes), and
+/// 2. **the block has something inside it.**
+///
+/// Without (2) this returned `true` for `:::hero {image=cover.jpg}` / `:::` —
+/// an image-only cover, which is the obvious way to write "full-bleed cover
+/// photo" and by far the commonest hero there is. moss suppressed the title,
+/// and the hero renderer draws only the image, the overlay and the caption; it
+/// never consults `doc.title`. So the slot was handed to a component that put
+/// nothing in it and the title vanished from the page — silently, because
+/// `<title>`, the OG tags and RSS all resolve the same text by other paths.
+/// One site adopted full-bleed covers in two commits and lost the visible
+/// heading on 87 pages at once.
+///
+/// "Something inside" rather than "a heading inside" is deliberate: any
+/// overlay content means the author put *something* in the title slot, and
+/// widening the test to look for `#` would change what already-shipped sites
+/// render. This is the narrowest rule that fixes the empty case, so no hero
+/// that renders anything today changes behaviour.
+///
+/// Attributes on the opening line do not count as content — `caption=` and
+/// `image=` live there, and neither is a title.
+pub fn hero_at_top_owns_title(body_markdown: &str) -> bool {
+    let mut lines = body_markdown
         .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| {
-            let trimmed = line.trim_start();
-            trimmed == ":::hero"
-                || trimmed.starts_with(":::hero ")
-                || trimmed.starts_with(":::hero\t")
-        })
-        .unwrap_or(false)
+        .skip_while(|line| line.trim().is_empty());
+
+    let Some(open) = lines.next() else {
+        return false;
+    };
+    let trimmed = open.trim_start();
+    let opens_hero = trimmed == ":::hero"
+        || trimmed.starts_with(":::hero ")
+        || trimmed.starts_with(":::hero\t");
+    if !opens_hero {
+        return false;
+    }
+
+    // Stop at the block's own fence. An unterminated hero runs to the end of
+    // the body, which is what the renderer does with it too.
+    lines
+        .take_while(|line| line.trim() != ":::")
+        .any(|line| !line.trim().is_empty())
 }
 
 /// Compute the full heading state for a page.
@@ -194,7 +230,7 @@ pub fn compute(input: HeadingInputs<'_>) -> HeadingState {
         home::is_home_file(&filename_lower, parent_name) || input.is_home_override;
 
     let empty_title = source == HeadingSource::Title && text.is_empty();
-    let hero_at_top = body_starts_with_hero(input.body_markdown);
+    let hero_at_top = hero_at_top_owns_title(input.body_markdown);
 
     let visible =
         is_markdown && !is_index_file && !empty_title && !hero_at_top && !input.slot_only;
@@ -493,13 +529,31 @@ mod tests {
         let s = compute(HeadingInputs {
             file_path: "posts/article.md",
             frontmatter_title: Some("Custom"),
-            body_markdown: ":::hero\n:::\n\nBody.",
+            body_markdown: ":::hero\n# Custom\n:::\n\nBody.",
             root_folder_name: None,
             is_home_override: false,
             slot_only: false,
         });
         assert!(!s.visible, "hero ownership trumps title presence");
         assert_eq!(s.text, "Custom");
+    }
+
+    #[test]
+    fn an_image_only_hero_does_not_take_the_title_with_it() {
+        // The 87-page regression: a full-bleed cover is written as a hero with
+        // nothing inside, the hero renderer draws only the image, and moss used
+        // to suppress the title anyway — so the page rendered with no visible
+        // heading at all while `<title>`, OG and RSS all still had one.
+        let s = compute(HeadingInputs {
+            file_path: "awards/writing/s4/part-one.md",
+            frontmatter_title: Some("在前線，一座文學博物館的抵抗"),
+            body_markdown: ":::hero {image=assets/cover.jpg}\n:::\n\n正文。",
+            root_folder_name: None,
+            is_home_override: false,
+            slot_only: false,
+        });
+        assert!(s.visible, "an empty hero renders no title, so the page keeps its own");
+        assert_eq!(s.text, "在前線，一座文學博物館的抵抗");
     }
 
     #[test]
@@ -520,7 +574,7 @@ mod tests {
         let s = compute(HeadingInputs {
             file_path: "posts/article.md",
             frontmatter_title: None,
-            body_markdown: "\n\n\n:::hero\n:::",
+            body_markdown: "\n\n\n:::hero\n# Overlay\n:::",
             root_folder_name: None,
             is_home_override: false,
             slot_only: false,
@@ -581,16 +635,30 @@ mod tests {
         assert!(!s.visible);
     }
 
-    // ── body_starts_with_hero helper ─────────────────────────────────
+    // ── hero_at_top_owns_title helper ─────────────────────────────────
 
     #[test]
-    fn body_starts_with_hero_basic() {
-        assert!(body_starts_with_hero(":::hero\n:::"));
-        assert!(body_starts_with_hero("\n\n:::hero\nimage: x\n:::"));
-        assert!(body_starts_with_hero(":::hero attr=value\n:::"));
-        assert!(!body_starts_with_hero("# Heading\n:::hero\n:::"));
-        assert!(!body_starts_with_hero("Some prose first.\n\n:::hero\n:::"));
-        assert!(!body_starts_with_hero(""));
-        assert!(!body_starts_with_hero("\n\n"));
+    fn a_hero_owns_the_title_slot_only_when_it_has_content_to_put_in_it() {
+        // Has content → owns the slot, so moss injects nothing.
+        assert!(hero_at_top_owns_title("\n\n:::hero\nimage: x\n:::"));
+        assert!(hero_at_top_owns_title(":::hero {image=c.jpg}\n# Overlay title\n:::"));
+        // Unterminated: the renderer treats the rest of the body as inside, so
+        // this does too.
+        assert!(hero_at_top_owns_title(":::hero\n# Overlay title"));
+
+        // Empty → renders an image and nothing else, so the page keeps its own
+        // title. This is the 87-page regression; see the doc on the function.
+        assert!(!hero_at_top_owns_title(":::hero\n:::"));
+        assert!(!hero_at_top_owns_title(":::hero {image=cover.jpg}\n:::"));
+        assert!(!hero_at_top_owns_title(":::hero attr=value\n\n\n:::"));
+        // Attributes on the opening line are not content — `caption=` and
+        // `image=` live there and neither is a title.
+        assert!(!hero_at_top_owns_title(":::hero {image=c.jpg caption=\"A street\"}\n:::"));
+
+        // Not at the top → the hero is a body block like any other.
+        assert!(!hero_at_top_owns_title("# Heading\n:::hero\n# Overlay\n:::"));
+        assert!(!hero_at_top_owns_title("Some prose first.\n\n:::hero\n# Overlay\n:::"));
+        assert!(!hero_at_top_owns_title(""));
+        assert!(!hero_at_top_owns_title("\n\n"));
     }
 }

@@ -267,7 +267,7 @@ proptest! {
 
     #[test]
     fn body_starts_with_hero_never_panics(body in any_str()) {
-        let _ = moss_core::heading::body_starts_with_hero(&body);
+        let _ = moss_core::heading::hero_at_top_owns_title(&body);
     }
 }
 
