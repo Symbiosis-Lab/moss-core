@@ -82,6 +82,12 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         description: "Set to `none` to turn the floating nav island off site-wide — the page then behaves as it did before ADR-049: the masthead scrolls away and nothing replaces it. This is the island's whole tuning surface on purpose; its measure already tracks `--moss-nav-width`/`--moss-content-width`, so widening the nav widens the island with it.",
     },
     CustomProp {
+        name: "--moss-hint-x",
+        owner: "[data-tooltip]",
+        default: "0px",
+        description: "Horizontal offset of a hover hint's pill from its host's start edge. Written per-element at runtime by theme.js (hint-place.ts), which measures the pill on hover/focus entry and clamps it into the viewport so a hint can never crop at a screen edge. Not a theme hook: a hand-set value is overwritten on the next hover.",
+    },
+    CustomProp {
         name: "--moss-grid-ratio",
         owner: "moss-grid",
         default: "repeat(N, minmax(0, 1fr))",
