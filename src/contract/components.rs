@@ -1027,7 +1027,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
                 name: "data-hero-tone",
                 values: &["light"],
                 default: "",
-                description: "Marks a hero whose image is pale enough (scan-cached dominant colour above 0.4 relative luminance) that the default legibility scrim leaves white overlay text under 4.5:1; site.css swaps in a stronger gradient. Emitted only when the hero also carries overlay text. Absent = mid-tone or dark image, no overlay, or an unparseable colour — all keep the default ramp.",
+                description: "Marks a hero whose image is pale enough (scan-cached dominant colour above 0.4 relative luminance) that white overlay text cannot clear 4.5:1 over it. site.css responds by removing the legibility scrim and setting the overlay text DARK — a pale image needs no scrim to carry dark type, and darkening it hard enough to carry white type (this rule used to reach 0.78 black) greys out the picture the author chose. Applies to the two overlaid layouts; mobile-stacked text sits on `--moss-cover-color` and stays white. Emitted only when the hero also carries overlay text. Absent = mid-tone or dark image, no overlay, or an unparseable colour — all keep white type over the default ramp.",
             },
             DataAttr {
                 name: "data-mobile",
