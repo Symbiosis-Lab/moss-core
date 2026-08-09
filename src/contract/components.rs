@@ -2253,7 +2253,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Emerging,
         since: "0",
-        description: "Floating navigation island: a one-line bar, aligned to the text column, revealed on scroll-up once the masthead has left the screen. Emitted on any page with a breadcrumb trail. Turn it off site-wide with `--moss-nav-island-display: none`.",
+        description: "Floating navigation island: a one-line bar, aligned to the text column, revealed on scroll-up once the masthead has left the screen. Emitted on any page with a breadcrumb trail, but it only ever shows where it can take the reader somewhere — a trail of three or more crumbs (down the tree) or a page with headings (the sections panel). On a top-level page with neither, the markup stays dormant (ADR-049 §10). Turn it off site-wide with `[site].floating_nav = false` or `--moss-nav-island-display: none`.",
     },
     ComponentEntry {
         class: "moss-nav-island-bar",
