@@ -43,13 +43,35 @@ pub struct GridCellParts {
     /// class="moss-grid-card">`, and for host-supplied replacement markup that
     /// already carries its own chrome.
     pub carded: bool,
+    /// The dominant colour of the image in the cell's cover position, as a CSS
+    /// colour. Published as `--moss-cover-color` on the wrapper so a theme can
+    /// paint a band behind the cell's text — the same variable, on the same
+    /// class, that a collection card already carries.
+    ///
+    /// moss-core never computes it: extraction reads pixels off disk, so the
+    /// host fills this in (`grid_cells::apply_cell_cover_colors`) and this
+    /// module only decides where the bytes land.
+    pub cover_color: Option<String>,
 }
 
 impl GridCellParts {
     /// Content plus chrome. The ONE place the card wrapper's bytes are written.
     pub fn to_html(&self) -> String {
         if self.carded {
-            format!(r#"<div class="moss-grid-card">{}</div>"#, self.inner)
+            let color = self
+                .cover_color
+                .as_deref()
+                .map(|c| {
+                    format!(
+                        r#" data-cover-color style="--moss-cover-color: {}""#,
+                        escape_attr(c)
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                r#"<div class="moss-grid-card"{}>{}</div>"#,
+                color, self.inner
+            )
         } else {
             self.inner.clone()
         }
@@ -61,6 +83,7 @@ impl GridCellParts {
         Self {
             inner: html,
             carded: false,
+            cover_color: None,
         }
     }
 }
@@ -164,6 +187,8 @@ pub fn render_grid_parts<H: RenderHooks + ?Sized>(
         cells.push(GridCellParts {
             inner: collapsed.trim().to_string(),
             carded: !matches!(cell_blocks.as_slice(), [Block::LinkCard { .. }]),
+            // Filled in later by the host, which can read the image off disk.
+            cover_color: None,
         });
     }
     hooks.end_grid_cells();

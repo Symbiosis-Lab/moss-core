@@ -139,7 +139,7 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         name: "--moss-cover-color",
         owner: "moss-card",
         default: "var(--moss-bg, var(--moss-color-bg, #fff))",
-        description: "Background behind card content when the card carries `data-cover-color`. moss sets this per-card from the cover image's dominant colour; a theme can override it to opt out of the extracted tint.",
+        description: "Background behind card content when the card carries `data-cover-color`. moss sets this per-card from the cover image's dominant colour; a theme can override it to opt out of the extracted tint. Also set on a `.moss-grid-card` whose cell opens with an image — there moss only publishes the colour and paints nothing, so a hand-built cell can wear the same band as a card.",
     },
     CustomProp {
         name: "--moss-bg",
