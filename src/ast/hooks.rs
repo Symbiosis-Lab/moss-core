@@ -690,12 +690,22 @@ pub trait RenderHooks {
         // article-title H1 (`<h1 class="moss-article-title">`) is emitted
         // separately in src-tauri html_post.rs and never reaches this hook,
         // so it correctly gets no anchor.
+        //
+        // The `#` glyph is NOT in here. It is drawn by site.css as
+        // `.moss-heading-anchor::after { content: "#" }`, because generated
+        // content is the only form of it that cannot be copied. A real text
+        // node with `user-select: none` (which is what this used to be, and
+        // what site.css still carries as a second line of defence) is
+        // excluded from the clipboard by Blink but NOT by WebKit — so on
+        // Safari, and in moss's own WebKit preview, selecting a heading
+        // copied "Introduction#". Measured in both engines 2026-08-09; the
+        // heading-anchor-copy render gate pins it.
         if let Some(id) = id.filter(|_| self.emit_heading_anchors()) {
             out.push_str(r##"<a class="moss-heading-anchor" href="#"##);
             out.push_str(&escape_attr(id));
             out.push_str(r##"" aria-label=""##);
             out.push_str(&escape_attr(self.permalink_section_label()));
-            out.push_str(r##""><span aria-hidden="true">#</span></a>"##);
+            out.push_str(r##""></a>"##);
         }
         out.push_str("</h");
         out.push((b'0' + level) as char);
@@ -731,9 +741,9 @@ pub struct DefaultHooks<'a> {
     /// `&self` throughout; nesting (a grid inside a grid cell) is why this
     /// is a stack and not an `Option`.
     grid_cell_sizes: std::cell::RefCell<Vec<String>>,
-    /// Hero-overlay mode: suppress the `moss-heading-anchor` permalink.
+    /// Display-title mode: suppress the `moss-heading-anchor` permalink.
     /// Stored negated so `#[derive(Default)]` still means "anchors on".
-    /// Set by [`DefaultHooks::hero_overlay`].
+    /// Set by [`DefaultHooks::hero_overlay`] and [`DefaultHooks::grid_cells`].
     suppress_heading_anchors: bool,
 }
 
@@ -774,6 +784,28 @@ impl<'a> DefaultHooks<'a> {
     /// `object-fit`/`object-position`. A construction mode on the one impl has
     /// no forwarding surface to get wrong.
     pub fn hero_overlay(assets: Option<&'a crate::asset_snapshot::AssetSnapshot>) -> Self {
+        Self {
+            assets,
+            suppress_heading_anchors: true,
+            ..Self::default()
+        }
+    }
+
+    /// Hooks for rendering the blocks of a `:::grid` cell. Same reasoning as
+    /// [`hero_overlay`](Self::hero_overlay): a heading in a cell is that
+    /// card's title, not a section of the page. Nobody deep-links to a card
+    /// the way they deep-link to a section, so the `#` is clutter — and it is
+    /// worse than clutter inside a card, where it lands in the middle of a
+    /// tile rather than in the margin of a text column.
+    ///
+    /// It also closes a hole. Grid cells render through `DefaultHooks`, whose
+    /// trait defaults said anchors-on and English-label, so a cell heading
+    /// carried a `#` even on a site with `[site].heading_anchors = false`, and
+    /// carried `aria-label="Permalink to this section"` on a zh-tw site. Both
+    /// were invisible from the src-tauri side, which reads its own
+    /// `PipelineHooks` overrides and never sees the ones a delegated render
+    /// uses. Suppressing outright means neither setting can be wrong here.
+    pub fn grid_cells(assets: Option<&'a crate::asset_snapshot::AssetSnapshot>) -> Self {
         Self {
             assets,
             suppress_heading_anchors: true,
@@ -1078,7 +1110,7 @@ mod tests {
         hooks.render_heading(&mut out, 2, Some("setup"), None, "Setup");
         assert_eq!(
             out,
-            r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+            r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"></a></h2>"##
         );
     }
 
@@ -1097,7 +1129,7 @@ mod tests {
         hooks.render_heading(&mut out, 2, Some("setup"), Some(42), "Setup");
         assert_eq!(
             out,
-            r##"<h2 id="setup" data-source-line="42">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+            r##"<h2 id="setup" data-source-line="42">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"></a></h2>"##
         );
     }
 
@@ -1116,7 +1148,7 @@ mod tests {
         hooks.render_heading(&mut out, 2, Some("setup"), None, "Setup");
         assert_eq!(
             out,
-            r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+            r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"></a></h2>"##
         );
     }
 
@@ -1135,7 +1167,7 @@ mod tests {
         hooks.render_heading(&mut out, 2, Some("setup"), Some(42), "Setup");
         assert_eq!(
             out,
-            r##"<h2 id="setup" data-source-line="42">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+            r##"<h2 id="setup" data-source-line="42">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"></a></h2>"##
         );
     }
 
@@ -1146,7 +1178,7 @@ mod tests {
         hooks.render_heading(&mut out, 2, Some(r#"a&b"#), None, "AB");
         assert_eq!(
             out,
-            r##"<h2 id="a&amp;b">AB<a class="moss-heading-anchor" href="#a&amp;b" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##
+            r##"<h2 id="a&amp;b">AB<a class="moss-heading-anchor" href="#a&amp;b" aria-label="Permalink to this section"></a></h2>"##
         );
     }
 

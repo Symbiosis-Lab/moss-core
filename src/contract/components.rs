@@ -1161,11 +1161,11 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         kind: "instance",
         parent: "",
         data_attrs: &[],
-        example_html: r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##,
+        example_html: r##"<h2 id="setup">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"></a></h2>"##,
         example_markdown: "## Setup",
         status: Status::Emerging,
         since: "1",
-        description: "Clickable permalink appended inside every author-written body heading that carries a slug id; links to the heading's `#`-fragment. The auto-injected `moss-article-title` H1 is emitted separately and gets no anchor.",
+        description: "Clickable permalink appended inside every author-written body heading that carries a slug id; links to the heading's `#`-fragment. The element is EMPTY — the `#` a reader sees is drawn by `site.css` as `::after` content, so selecting a heading never copies it. Not emitted for a display title: the auto-injected `moss-article-title` H1, a `:::hero` overlay heading, and a `:::grid` cell heading all get none.",
     },
     // -------------------------------------------------------------------
     // Grid + gallery + buttons containers (free-form layouts).

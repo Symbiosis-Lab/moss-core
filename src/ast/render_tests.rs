@@ -26,7 +26,7 @@ fn renders_heading_with_id() {
         children: vec![Inline::Text("Setup".into())],
         id: Some("setup".into()),
     }]);
-    assert_eq!(html, "<h2 id=\"setup\">Setup<a class=\"moss-heading-anchor\" href=\"#setup\" aria-label=\"Permalink to this section\"><span aria-hidden=\"true\">#</span></a></h2>\n");
+    assert_eq!(html, "<h2 id=\"setup\">Setup<a class=\"moss-heading-anchor\" href=\"#setup\" aria-label=\"Permalink to this section\"></a></h2>\n");
 }
 
 #[test]
@@ -537,7 +537,7 @@ fn round_trips_parse_to_render_for_canonical_doc() {
         _ => {}
     });
     let html = render_document(&doc, &DefaultHooks::new());
-    assert!(html.contains(r##"<h1 id="title">Title<a class="moss-heading-anchor" href="#title" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h1>"##), "got: {html}");
+    assert!(html.contains(r##"<h1 id="title">Title<a class="moss-heading-anchor" href="#title" aria-label="Permalink to this section"></a></h1>"##), "got: {html}");
     assert!(html.contains(r#"<a href="docs/">link</a>"#));
     assert!(html.contains("<em>em</em>"));
 }
@@ -894,7 +894,7 @@ fn heading_emits_data_source_line_through_hook() {
         }],
     );
     assert!(
-            html.contains(r##"<h2 id="setup" data-source-line="3">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##),
+            html.contains(r##"<h2 id="setup" data-source-line="3">Setup<a class="moss-heading-anchor" href="#setup" aria-label="Permalink to this section"></a></h2>"##),
             "got: {html}"
         );
 }
@@ -1166,7 +1166,7 @@ fn end_to_end_parse_with_config_emits_data_source_line() {
     });
     let html = render_document(&doc, &DefaultHooks::new());
     assert!(
-            html.contains(r##"<h1 id="title" data-source-line="1">Title<a class="moss-heading-anchor" href="#title" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h1>"##),
+            html.contains(r##"<h1 id="title" data-source-line="1">Title<a class="moss-heading-anchor" href="#title" aria-label="Permalink to this section"></a></h1>"##),
             "H1 should carry data-source-line=1: {html}"
         );
     assert!(
@@ -1174,7 +1174,7 @@ fn end_to_end_parse_with_config_emits_data_source_line() {
         "first paragraph should carry data-source-line=3: {html}"
     );
     assert!(
-            html.contains(r##"<h2 id="sub" data-source-line="5">Sub<a class="moss-heading-anchor" href="#sub" aria-label="Permalink to this section"><span aria-hidden="true">#</span></a></h2>"##),
+            html.contains(r##"<h2 id="sub" data-source-line="5">Sub<a class="moss-heading-anchor" href="#sub" aria-label="Permalink to this section"></a></h2>"##),
             "H2 should carry data-source-line=5: {html}"
         );
     assert!(
