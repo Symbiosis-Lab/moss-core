@@ -88,6 +88,12 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         description: "Horizontal offset of a hover hint's pill from its host's start edge. Written per-element at runtime by theme.js (hint-place.ts), which measures the pill on hover/focus entry and clamps it into the viewport so a hint can never crop at a screen edge. Not a theme hook: a hand-set value is overwritten on the next hover.",
     },
     CustomProp {
+        name: "--moss-hint-max-w",
+        owner: "[data-tooltip]",
+        default: "calc(100vw - 24px)",
+        description: "Widest a hover hint's pill may get before it wraps. Written per-element at runtime by theme.js (hint-place.ts) alongside `--moss-hint-x`, because the CSS fallback's `100vw` counts the scrollbar gutter as usable space and no CSS length can subtract it. Not a theme hook: a hand-set value is overwritten on the next hover.",
+    },
+    CustomProp {
         name: "--moss-grid-ratio",
         owner: "moss-grid",
         default: "repeat(N, minmax(0, 1fr))",
