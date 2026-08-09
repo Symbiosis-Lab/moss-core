@@ -34,6 +34,20 @@ pub struct ResolvedSort {
     pub series_default: bool,
 }
 
+impl ResolvedSort {
+    /// Axis driving card *presentation* (the meta slot), as opposed to
+    /// ordering. An explicit-order listing is a curated sequence, not a
+    /// chronological feed, so its cards present like a Weight listing —
+    /// no per-card date — even when the ordering axis is Date.
+    pub fn presentation_axis(&self) -> SortAxis {
+        if self.explicit_order.is_some() {
+            SortAxis::Weight
+        } else {
+            self.axis
+        }
+    }
+}
+
 /// Minimal document trait for sort inference. Both src-tauri's
 /// ParsedDocument and the editor's in-memory document model implement this.
 pub trait SortableDoc {
