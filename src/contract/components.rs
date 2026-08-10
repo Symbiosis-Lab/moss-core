@@ -117,6 +117,10 @@ pub const UNPREFIXED_LEGACY_CLASSES: &[&str] = &[
     // Default footer.
     "footer-default",
     "footer-link",
+    // Read by the site JavaScript, not just styled: `.container` is how the
+    // share card and immersive mode find the current document. Predates the
+    // `moss-` convention, like the nav names above.
+    "container",
 ];
 
 /// Whether `class` is exempt from the `moss-` prefix rule.
@@ -2818,6 +2822,28 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Emerging,
         since: "1",
         description: "The return arrow at the end of a note, linking back to the marker that sent the reader there. One per marker, so a note referenced twice ends with two arrows. A note nobody referenced has none. The arrow carries VARIATION SELECTOR-15 (`&#xFE0E;`) so mobile Chrome renders it as plain text rather than a coloured emoji.",
+    },
+    // `.container` is the reading-width wrapper, and the element the share-card
+    // runtime treats as "the current document" — it carries `data-share-cover`,
+    // below. Declared here 2026-08-09, when that attribute gave the site JS a
+    // published name to read instead of a class to guess at.
+    ComponentEntry {
+        class: "container",
+        kind: "chrome",
+        parent: "",
+        data_attrs: &[
+            DataAttr {
+                name: "data-share-cover",
+                values: &[],
+                default: "",
+                description: "The page's own cover image, as a same-origin URL: its `:::hero` image, else its `cover:` frontmatter. Emitted on the `<article>` only, and only when the page has one of those — absent means the page genuinely has no cover, and never the auto-generated og card. The share-card runtime reads it instead of hunting for the cover in the markup; a theme can use `article.container[data-share-cover]` to tell a page that has a cover picture from one that does not.",
+            },
+        ],
+        example_html: r#"<article class="container" data-share-cover="/img/cover.webp">…</article>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "The reading-width wrapper. It is the `<article>` on a page or post, and also the `<nav class=\"main-nav container\">` — one class, one measure, so the masthead lines up with the text under it. Site JS treats `article.container` as \"the current document\": immersive mode promotes its direct-child iframes, and the share card reads its `data-share-cover`.",
     },
 ];
 
