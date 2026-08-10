@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-10
+
+### Added
+- **`GridCellParts::cover_color`, so a hand-built grid cell can wear the same colour band a collection card gets.** A `:::grid` cell that opens with an image now publishes that image's dominant colour as `--moss-cover-color` in the card wrapper's `style`, alongside a `data-cover-color` presence flag — the same custom property, on the same class, that a collection card already carries. moss-core paints nothing with it and never computes it: reading pixels is I/O, so the host fills the field in and this crate only decides where the bytes land. Absent for a cell with no leading image, and for one whose file moss could not read. **BREAKING** for anything constructing `GridCellParts` with a struct literal — add `cover_color: None`, or go through `GridCellParts::from_html`, which is unchanged.
+- **`DefaultHooks::grid_cells`**, the hook set for rendering the blocks of a `:::grid` cell. Same reasoning as `hero_overlay`: a heading in a cell is that card's title, not a section of the page, so it gets no permalink anchor. It also closes a hole — grid cells render through `DefaultHooks`, whose trait defaults said anchors-on and English-label, so a cell heading carried a `#` even on a site with `heading_anchors = false`, and an English `aria-label` on a non-English site. Neither was visible from the host side, which reads its own hook overrides and never sees the ones a delegated render uses.
+- Eleven `COMPONENTS` entries for attributes the site JavaScript reads (`data-cover-color`, `data-share-cover`, `data-type`, `data-src`, `data-title`, `data-article`, and the four comment-identity attributes), plus entries for `container`, `nav-content`, `font-anchor`, `font-trigger`, `cover-thumb`, `media-item`, `lightbox-content` and `lightbox-image`. These classes were already emitted and already read by shipped JS; they simply were not in the table, so `moss describe --json` and `contract.md` under-reported the contract.
+
+### Changed
+- **BREAKING (emitted HTML): the heading permalink anchor is now empty.** `render_heading` emits `<a class="moss-heading-anchor" href="#id" aria-label="…"></a>` — the `#` a reader sees is drawn by `site.css` as `::after` content. A real text node is excluded from the clipboard by Blink but **not** by WebKit, so on Safari, and in moss's own WebKit preview, selecting a heading copied "Introduction#". Generated content is the only form of the glyph no engine will copy. Measured in both engines 2026-08-09. Anything asserting on the anchor's inner `<span aria-hidden="true">#</span>` must drop it; the element, its class, its `href` and its `aria-label` are unchanged.
+- `--moss-cover-color`'s contract description now also covers the grid-card case above. Description text only.
+
 ## [0.7.0] - 2026-08-09
 
 ### Added
