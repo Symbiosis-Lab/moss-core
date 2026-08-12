@@ -3,7 +3,7 @@
     "Cross-language contract for RENDERING a shortcode attr value.",
     "Rust side: crates/moss-core/tests/attr_value_render.rs feeds `rendered` to",
     "the real `parse_attrs` grammar and requires the value back out as `raw`.",
-    "TS side: frontend/app/editor/__tests__/cm-completion-core.test.ts requires",
+    "TS side: packages/moss-syntax/src/__tests__/completion-core.test.ts requires",
     "`renderShortcodeAttrValue(raw) === rendered`.",
     "Together: whatever the editor writes into `{image=…}` on an accepted asset",
     "completion is provably parseable by the build. This file is the gate — do",
