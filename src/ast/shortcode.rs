@@ -320,7 +320,33 @@ impl ShortcodeKind {
         }
     }
 
-    /// All authorable shortcode variants, in a stable order.
+    /// The fence name authors write after `:::` — also the serde
+    /// `snake_case` form (a unit test in `contract::shortcodes` pins the
+    /// two together).
+    pub fn name(self) -> &'static str {
+        match self {
+            ShortcodeKind::Subscribe => "subscribe",
+            ShortcodeKind::Buttons => "buttons",
+            ShortcodeKind::Gallery => "gallery",
+            ShortcodeKind::Hero => "hero",
+            ShortcodeKind::Grid => "grid",
+            ShortcodeKind::Recent => "recent",
+            ShortcodeKind::Apply => "apply",
+        }
+    }
+
+    /// Whether editors offer this shortcode to authors (slash menu, fence
+    /// autocomplete). Deliberate — keep hidden: `apply` is the membership
+    /// application form, meaningful only on sites configured for it, so it
+    /// parses and renders but is never suggested. The decision lives here,
+    /// in Rust, once — the generated catalog
+    /// (`frontend/app/editor/shortcodes.generated.ts`) carries it as the
+    /// `authorable` flag (design: docs/archive/2026-08-11-cm6-extraction-design.md §4, §7.1).
+    pub fn authorable(self) -> bool {
+        !matches!(self, ShortcodeKind::Apply)
+    }
+
+    /// All shortcode variants, in a stable order.
     ///
     /// Used for enforcement and round-trip tests in `components_test.rs`.
     pub fn all() -> impl Iterator<Item = ShortcodeKind> {

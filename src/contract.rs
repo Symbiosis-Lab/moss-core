@@ -12,4 +12,5 @@ pub mod components;
 pub mod custom_props;
 pub mod describe;
 pub mod frontmatter;
+pub mod shortcodes;
 pub mod sizes;
