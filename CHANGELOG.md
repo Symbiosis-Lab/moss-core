@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-13
+
+### Added
+- **`contract::shortcodes` — the authoring catalog: what shortcodes exist, what attributes each takes, and which of those attributes name an asset file.** A `COMPONENTS`-style table, in the same spirit and for the same reason: the editor's slash menu and fence autocomplete used to hand-copy this knowledge into TypeScript, and the copies drifted (`apply` was missing from one of them). The table is emitted to `frontend/app/editor/shortcodes.generated.ts` and diff-gated in CI, so a Rust-side shortcode change cannot land without the generated copy following. Public items: `ShortcodeCatalogEntry`, `ShortcodeAttrSpec`, and `entry()`, whose match is total over `ShortcodeKind` — adding a variant fails compilation here until the catalog describes it. Presentation is deliberately absent: labels, hints and translations stay with the host, which overlays its own i18n on the structural catalog.
+- **`ShortcodeKind::name()`, `ShortcodeKind::authorable()` and `ShortcodeKind::all()`.** `name()` is the fence name authors write after `:::`, pinned by a unit test to the serde `snake_case` form. `authorable()` is whether editors should offer the shortcode at all — `apply` parses and renders but is never suggested, because it is the membership application form and is meaningful only on sites configured for it. That decision now lives in Rust once, rather than in each editor surface that has to respect it.
+
 ## [0.8.0] - 2026-08-10
 
 ### Added
