@@ -333,8 +333,15 @@ pub fn synthesize_image_html(
     // (`class`, `src`, `alt`, `aria-hidden`) preserves the pre-Phase-2
     // byte shape emitted by `nav.rs::generate_navigation`.
     if matches!(context, ImageContext::SiteLogo) {
+        // `extra_attrs` rides directly after `class` (the editor preview's
+        // `data-source-fm="logo"` annotation); `None` keeps the byte shape.
+        let extra = options
+            .extra_attrs
+            .map(|a| format!(" {a}"))
+            .unwrap_or_default();
         return format!(
-            r#"<img class="site-logo" src="{}" alt="{}" aria-hidden="true">"#,
+            r#"<img class="site-logo"{} src="{}" alt="{}" aria-hidden="true">"#,
+            extra,
             html_escape(src),
             html_escape(alt),
         );
