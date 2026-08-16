@@ -1923,6 +1923,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Excerpt slot inside `.moss-preview-popup` (auto-extracted from the linked article body).",
     },
     ComponentEntry {
+        class: "moss-skip-link",
+        kind: "chrome",
+        parent: "",
+        data_attrs: &[],
+        example_html: r##"<a class="moss-skip-link" href="#main-content">Skip to content</a>"##,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "0",
+        description: "First focusable element in `<body>`, before the nav island and header. Visually hidden until it receives keyboard focus, then jumps to `<main id=\"main-content\">` (WCAG 2.4.1). Themes may restyle it but should keep it off-screen at rest and visible on `:focus`.",
+    },
+    ComponentEntry {
         class: "moss-colophon",
         kind: "chrome",
         parent: "",
