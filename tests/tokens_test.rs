@@ -224,6 +224,9 @@ fn token_value(tokens: &moss_core::contract::tokens::Tokens, name: &str, dark: b
         .flat_map(|g| g.entries.iter())
         .find(|t| t.name == name)
         .unwrap_or_else(|| panic!("token {} must exist", name));
+    // A token with no dark variant emits no dark override, so the light value
+    // IS what dark mode paints — checking it twice is correct, not a fallback
+    // papering over a missing value.
     if dark {
         entry.dark_value.clone().unwrap_or_else(|| entry.value.clone())
     } else {
@@ -234,10 +237,19 @@ fn token_value(tokens: &moss_core::contract::tokens::Tokens, name: &str, dark: b
 /// Foreground tokens that carry body text, paired with every background they
 /// are actually painted on. A pair here is a promise the CSS keeps — when a
 /// token starts appearing on a new background, add the pair.
+///
+/// A few syntax tokens (hl-meta, hl-tag, hl-deletion) are defined in
+/// tokens.json but not currently consumed by any rule. They stay listed on
+/// purpose: the constraint should already hold on the day someone wires one
+/// up, rather than being discovered afterwards.
 const TEXT_ON_BACKGROUNDS: &[(&str, &[&str])] = &[
     ("moss-color-muted", &["moss-color-bg", "moss-color-surface", "moss-code-background"]),
     ("moss-color-text", &["moss-color-bg", "moss-color-surface"]),
     ("moss-color-text-secondary", &["moss-color-bg", "moss-color-surface"]),
+    // Link and heading text (site.css:152, 553, 972 and ~15 more). ui-accent
+    // aliases this via var(), so it resolves to the same colour and is skipped
+    // by literal_hex rather than listed twice.
+    ("moss-color-accent", &["moss-color-bg", "moss-color-surface"]),
     ("moss-hl-comment", &["moss-code-background"]),
     ("moss-hl-meta", &["moss-code-background"]),
     ("moss-hl-keyword", &["moss-code-background"]),
