@@ -177,3 +177,167 @@ fn format_root_block_normalizes_3digit_hex_to_6digit() {
     let css = format_root_block(&tokens);
     assert!(css.contains("--test-color: #ffffff;"), "got: {}", css);
 }
+
+// ─── WCAG 2.1 AA contrast gate ───────────────────────────────────────────────
+//
+// moss tells institutional users its output conforms to WCAG 2.1 AA. These
+// tests are what make that a checked claim rather than a remembered one: a
+// token edit that drops a text color below 4.5:1 fails here, in a plain unit
+// test, on every PR.
+//
+// Only tokens whose value is a literal hex are checked. `var()` aliases and
+// `color-mix()` expressions need a cascade to resolve and belong in the
+// render-gate suite, which has an engine; see .claude/CLAUDE.md.
+//
+// Provenance: the six values this locks in were derived in moss#1047.
+
+/// Relative luminance per WCAG 2.1 §relative-luminance.
+fn relative_luminance(hex: &str) -> f64 {
+    let h = hex.trim_start_matches('#');
+    let channel = |i: usize| {
+        let v = u8::from_str_radix(&h[i..i + 2], 16).expect("valid hex pair") as f64 / 255.0;
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
+}
+
+/// Contrast ratio per WCAG 2.1 §contrast-ratio. Order-independent.
+fn contrast_ratio(a: &str, b: &str) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// A six-digit literal hex, or None for var()/color-mix()/rgba() values.
+fn literal_hex(value: &str) -> Option<&str> {
+    let v = value.trim();
+    let is_hex6 = v.len() == 7
+        && v.starts_with('#')
+        && v[1..].chars().all(|c| c.is_ascii_hexdigit());
+    is_hex6.then_some(v)
+}
+
+fn token_value(tokens: &moss_core::contract::tokens::Tokens, name: &str, dark: bool) -> String {
+    let entry = tokens
+        .groups
+        .iter()
+        .flat_map(|g| g.entries.iter())
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("token {} must exist", name));
+    if dark {
+        entry.dark_value.clone().unwrap_or_else(|| entry.value.clone())
+    } else {
+        entry.value.clone()
+    }
+}
+
+/// Foreground tokens that carry body text, paired with every background they
+/// are actually painted on. A pair here is a promise the CSS keeps — when a
+/// token starts appearing on a new background, add the pair.
+const TEXT_ON_BACKGROUNDS: &[(&str, &[&str])] = &[
+    ("moss-color-muted", &["moss-color-bg", "moss-color-surface", "moss-code-background"]),
+    ("moss-color-text", &["moss-color-bg", "moss-color-surface"]),
+    ("moss-color-text-secondary", &["moss-color-bg", "moss-color-surface"]),
+    ("moss-hl-comment", &["moss-code-background"]),
+    ("moss-hl-meta", &["moss-code-background"]),
+    ("moss-hl-keyword", &["moss-code-background"]),
+    ("moss-hl-string", &["moss-code-background"]),
+    ("moss-hl-attr", &["moss-code-background"]),
+    ("moss-hl-operator", &["moss-code-background"]),
+    ("moss-hl-function", &["moss-code-background"]),
+    ("moss-hl-number", &["moss-code-background"]),
+    ("moss-hl-type", &["moss-code-background"]),
+    ("moss-hl-builtin", &["moss-code-background"]),
+    ("moss-hl-tag", &["moss-code-background"]),
+    ("moss-hl-deletion", &["moss-code-background"]),
+    ("moss-code-accent-secondary", &["moss-code-background"]),
+    ("moss-code-accent-tertiary", &["moss-code-background"]),
+    ("moss-code-accent-quaternary", &["moss-code-background"]),
+];
+
+#[test]
+fn text_tokens_meet_wcag_aa_contrast() {
+    let tokens = load_tokens().expect("tokens.json must parse");
+    let mut failures = Vec::new();
+    let mut checked = 0;
+
+    for (fg_name, backgrounds) in TEXT_ON_BACKGROUNDS {
+        for dark in [false, true] {
+            let fg_value = token_value(&tokens, fg_name, dark);
+            let Some(fg) = literal_hex(&fg_value) else { continue };
+            for bg_name in *backgrounds {
+                let bg_value = token_value(&tokens, bg_name, dark);
+                let Some(bg) = literal_hex(&bg_value) else { continue };
+                checked += 1;
+                let ratio = contrast_ratio(fg, bg);
+                if ratio < 4.5 {
+                    failures.push(format!(
+                        "  --{} ({}) on --{} ({}) in {} mode: {:.2}:1, needs 4.5:1",
+                        fg_name, fg, bg_name, bg, if dark { "dark" } else { "light" }, ratio
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "tokens.json has text colors below the WCAG 2.1 AA contrast threshold.\n\
+         moss claims AA conformance for its output; these pairs break that claim:\n\n{}\n\n\
+         Fix the token value in crates/moss-core/src/contract/tokens.json, then run\n\
+         `cargo run --bin generate-artifacts --features dev-tools -- contract-docs`.\n\
+         If a pair is wrong — the token is not text, or never lands on that\n\
+         background — remove the pair from TEXT_ON_BACKGROUNDS and say why.",
+        failures.join("\n")
+    );
+
+    // Vacuous-pass guard: a refactor that stops resolving values must not read
+    // as a pass. 18 foregrounds × 2 themes, most on one background.
+    assert!(checked >= 40, "expected at least 40 fg/bg pairs checked, got {}", checked);
+}
+
+/// Boundaries a user must SEE to operate the control — 1.4.11, threshold 3:1.
+/// Decorative hairlines (border-light / border-medium) are exempt and absent here.
+const NON_TEXT_ON_BACKGROUNDS: &[(&str, &[&str])] = &[
+    ("moss-border-strong", &["moss-color-bg", "moss-color-surface"]),
+];
+
+#[test]
+fn non_text_ui_tokens_meet_wcag_aa_contrast() {
+    let tokens = load_tokens().expect("tokens.json must parse");
+    let mut failures = Vec::new();
+
+    for (fg_name, backgrounds) in NON_TEXT_ON_BACKGROUNDS {
+        for dark in [false, true] {
+            let fg_value = token_value(&tokens, fg_name, dark);
+            let Some(fg) = literal_hex(&fg_value) else { continue };
+            for bg_name in *backgrounds {
+                let bg_value = token_value(&tokens, bg_name, dark);
+                let Some(bg) = literal_hex(&bg_value) else { continue };
+                let ratio = contrast_ratio(fg, bg);
+                if ratio < 3.0 {
+                    failures.push(format!(
+                        "  --{} ({}) on --{} ({}) in {} mode: {:.2}:1, needs 3:1",
+                        fg_name, fg, bg_name, bg, if dark { "dark" } else { "light" }, ratio
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(failures.is_empty(),
+        "tokens.json has UI boundary colors below WCAG 2.1 AA non-text contrast:\n\n{}",
+        failures.join("\n"));
+}
+
+#[test]
+fn contrast_ratio_matches_known_wcag_values() {
+    // Anchors the formula itself: without these, a bug in relative_luminance
+    // could make every contrast test above pass vacuously.
+    assert!((contrast_ratio("#ffffff", "#000000") - 21.0).abs() < 0.01);
+    assert!((contrast_ratio("#ffffff", "#ffffff") - 1.0).abs() < 0.001);
+    // Order independence.
+    assert!((contrast_ratio("#8a8580", "#faf8f5") - contrast_ratio("#faf8f5", "#8a8580")).abs() < 1e-9);
+    // The value moss#1047 measured for the old muted token on the page background.
+    assert!((contrast_ratio("#8a8580", "#faf8f5") - 3.45).abs() < 0.01);
+}
