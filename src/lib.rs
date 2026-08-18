@@ -24,7 +24,8 @@
 //!   embeds (`[[...]]`) become ordinary markdown links; [`content_graph`] does the
 //!   Obsidian-style fuzzy path matching underneath.
 //! - **Utilities** — small stateless helpers the editor and build share:
-//!   [`slug`], [`date`], [`sort`], [`home`], [`page_kind`], [`heading`], and
+//!   [`slug`], [`date`], [`sort`], [`home`], [`page_kind`], [`heading`],
+//!   [`html_entities`] (the one decoder for text that arrives HTML-escaped), and
 //!   [`inert_regions`] (the one answer to "which byte ranges of this markdown
 //!   are code or comment, and therefore not live syntax?", shared by every
 //!   pre-parse scanner in moss).
@@ -99,6 +100,7 @@ pub mod frontmatter;
 pub mod frontmatter_union;
 pub mod frontmatter_typed;
 pub mod heading;
+pub mod html_entities;
 pub use heading::{extract_headings, HeadingInfo};
 pub mod inert_regions;
 pub mod link_candidates;
