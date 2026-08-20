@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-20
+
+### Added
+
+- **`html_entities::decode` — one decoder for text that arrives HTML-escaped.** Three callers in moss needed the same small thing and none of them is an HTML parser: the article scraper reads JSON-LD out of a `<script>` block, so titles arrive as `China&#8217;s`; the build's HTML post-pass has to decode an attribute value before it can split a URL on `?`/`#`, because a `#` inside `&#39;` is not a fragment; and the orphan sweep compares an author's media reference against filenames, where `&amp;` is not one. Deliberately not a full entity table — numeric references in both spellings (`&#8217;`, `&#x2019;`) plus the named entities an escaper emits (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`). Total by construction: an unknown token, a bare `&`, or an unterminated entity passes through byte-for-byte, so `Cats & dogs` comes back unchanged.
+- **`moss-border-strong` design token.** The border for an element whose boundary *is* the control — the `.moss-input` underline — meeting the WCAG 1.4.11 non-text-contrast threshold of 3:1 against the page. `moss-border-light` and `moss-border-medium` stay decorative hairlines and stay exempt; reach for this one only when the user must see the boundary to operate the thing.
+- **`moss-skip-link` component entry.** The first focusable element in `<body>`, ahead of the nav island and header: visually hidden at rest, visible on `:focus`, and jumping to `<main id="main-content">` (WCAG 2.4.1). A theme may restyle it, but should keep it off-screen until focused.
+
+### Changed
+
+- **BREAKING (emitted CSS): `moss-color-accent-quiet` is now a `{light, dark}` pair rather than a single value.** It was one of only two colour tokens still carrying a single value for both themes, which meant a dark page composited a light-tuned hairline. Anything reading `tokens.json` and assuming `$value` is a string for this token must handle the object form — every other token already used it. Its contract also now states the limit that was previously only folklore: it is ambient only and is **never** a focus indicator, because it composites too close to the page to satisfy 1.4.11. Use `moss-color-ui-accent` for focus.
+- **Six token values darkened to meet WCAG contrast** — `moss-color-muted`, `moss-code-accent-tertiary`, `moss-code-accent-quaternary`, `moss-hl-comment`, and `moss-hl-meta`. These are not decoration: `moss-color-muted` is body text at 14px in roughly thirty places, and a code comment is text a reader is expected to read, so neither is exempt from 1.4.3. All now meet 4.5:1 against the backgrounds they actually appear on. Sites and themes inherit the new values automatically; a theme that hard-codes the old hexes keeps its old contrast.
+- **`synthesize_image_html` now honors `extra_attrs` for `ImageContext::SiteLogo`.** The site-logo branch built its tag by hand and silently dropped the caller's extra attributes, so the editor preview's `data-source-fm="logo"` annotation never reached the logo — on the homepage that declares `logo:`, it was the one image with no way back to the frontmatter field behind it. The attribute rides directly after `class`, and `None` reproduces the previous byte shape exactly, so existing snapshots are unaffected.
+
 ## [0.9.0] - 2026-08-13
 
 ### Added
