@@ -372,3 +372,39 @@ fn insert_for_is_none_without_a_separator() {
     let c = cand_at("x.png", "關於/assets/x.png", CandidateKind::Asset);
     assert_eq!(insert_for("x", &c, "關於/y.md"), None);
 }
+
+// ── asset_ref_relative: the reference form for a PICKED file ──────────
+//
+// The picker hands us an exact file the author pointed at in a file browser,
+// with no typed query to infer intent from — so unlike `insert_for`, this is
+// never `None`. Same invariant, though: the emitted form is the one whose
+// first applicable resolver step reproduces this exact path.
+
+#[test]
+fn asset_ref_relative_prefers_the_source_relative_form() {
+    assert_eq!(asset_ref_relative("關於/x.md", "關於/img/cover.png"), "img/cover.png");
+}
+
+#[test]
+fn asset_ref_relative_roots_a_path_outside_the_page_subtree() {
+    assert_eq!(asset_ref_relative("關於/x.md", "photos/cover.png"), "/photos/cover.png");
+}
+
+#[test]
+fn asset_ref_relative_never_reads_a_name_prefix_as_a_parent() {
+    // `關於2/` does not live inside `關於/`, though a raw string compare says it
+    // does. This is the component-compare guarantee `source_relative` documents.
+    assert_eq!(asset_ref_relative("關於/x.md", "關於2/cover.png"), "/關於2/cover.png");
+}
+
+#[test]
+fn asset_ref_relative_from_a_root_page_is_root_relative() {
+    // parent_dir is "" here, so source-relative and root-relative coincide —
+    // and step 2 reproduces the path exactly, so no leading `/` is needed.
+    assert_eq!(asset_ref_relative("index.md", "img/cover.png"), "img/cover.png");
+}
+
+#[test]
+fn asset_ref_relative_normalizes_windows_separators() {
+    assert_eq!(asset_ref_relative("關於\\x.md", "關於\\img\\cover.png"), "img/cover.png");
+}

@@ -226,12 +226,28 @@ pub fn insert_for(prefix: &str, c: &CompletionCandidate, from_rel: &str) -> Opti
     match c.kind {
         CandidateKind::Heading => None,
         CandidateKind::Page => Some(rel.strip_suffix(".md").unwrap_or(&rel).to_string()),
-        CandidateKind::Asset => {
-            let from = from_rel.replace('\\', "/");
-            let from_dir = crate::resolve::parent_dir(&from);
-            Some(source_relative(from_dir, &rel).unwrap_or_else(|| format!("/{rel}")))
-        }
+        CandidateKind::Asset => Some(asset_ref_relative(from_rel, &rel)),
     }
+}
+
+/// The reference form for an asset at `rel_path`, written from the page at
+/// `from_rel` — the asset arm of [`insert_for`], lifted out so the file PICKER
+/// can share it.
+///
+/// Same invariant: the emitted form is the one whose first applicable resolver
+/// step reproduces `rel_path` exactly — source-relative when the asset lives in
+/// the page's own subtree (`resolve_asset_ref` step 2 reproduces it by
+/// construction), `/`-rooted otherwise (pinned by step 1).
+///
+/// Unlike `insert_for` this never returns `None`. `insert_for` answers "what did
+/// the author's typed query imply?", and a query without a `/` implies nothing;
+/// the picker instead hands over a file the author pointed at directly, so there
+/// is always an exact answer to give.
+pub fn asset_ref_relative(from_rel: &str, rel_path: &str) -> String {
+    let rel = rel_path.replace('\\', "/");
+    let from = from_rel.replace('\\', "/");
+    let from_dir = crate::resolve::parent_dir(&from);
+    source_relative(from_dir, &rel).unwrap_or_else(|| format!("/{rel}"))
 }
 
 /// `rel_path` expressed relative to `from_dir`, or `None` when it is not inside

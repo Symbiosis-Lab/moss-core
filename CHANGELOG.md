@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`link_completions::asset_ref_relative` — the reference form for an asset, written from a given page.** The asset arm of `insert_for`, lifted out so a file *picker* can share it with the search dropdown. Same invariant: it emits the form whose first applicable resolver step reproduces the path exactly — source-relative when the asset lives in the page's own subtree, `/`-rooted otherwise. Unlike `insert_for` it never returns `None`: a typed query without a `/` implies no path, but a file the author pointed at directly always has an exact answer.
+
 ## [0.11.0] - 2026-08-21
 
 ### Changed
