@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-21
+
+### Changed
+
+- **`contract::COMPONENTS` now declares every class moss emits, not just the prefixed ones.** The table held 92 of the 189 classes moss ships. The scanner behind `components_sync_test` only inserted a class if it began with `moss-` (plus the callout and main-nav families), so the whole `comment-*` and `review-*` families, the lightbox and media-collection page, `link-preview*`, and the bare co-classes `active`, `title`, `empty`, `minimal`, `size-std` and `wikilink` could be renamed, mistyped or dropped with the suite still green. 44 new entries close that, each carrying its parent, an example and a description written from the emitting call site rather than from the name. Two classes are allowlisted instead — `d` and `f`, which belong to the standalone Jupyter iframe wrapper that moss generates whole with its own scoped inline styles, unreachable by any site stylesheet or theme. The bar for that list is deliberately high: a class in a page moss builds is contract, however short its name. Consumers reading the table see more entries; no emitted markup changed.
+
+### Fixed
+
+- **The sync test reads markup the way a browser does, so three real gaps became visible.** `components_sync_test` matched `class="..."` on a bare quote only, so it never saw markup emitted through an ordinary Rust string literal — where the attribute reads `class=\"...\"` — which is how twenty emitter files write it. It also read doc comments as if they were emitted markup, and scanned `site.css` and its `site/` partials while ignoring the three feature stylesheets shipped alongside them (`comments.css`, `review.css`, `email.css`). With the matching fixed: `moss-embed-pending` (the co-class on an embed still arriving from iCloud, emitted since the cloud gate landed) and `moss-subscribe-script` are now governed, and `.moss-subscribe-description` was deleted from `email.css` — the emitter stopped producing it when description moved out of the shortcode into prose, and the stylesheet had gone on shipping rules for markup that no longer existed.
+
 ## [0.10.0] - 2026-08-20
 
 ### Added
