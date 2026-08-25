@@ -3064,11 +3064,11 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         kind: "instance",
         parent: "moss-footnote-ref",
         data_attrs: &[],
-        example_html: r##"<aside class="moss-sidenote" aria-hidden="true"><span class="moss-sidenote-number">1</span><p>The note.</p></aside>"##,
+        example_html: r##"<aside class="moss-sidenote"><span class="moss-sidenote-number">1</span><p>The note.</p></aside>"##,
         example_markdown: "Text[^1].\n\n[^1]: The note.",
         status: Status::Emerging,
         since: "1",
-        description: "A copy of an endnote set in the page's outer margin, beside the line that cites it. Built in the browser by `sidenotes.ts` (never emitted by the build) and inserted immediately after its marker. `aria-hidden` because the endnote section below the article is the canonical copy — it owns the ids, the roles and the back-links — and a second copy in the accessibility tree would read every note twice. Rendered only above 76rem, where the centred content column leaves a gutter wide enough to set text in; below that the marker's jump to the endnote list carries the reader instead.",
+        description: "A copy of an endnote set in the page's outer margin, beside the line that cites it. Built in the browser by `sidenotes.ts` (never emitted by the build) and inserted immediately after its marker. Rendered only above 76rem, where the centred content column leaves a gutter wide enough to set text in; below that it is `display: none` — out of the accessibility tree — and the marker's jump to the endnote list carries the reader instead. The same media query hides the (mirrored) endnote list above the threshold, so exactly one copy of each note is visible and accessible at any width.",
     },
     ComponentEntry {
         class: "moss-sidenote-number",
@@ -3080,6 +3080,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         status: Status::Emerging,
         since: "1",
         description: "The ordinal at the head of a margin sidenote, repeating its marker's number. The one raised element inside the note, and what lets a reader tell two adjacent notes apart.",
+    },
+    ComponentEntry {
+        class: "moss-sidenotes-mirrored",
+        kind: "instance",
+        parent: "moss-footnotes",
+        data_attrs: &[],
+        example_html: r##"<section class="moss-footnotes moss-sidenotes-mirrored" role="doc-endnotes"><ol><li id="fn-1" tabindex="-1"><p>The note. <a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;&#xFE0E;</a></p></li></ol></section>"##,
+        example_markdown: "Text[^1].\n\n[^1]: The note.",
+        status: Status::Emerging,
+        since: "1",
+        description: "Added to the endnote section by `sidenotes.ts` after it verifies every note in the section was cloned into the margin. Above 76rem a mirrored list is `display: none` — each note is already beside its citation, so the list would say everything twice — while `:has(li:target)` re-reveals it whenever the URL fragment names a note, keeping `#fn-N` deep links, marker clicks and the landing wash working. Without JavaScript, or with a note the cloner could not resolve, the class never appears and the list stays visible at every width.",
     },
     // Classes the site JavaScript reads, declared 2026-08-09.
     //
