@@ -57,7 +57,7 @@ fn footnote_definition_is_never_demoted_to_prose() {
         "the footnote marker was SILENTLY DELETED: {html}"
     );
     assert!(
-        html.contains(r##"<sup class="moss-footnote-ref" id="fnref-1"><a href="#fn-1" role="doc-noteref">1</a></sup>"##),
+        html.contains(r##"<sup class="moss-footnote-ref" id="fnref-1" tabindex="-1"><a href="#fn-1" role="doc-noteref">1</a></sup>"##),
         "expected a numbered marker: {html}"
     );
     assert!(
@@ -65,6 +65,23 @@ fn footnote_definition_is_never_demoted_to_prose() {
         "expected an endnote section: {html}"
     );
     assert!(html.contains("the note"), "note body lost: {html}");
+}
+
+#[test]
+fn footnote_marker_and_endnote_item_are_focusable_targets() {
+    let html = render("Text[^1].\n\n[^1]: the note\n");
+    assert!(
+        html.contains(
+            r##"<sup class="moss-footnote-ref" id="fnref-1" tabindex="-1">"##
+        ),
+        "marker <sup> must carry tabindex=\"-1\" so #fnref-1 fragment \
+         navigation can focus it: {html}"
+    );
+    assert!(
+        html.contains(r##"<li id="fn-1" tabindex="-1">"##),
+        "endnote <li> must carry tabindex=\"-1\" so #fn-1 fragment \
+         navigation can focus it: {html}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +168,7 @@ fn footnote_ref_inside_blockquote_gets_numbered_marker() {
     let html = render("> Quoted[^1].\n\n[^1]: note\n");
     assert!(!html.contains("[^1]"), "marker rendered literally: {html}");
     assert!(
-        html.contains(r##"<sup class="moss-footnote-ref" id="fnref-1">"##),
+        html.contains(r##"<sup class="moss-footnote-ref" id="fnref-1" tabindex="-1">"##),
         "got: {html}"
     );
     assert_backrefs_resolve(&html);
@@ -163,7 +180,7 @@ fn footnote_ref_inside_callout_body_gets_numbered_marker() {
     assert!(html.contains(r#"class="callout""#), "not a callout: {html}");
     assert!(!html.contains("[^1]"), "marker rendered literally: {html}");
     assert!(
-        html.contains(r##"<sup class="moss-footnote-ref" id="fnref-1">"##),
+        html.contains(r##"<sup class="moss-footnote-ref" id="fnref-1" tabindex="-1">"##),
         "got: {html}"
     );
     assert_backrefs_resolve(&html);
@@ -177,7 +194,7 @@ fn footnote_ref_inside_multi_paragraph_list_item_gets_numbered_marker() {
     assert!(html.contains("<li>"), "not a list: {html}");
     assert!(!html.contains("[^1]"), "marker rendered literally: {html}");
     assert!(
-        html.contains(r##"<sup class="moss-footnote-ref" id="fnref-1">"##),
+        html.contains(r##"<sup class="moss-footnote-ref" id="fnref-1" tabindex="-1">"##),
         "got: {html}"
     );
     assert_backrefs_resolve(&html);
@@ -206,7 +223,7 @@ fn numbering_follows_first_reference_not_source_order() {
     let a = html.find("alpha").expect("alpha in output");
     assert!(b < a, "endnotes must be in first-reference order: {html}");
     assert!(html.contains(r##"href="#fn-1" role="doc-noteref">1</a>"##), "{html}");
-    assert!(html.contains(r#"<li id="fn-1">"#), "{html}");
+    assert!(html.contains(r#"<li id="fn-1" tabindex="-1">"#), "{html}");
     assert_backrefs_resolve(&html);
 }
 
@@ -215,7 +232,7 @@ fn repeated_reference_gets_one_note_and_one_backref_each() {
     let html = render("A[^1] and B[^1].\n\n[^1]: shared\n");
     assert!(html.contains(r#"id="fnref-1""#), "{html}");
     assert!(html.contains(r#"id="fnref-1-2""#), "{html}");
-    assert_eq!(html.matches(r#"<li id="fn-1">"#).count(), 1, "{html}");
+    assert_eq!(html.matches(r#"<li id="fn-1" tabindex="-1">"#).count(), 1, "{html}");
     assert_eq!(
         html.matches(r#"class="moss-footnote-backref""#).count(),
         2,
@@ -238,7 +255,7 @@ fn marker_inside_a_note_body_is_numbered_and_backlinked() {
     // The ordering trap: note 1's body carries a marker, so the back-link
     // lists cannot be written until every body has rendered.
     let html = render("A[^1].\n\n[^1]: see [^2]\n\n[^2]: two\n");
-    assert!(html.contains(r#"<li id="fn-2">"#), "{html}");
+    assert!(html.contains(r#"<li id="fn-2" tabindex="-1">"#), "{html}");
     assert_backrefs_resolve(&html);
 }
 
@@ -266,7 +283,7 @@ fn definition_never_referenced_still_renders_its_text() {
     // rather than dropping it, so nothing the author wrote disappears.
     let html = render("Use this:\n\n[^abc]: whatever\n");
     assert!(html.contains("whatever"), "author text dropped: {html}");
-    assert!(html.contains(r#"<li id="fn-1">"#), "{html}");
+    assert!(html.contains(r#"<li id="fn-1" tabindex="-1">"#), "{html}");
     assert!(
         !html.contains("moss-footnote-backref"),
         "an unreferenced note has nothing to link back to: {html}"
@@ -281,9 +298,9 @@ fn repeated_label_first_definition_wins_endnote_and_repeat_renders_in_place() {
     // into the endnote, and the repeat renders in place in the body — wrong
     // but visible, which beats GFM's silent drop. ADR-035 § render contract.
     let html = render("A[^1].\n\n[^1]: first\n\n[^1]: second\n");
-    assert_eq!(html.matches(r#"<li id="fn-1">"#).count(), 1, "{html}");
+    assert_eq!(html.matches(r#"<li id="fn-1" tabindex="-1">"#).count(), 1, "{html}");
     let (_, after_li) = html
-        .split_once(r#"<li id="fn-1">"#)
+        .split_once(r#"<li id="fn-1" tabindex="-1">"#)
         .expect("endnote li present");
     let (endnote, _) = after_li.split_once("</li>").expect("endnote li closes");
     assert!(
@@ -315,12 +332,12 @@ fn a_repeat_whose_first_definition_is_nested_inside_another_note_still_renders()
     );
     // First-reference order: a = fn-1, b = fn-2. The nested FIRST
     // definition wins b's endnote…
-    let (_, after_b) = html.split_once(r#"<li id="fn-2">"#).expect("fn-2 present");
+    let (_, after_b) = html.split_once(r#"<li id="fn-2" tabindex="-1">"#).expect("fn-2 present");
     let (endnote_b, _) = after_b.split_once("</li>").expect("fn-2 closes");
     assert!(endnote_b.contains("INNERB"), "{html}");
     // …and is NOT also duplicated into its host note's endnote: it is
     // hoisted, so it emits nothing when fn-1's body renders.
-    let (_, after_a) = html.split_once(r#"<li id="fn-1">"#).expect("fn-1 present");
+    let (_, after_a) = html.split_once(r#"<li id="fn-1" tabindex="-1">"#).expect("fn-1 present");
     let (endnote_a, _) = after_a.split_once("</li>").expect("fn-1 closes");
     assert!(endnote_a.contains("OUTERBODY"), "{html}");
     assert!(
@@ -357,13 +374,13 @@ fn a_marker_living_only_in_a_repeats_body_is_numbered_where_the_reader_meets_it(
 #[test]
 fn a_marker_met_inside_an_unreferenced_notes_body_is_numbered_in_reading_order() {
     let html = render("Plain text.\n\n[^a]: see [^b]\n\n[^c]: c text\n\n[^b]: b text\n");
-    let (_, after1) = html.split_once(r#"<li id="fn-1">"#).expect("fn-1 present");
+    let (_, after1) = html.split_once(r#"<li id="fn-1" tabindex="-1">"#).expect("fn-1 present");
     let (note1, _) = after1.split_once("</li>").expect("fn-1 closes");
     assert!(
         note1.contains(r##"href="#fn-2""##),
         "the marker met inside note 1 must carry the NEXT number: {html}"
     );
-    let (_, after2) = html.split_once(r#"<li id="fn-2">"#).expect("fn-2 present");
+    let (_, after2) = html.split_once(r#"<li id="fn-2" tabindex="-1">"#).expect("fn-2 present");
     let (note2, _) = after2.split_once("</li>").expect("fn-2 closes");
     assert!(note2.contains("b text"), "b must be note 2: {html}");
     assert_backrefs_resolve(&html);

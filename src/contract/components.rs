@@ -3028,7 +3028,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         data_attrs: &[],
         example_html: r##"<section class="moss-footnotes" role="doc-endnotes">
 <ol>
-<li id="fn-1"><p>The note. <a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;&#xFE0E;</a></p>
+<li id="fn-1" tabindex="-1"><p>The note. <a class="moss-footnote-backref" href="#fnref-1" role="doc-backlink" aria-label="Back to reference 1">&#8617;&#xFE0E;</a></p>
 </li>
 </ol>
 </section>"##,
@@ -3042,7 +3042,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         kind: "instance",
         parent: "moss-footnotes",
         data_attrs: &[],
-        example_html: r##"<sup class="moss-footnote-ref" id="fnref-1"><a href="#fn-1" role="doc-noteref">1</a></sup>"##,
+        example_html: r##"<sup class="moss-footnote-ref" id="fnref-1" tabindex="-1"><a href="#fn-1" role="doc-noteref">1</a></sup>"##,
         example_markdown: "Text[^1].\n\n[^1]: The note.",
         status: Status::Emerging,
         since: "1",

@@ -325,7 +325,7 @@ pub(super) fn render_marker<H: RenderHooks + ?Sized>(
         let id = marker_id(n, *k);
         let _ = write!(
             out,
-            r##"<sup class="moss-footnote-ref" id="{id}"><a href="#fn-{n}" role="doc-noteref">{n}</a></sup>"##
+            r##"<sup class="moss-footnote-ref" id="{id}" tabindex="-1"><a href="#fn-{n}" role="doc-noteref">{n}</a></sup>"##
         );
     } else {
         let _ = write!(out, r##"<sup class="moss-footnote-ref">{n}</sup>"##);
@@ -404,7 +404,7 @@ pub fn render_section<H: RenderHooks + ?Sized>(
     for (n, label, head, tail) in notes {
         let backrefs = ctx.emitted.get(&label).copied().unwrap_or(0);
         if emit_anchors {
-            let _ = write!(out, "<li id=\"fn-{n}\">");
+            let _ = write!(out, "<li id=\"fn-{n}\" tabindex=\"-1\">");
         } else {
             out.push_str("<li>");
         }

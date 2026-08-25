@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`link_completions::asset_ref_relative` — the reference form for an asset, written from a given page.** The asset arm of `insert_for`, lifted out so a file *picker* can share it with the search dropdown. Same invariant: it emits the form whose first applicable resolver step reproduces the path exactly — source-relative when the asset lives in the page's own subtree, `/`-rooted otherwise. Unlike `insert_for` it never returns `None`: a typed query without a `/` implies no path, but a file the author pointed at directly always has an exact answer.
 
+### Changed
+
+- **`ast::footnotes` now emits `tabindex="-1"` on both the footnote marker (`<sup class="moss-footnote-ref">`) and the endnote item (`<li id="fn-N">`).** A `:target` fragment jump (forward to the note, backward to the marker) must move keyboard focus, not only scroll position — an unfocusable target leaves the reader's tab order stranded at whatever they clicked. Both elements were already valid fragment-navigation targets by id; this makes them programmatically focusable so the browser actually parks focus on arrival.
+
 ## [0.11.0] - 2026-08-21
 
 ### Changed
