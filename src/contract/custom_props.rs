@@ -82,6 +82,12 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         description: "Set to `none` to turn the floating nav island off site-wide — the page then behaves as it did before ADR-049: the masthead scrolls away and nothing replaces it. This is the island's whole tuning surface on purpose; its measure already tracks `--moss-nav-width`/`--moss-content-width`, so widening the nav widens the island with it.",
     },
     CustomProp {
+        name: "--moss-sidenote-reserve",
+        owner: "body",
+        default: "0px",
+        description: "Width of the right-hand gutter reserved for margin sidenotes. Core pads <body> by it so nav, article, comments and footer centre as one assembly; the sidenotes stylesheet (shipped only on sites with footnotes) sets it at wide viewports to a measured clamp. A theme can override that clamp to widen or narrow the note column; setting it on a site without footnotes just shifts the column left for no benefit.",
+    },
+    CustomProp {
         name: "--moss-hint-x",
         owner: "[data-tooltip]",
         default: "0px",
