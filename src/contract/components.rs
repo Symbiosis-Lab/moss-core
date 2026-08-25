@@ -3059,6 +3059,28 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         since: "1",
         description: "The return arrow at the end of a note, linking back to the marker that sent the reader there. One per marker, so a note referenced twice ends with two arrows. A note nobody referenced has none. The arrow carries VARIATION SELECTOR-15 (`&#xFE0E;`) so mobile Chrome renders it as plain text rather than a coloured emoji.",
     },
+    ComponentEntry {
+        class: "moss-sidenote",
+        kind: "instance",
+        parent: "moss-footnote-ref",
+        data_attrs: &[],
+        example_html: r##"<aside class="moss-sidenote" aria-hidden="true"><span class="moss-sidenote-number">1</span><p>The note.</p></aside>"##,
+        example_markdown: "Text[^1].\n\n[^1]: The note.",
+        status: Status::Emerging,
+        since: "1",
+        description: "A copy of an endnote set in the page's outer margin, beside the line that cites it. Built in the browser by `sidenotes.ts` (never emitted by the build) and inserted immediately after its marker. `aria-hidden` because the endnote section below the article is the canonical copy — it owns the ids, the roles and the back-links — and a second copy in the accessibility tree would read every note twice. Rendered only above 76rem, where the centred content column leaves a gutter wide enough to set text in; below that the marker's jump to the endnote list carries the reader instead.",
+    },
+    ComponentEntry {
+        class: "moss-sidenote-number",
+        kind: "instance",
+        parent: "moss-sidenote",
+        data_attrs: &[],
+        example_html: r##"<span class="moss-sidenote-number">1</span>"##,
+        example_markdown: "Text[^1].\n\n[^1]: The note.",
+        status: Status::Emerging,
+        since: "1",
+        description: "The ordinal at the head of a margin sidenote, repeating its marker's number. The one raised element inside the note, and what lets a reader tell two adjacent notes apart.",
+    },
     // Classes the site JavaScript reads, declared 2026-08-09.
     //
     // moss ships JS into every built site, and that JS finds what it acts on by
