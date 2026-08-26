@@ -3150,7 +3150,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "Text[^1].\n\n[^1]: The note.",
         status: Status::Emerging,
         since: "1",
-        description: "The arrival wash, as a class: `:target` cannot reach a margin aside (no note id by design), so `sidenotes.ts` moves this class to whichever element the reader landed on — a margin aside on a `#fn-N` deep link, an endnote `li` in the expanded sheet, or the marker a backref returned them to. One element carries it at a time; same keyframes and reduced-motion contract as the `li:target` wash.",
+        description: "The arrival wash, as a class: `:target` cannot reach a margin aside (no note id by design), so `sidenotes.ts` moves this class to whichever element the reader landed on — a margin aside on a `#fn-N` deep link, or the marker a backref returned them to. It fires only for an arrival the reader could not see coming: opening the sheet is not one, because the sheet shows the note. One element carries it at a time; same keyframes and reduced-motion contract as the `li:target` wash.",
     },
     // Classes the site JavaScript reads, declared 2026-08-09.
     //
