@@ -1,15 +1,12 @@
 //! Unified media reference resolution and display attributes.
 //!
 //! All media reference contexts in moss (frontmatter cover, hero, gallery,
-//! inline images, wikilink embeds) call into this module. It parses pipe-
-//! separated display attributes (`object-fit`, `object-position`) and
-//! resolves paths via the [`ContentGraph`].
+//! inline images, wikilink embeds) call into this module to parse pipe-
+//! separated display attributes (`object-fit`, `object-position`).
 //!
 //! Pure Rust, zero I/O.
 
 use std::collections::BTreeMap;
-
-use crate::content_graph::ContentGraph;
 
 // ---------------------------------------------------------------------------
 // Fit — maps to CSS `object-fit`
@@ -261,20 +258,6 @@ impl MediaAttrs {
         }
         Some(parts.join(" "))
     }
-}
-
-// ---------------------------------------------------------------------------
-// ResolvedMedia
-// ---------------------------------------------------------------------------
-
-/// A fully resolved media reference: path + display attributes.
-/// Not yet consumed outside tests — kept `pub(crate)` until a real caller exists.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedMedia {
-    /// Root-relative path (no leading `/`) or external URL.
-    pub path: String,
-    /// Parsed display attributes.
-    pub attrs: MediaAttrs,
 }
 
 // ---------------------------------------------------------------------------
@@ -733,49 +716,6 @@ pub fn html_escape(s: &str) -> String {
         }
     }
     out
-}
-
-// ---------------------------------------------------------------------------
-// Resolution
-// ---------------------------------------------------------------------------
-
-/// Returns `true` if the path looks like an external URL or data URI.
-fn is_external(path: &str) -> bool {
-    path.starts_with("http://")
-        || path.starts_with("https://")
-        || path.starts_with("//")
-        || path.starts_with("data:")
-}
-
-/// Full pipeline: strip wikilink → split pipe → resolve path → parse attrs.
-///
-/// - External URLs (`http://`, `https://`, `//`, `data:`) pass through unchanged.
-/// - Root-relative paths (leading `/`) have the slash stripped.
-/// - Everything else is resolved via [`ContentGraph::resolve_path`], falling
-///   back to the raw path if unresolved.
-pub(crate) fn resolve_media_ref(raw: &str, source_path: &str, graph: &ContentGraph) -> ResolvedMedia {
-    let inner = strip_wikilink(raw);
-    let (path_part, attrs_str) = split_pipe(inner);
-    let path_trimmed = path_part.trim();
-    let attrs = parse_media_attrs(attrs_str);
-
-    let resolved_path = if is_external(path_trimmed) {
-        // External URL — passthrough.
-        path_trimmed.to_string()
-    } else if let Some(stripped) = path_trimmed.strip_prefix('/') {
-        // Root-relative — strip leading slash.
-        stripped.to_string()
-    } else {
-        // Resolve via content graph, fall back to raw path.
-        graph
-            .resolve_path(path_trimmed, source_path)
-            .unwrap_or_else(|| path_trimmed.to_string())
-    };
-
-    ResolvedMedia {
-        path: resolved_path,
-        attrs,
-    }
 }
 
 // ---------------------------------------------------------------------------
