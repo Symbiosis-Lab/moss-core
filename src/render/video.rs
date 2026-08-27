@@ -10,7 +10,7 @@
 //! ```html
 //! <video class="moss-embed moss-embed-video" src="URL.mp4"
 //!        data-placeholder-src="URL.original" poster="URL.thumb.jpg"
-//!        data-thumb-src="URL.thumb.jpg" controls preload="metadata"
+//!        data-thumb-src="URL.thumb.jpg" controls playsinline preload="metadata"
 //!        { width="W"}?{ height="H"}?></video>
 //! ```
 //!
@@ -21,8 +21,11 @@
 //!   the post-pass a no-op for synthesizer-emitted videos.
 //!   Source: moss-core pre-Phase-0 `VideoRenderer` at
 //!   `crates/moss-core/src/resolve/embed_renderer.rs:509-571` (commit `efb834a3e`).
-//! - `controls preload="metadata"` emitted on the **default** branch. The
-//!   ambient loop branch (`![[clip.mp4|loop]]`) instead emits
+//! - `controls playsinline preload="metadata"` emitted on the **default**
+//!   branch. `playsinline` keeps playback in the page on iOS instead of
+//!   handing the video to the fullscreen AVKit player; both branches carry
+//!   it, so the attribute is not what distinguishes them. The ambient loop
+//!   branch (`![[clip.mp4|loop]]`) instead emits
 //!   `autoplay muted loop playsinline preload="metadata"` with no `controls`
 //!   and adds `data-loop` for JS/CSS targeting. See `AMBIENT_PLAYBACK_ATTRS`.
 //! - Width/height priority: (1) `TitleParams` `|WxH` sizing alias wins
@@ -134,7 +137,7 @@ pub fn synthesize_video_html(
             r#" data-loop"#,
         )
     } else {
-        (r#"controls preload="metadata""#.to_string(), "")
+        (r#"controls playsinline preload="metadata""#.to_string(), "")
     };
 
     format!(
@@ -197,14 +200,16 @@ mod tests {
     }
 
     #[test]
-    fn video_emits_controls_on_default_path() {
+    fn video_emits_controls_and_playsinline_on_default_path() {
         // The default wikilink `![[clip.mp4]]` (no `loop` param) emits
-        // `controls preload="metadata"`. The loop branch is the one exception
-        // (it emits the ambient set instead). Relaxed from the original
-        // "unconditionally" test name — loop is the opt-in departure.
+        // `controls playsinline preload="metadata"`. The loop branch is the one
+        // exception on `controls` (it emits the ambient set instead), but it
+        // carries `playsinline` too — without it iOS hands playback to the
+        // fullscreen AVKit player instead of playing in the page.
         let p = params_with(&[("kind", "video")]);
         let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
         assert!(out.contains(" controls"), "default path must emit controls, got: {}", out);
+        assert!(out.contains(" playsinline"), "default path must emit playsinline, got: {}", out);
     }
 
     #[test]
@@ -439,16 +444,6 @@ mod tests {
         let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
         assert!(out.contains(r#"data-type="video""#), "missing data-type=video, got: {}", out);
         assert!(out.contains(" data-loop"), "missing data-loop attribute, got: {}", out);
-    }
-
-    #[test]
-    fn default_path_emits_controls() {
-        // The default `![[clip.mp4]]` (no loop param) must still emit `controls`.
-        // Relaxed from the previous test name "video_emits_controls_unconditionally"
-        // — the loop branch is the one exception.
-        let p = params_with(&[("kind", "video")]);
-        let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
-        assert!(out.contains(" controls"), "default path must emit controls, got: {}", out);
     }
 
     #[test]
