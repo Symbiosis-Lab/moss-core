@@ -38,7 +38,7 @@
 //!   iframe-bridge swaps `src` to the `.mp4` payload once the transcode
 //!   completes (`frontend/bridge/iframe-bridge.ts:666`).
 //! - `poster` and `data-thumb-src` both reference `to_thumb(original_src)`.
-//!   The iframe-bridge listens for `moss-thumb-ready` and swaps `poster`
+//!   The iframe-bridge listens for `moss-asset-ready` and swaps `poster`
 //!   in when the thumbnail lands.
 //!
 //! # `.mov` → `.mp4` source-extension swap (moved from placeholder.rs)
@@ -96,7 +96,7 @@ pub fn synthesize_video_html(
 
     // Thumbnail path — used for both `poster` (initial frame before
     // transcode lands) and `data-thumb-src` (iframe-bridge swap target
-    // when `moss-thumb-ready` fires). Mirrors the regex behaviour at
+    // when `moss-asset-ready` fires). Mirrors the regex behaviour at
     // `placeholder.rs:444-446`.
     let thumb = to_thumb(src);
 
@@ -362,7 +362,7 @@ mod tests {
     fn synth_video_poster_and_thumb() {
         // `poster` carries the thumbnail URL so the first frame paints
         // immediately; `data-thumb-src` is the iframe-bridge's swap-target
-        // when `moss-thumb-ready` fires (covers the case where the thumb
+        // when `moss-asset-ready` fires (covers the case where the thumb
         // arrives after the page renders). Both reference `to_thumb(src)`,
         // mirroring `placeholder.rs:444-446`.
         let p = params_with(&[("kind", "video")]);
