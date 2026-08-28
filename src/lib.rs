@@ -25,6 +25,8 @@
 //!   Obsidian-style fuzzy path matching underneath.
 //! - **Utilities** — small stateless helpers the editor and build share:
 //!   [`slug`], [`date`], [`sort`], [`home`], [`page_kind`], [`heading`],
+//!   [`attachment`] (where a page's images live, and therefore which folders
+//!   are storage rather than sections),
 //!   [`html_entities`] (the one decoder for text that arrives HTML-escaped), and
 //!   [`inert_regions`] (the one answer to "which byte ranges of this markdown
 //!   are code or comment, and therefore not live syntax?", shared by every
@@ -88,6 +90,7 @@
 
 pub mod ast;
 pub mod asset_paths;
+pub mod attachment;
 pub(crate) mod path_ext;
 pub mod asset_snapshot;
 pub mod content_graph;
