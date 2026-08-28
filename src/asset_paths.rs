@@ -359,6 +359,125 @@ pub fn to_webp_rung(source: &str, width: u32) -> String {
     format!("{stem}.w{width}.webp")
 }
 
+/// One rung of the video delivery ladder: a resolution, a frame rate and the
+/// video bitrate that pairs with them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoRung {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub video_kbps: u32,
+    /// Audio bitrate for this rung, kbps. Audio sits in the rung rather than
+    /// in a separate config knob because it is not independent of the picture:
+    /// pairing the 45 kbps bottom rung with the 192 kbps track the top rung
+    /// uses makes it a 237 kbps rung, which the link this ladder exists for
+    /// cannot carry. Only two distinct settings appear across the table, so an
+    /// HLS ladder built from it needs exactly two `#EXT-X-MEDIA` groups.
+    pub audio_kbps: u32,
+    /// Audio channel count. Mono on the lean rungs — at 32 kbps, stereo spends
+    /// bits on a second channel that the first one needs.
+    pub audio_channels: u32,
+}
+
+impl VideoRung {
+    /// Total kbps a viewer must sustain for this rung, video plus audio.
+    /// Container overhead is a few percent on top and is not counted here.
+    pub const fn total_kbps(&self) -> u32 {
+        self.video_kbps + self.audio_kbps
+    }
+}
+
+/// The least bits per pixel per frame that still yields a watchable picture.
+///
+/// A bitrate floor has to be stated per pixel, not in absolute kbps. The
+/// absolute floor this replaced (250 kbps) permitted 0.0090 bits/pixel/frame at
+/// 1280x720x30 while rejecting the 0.0260 of a 45 kbps 320x180x30 rung — nearly
+/// three times leaner per pixel than the rung it turned away.
+///
+/// 0.045 is measured, not chosen. Encoding the same source at 45 kbps and
+/// 320x180 (docs/archive/2026-08-27-video-delivery-on-slow-networks.md, Stage 0):
+/// at 30 fps — 0.0260 — faces and wall texture dissolve; at 15 fps — 0.0521 —
+/// the picture holds. Apple's own leanest published rung, 145 kbps at 416x234x30,
+/// sits at 0.0497, and every other rung in [`VIDEO_LADDER`] is above 0.05.
+///
+/// This is what forces the bottom rung to 15 fps rather than 30: at 45 kbps
+/// there is no other way to clear the floor.
+pub const MIN_BITS_PER_PIXEL_PER_FRAME: f64 = 0.045;
+
+/// The video delivery ladder, lowest rung first.
+///
+/// Apple's H.264 rungs, spaced the 1.5-2x apart their authoring spec asks for,
+/// **plus one rung below Apple's bottom**. That extra rung is the whole reason
+/// this table exists: an iPhone on a throttled link measured 118-232 kbps, and
+/// Apple's leanest arm (145k video + 64k audio = 209 kbps) took 67 s to show a
+/// frame and then drained its buffer. 320x180 at 45 kbps plus a 32 kbps mono
+/// audio rendition totals about 77 kbps — roughly 60% of the worst rate
+/// observed, which is the margin a link that swings 2x needs.
+///
+/// Must be strictly ascending in both width and bitrate — the `take_while` in
+/// [`video_ladder_rungs`] depends on it. Every rung must clear
+/// [`MIN_BITS_PER_PIXEL_PER_FRAME`]; `video_ladder_rungs_clear_the_quality_floor`
+/// is what keeps that true when someone edits a number here.
+///
+/// The **top rung is also the delivery ceiling**. There is deliberately no
+/// second `max_video_bitrate_kbps` knob beside this table: two independent
+/// statements of how good the best version gets is the overlap that step 1 of
+/// the archive doc deleted, and re-introducing it here would rebuild it.
+pub const VIDEO_LADDER: [VideoRung; 6] = [
+    VideoRung { width: 320, height: 180, fps: 15, video_kbps: 45, audio_kbps: 32, audio_channels: 1 },
+    VideoRung { width: 416, height: 234, fps: 30, video_kbps: 145, audio_kbps: 32, audio_channels: 1 },
+    VideoRung { width: 640, height: 360, fps: 30, video_kbps: 365, audio_kbps: 192, audio_channels: 2 },
+    VideoRung { width: 768, height: 432, fps: 30, video_kbps: 730, audio_kbps: 192, audio_channels: 2 },
+    VideoRung { width: 960, height: 540, fps: 30, video_kbps: 1100, audio_kbps: 192, audio_channels: 2 },
+    VideoRung { width: 1280, height: 720, fps: 30, video_kbps: 2000, audio_kbps: 192, audio_channels: 2 },
+];
+
+/// The rungs worth encoding for a source of this width.
+///
+/// Truncated from the **top only**: `take_while` drops rungs wider than the
+/// source, exactly as [`ladder_rungs`] does for images. Never truncate from the
+/// bottom — the bottom rung is the entire point of the ladder, and a
+/// low-bitrate source still downscales to it.
+///
+/// A source narrower than every rung keeps the bottom one, so the result is
+/// never empty; encoding a 200 px clip at 320 px wastes a little, and having no
+/// rung at all would be a video that cannot be delivered.
+pub fn video_ladder_rungs(source_width: u32) -> &'static [VideoRung] {
+    let n = VIDEO_LADDER
+        .iter()
+        .take_while(|r| r.width <= source_width)
+        .count()
+        .max(1);
+    &VIDEO_LADDER[..n]
+}
+
+/// The ladder flattened into a transform-cache key.
+///
+/// Delivery policy is a const table, not configuration, so nothing in an
+/// encoder's config struct changes when a rung is edited — and every site would
+/// go on serving renditions encoded under the old table, invisibly. Any edit to
+/// any rung changes this string, which is what an edit to it means.
+pub fn video_ladder_fingerprint() -> String {
+    VIDEO_LADDER
+        .iter()
+        .map(|r| {
+            format!(
+                "{}x{}@{}/{}+{}x{}",
+                r.width, r.height, r.fps, r.video_kbps, r.audio_kbps, r.audio_channels
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The single rung a progressive (non-ladder) encode targets: the best one this
+/// source can fill. The progressive MP4 **is** the ladder's top rung for that
+/// source, which is why no separate ceiling constant exists.
+pub fn video_top_rung(source_width: u32) -> VideoRung {
+    let rungs = video_ladder_rungs(source_width);
+    rungs[rungs.len() - 1]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +745,66 @@ mod tests {
     #[test]
     fn ladder_is_strictly_ascending() {
         assert!(LADDER.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    /// The floor is the table's invariant, not a separate policy: a rung that
+    /// does not clear it is a rung that ships smear. This is what would fail if
+    /// someone lowered a rung's bitrate or raised its resolution in isolation.
+    #[test]
+    fn video_ladder_rungs_clear_the_quality_floor() {
+        for r in VIDEO_LADDER {
+            let bpp = (r.video_kbps as f64 * 1000.0) / (r.width * r.height * r.fps) as f64;
+            assert!(
+                bpp >= MIN_BITS_PER_PIXEL_PER_FRAME,
+                "{}x{}@{}fps {}k is {:.4} bits/pixel/frame, under the {} floor",
+                r.width, r.height, r.fps, r.video_kbps, bpp, MIN_BITS_PER_PIXEL_PER_FRAME
+            );
+        }
+    }
+
+    /// Apple's authoring spec requires a multivariant playlist delivered over
+    /// cellular to contain a variant peaking at 192 kbit/s or less. The bottom
+    /// rung is that variant; if it ever stops being, the ladder is
+    /// non-compliant and — more to the point — unreachable on the link it was
+    /// built for.
+    #[test]
+    fn video_ladder_bottom_rung_fits_apples_cellular_ceiling() {
+        assert!(VIDEO_LADDER[0].total_kbps() <= 192, "{}", VIDEO_LADDER[0].total_kbps());
+    }
+
+    /// An HLS ladder needs one `#EXT-X-MEDIA` audio group per distinct audio
+    /// setting. Two is the design; a third would be a silent cost increase.
+    #[test]
+    fn video_ladder_has_exactly_two_audio_renditions() {
+        let mut seen: Vec<(u32, u32)> =
+            VIDEO_LADDER.iter().map(|r| (r.audio_kbps, r.audio_channels)).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+    }
+
+    #[test]
+    fn video_ladder_is_strictly_ascending() {
+        assert!(VIDEO_LADDER.windows(2).all(|w| w[0].width < w[1].width));
+        assert!(VIDEO_LADDER.windows(2).all(|w| w[0].video_kbps < w[1].video_kbps));
+    }
+
+    /// Truncation is from the top only. A source narrower than every rung still
+    /// gets the bottom one — an empty ladder is a video that cannot be played.
+    #[test]
+    fn video_ladder_truncates_from_the_top_and_never_to_nothing() {
+        assert_eq!(video_ladder_rungs(1920).len(), VIDEO_LADDER.len());
+        assert_eq!(video_ladder_rungs(1280).len(), VIDEO_LADDER.len());
+        assert_eq!(video_ladder_rungs(640).len(), 3);
+        assert_eq!(video_ladder_rungs(200).len(), 1);
+        assert_eq!(video_ladder_rungs(200)[0], VIDEO_LADDER[0]);
+    }
+
+    #[test]
+    fn video_top_rung_is_the_best_the_source_can_fill() {
+        assert_eq!(video_top_rung(1920).width, 1280);
+        assert_eq!(video_top_rung(640).width, 640);
+        assert_eq!(video_top_rung(100).width, 320);
     }
 
     #[test]
