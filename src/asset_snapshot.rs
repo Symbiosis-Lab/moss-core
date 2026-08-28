@@ -139,7 +139,25 @@ impl AssetSnapshot {
 pub fn path_strip_extension(p: &PathBuf) -> PathBuf {
     use std::path::Path;
     let stem = p.file_stem().unwrap_or_default();
-    p.parent().unwrap_or_else(|| Path::new("")).join(stem)
+    variant_key(p.parent().unwrap_or_else(|| Path::new("")).join(stem))
+}
+
+/// Put a variant key in its one canonical form: no leading `/`, no leading `./`.
+///
+/// Producers and the consumer reach this map by different routes and wrote the
+/// same asset two ways. The registry keys off URLs a build minted
+/// (`clip.hls/master.m3u8`); the only live consumer, the video emitter, keys
+/// off the `src` a markdown embed carried, which is root-relative
+/// (`/clip.mp4`). Both are correct in their own layer and neither is worth
+/// rewriting to match the other, so the key drops the distinction here — the
+/// one place both sides pass through — rather than obliging every future
+/// writer to remember which form the map is in.
+pub fn variant_key(p: impl AsRef<std::path::Path>) -> PathBuf {
+    let p = p.as_ref();
+    p.strip_prefix("/")
+        .or_else(|_| p.strip_prefix("./"))
+        .unwrap_or(p)
+        .to_path_buf()
 }
 
 #[cfg(test)]
