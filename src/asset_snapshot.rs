@@ -70,6 +70,12 @@ pub struct AssetSnapshot {
 pub struct VariantKindSet {
     pub webp: bool,
     pub avif: bool,
+    /// An HLS ladder was built for this video — the master playlist and every
+    /// rung it names are registered. Set by the build only: preview keeps the
+    /// progressive MP4 so the author's transcode-pending hydration still works
+    /// (the iframe-bridge swaps `src`, and the multi-source form has no `src`
+    /// to swap). See `render::video`.
+    pub hls: bool,
 }
 
 impl AssetSnapshot {
@@ -108,6 +114,12 @@ impl AssetSnapshot {
     }
 
     /// True if the source asset has a registered AVIF variant.
+    /// Whether an HLS ladder is registered for this video source.
+    pub fn has_hls_for_source(&self, src: &PathBuf) -> bool {
+        let stem = path_strip_extension(src);
+        self.variants.get(&stem).map_or(false, |v| v.hls)
+    }
+
     pub fn has_avif_for_source(&self, src: &PathBuf) -> bool {
         let stem = path_strip_extension(src);
         self.variants.get(&stem).map_or(false, |v| v.avif)
@@ -152,10 +164,7 @@ mod tests {
         // Variants are keyed by stem, not source path — see module docs.
         s.variants.insert(
             "photo".into(),
-            VariantKindSet {
-                webp: true,
-                avif: false,
-            },
+            VariantKindSet { webp: true, avif: false, hls: false },
         );
 
         assert_eq!(s.dims(&"photo.jpg".into()), Some((1024, 768)));
@@ -190,10 +199,7 @@ mod tests {
         let stem = path_strip_extension(&"assets/photo.jpg".into());
         s.variants.insert(
             stem,
-            VariantKindSet {
-                webp: true,
-                avif: false,
-            },
+            VariantKindSet { webp: true, avif: false, hls: false },
         );
         // Looking up by the source path (with .jpg) should find the variant.
         assert!(s.has_webp_for_source(&"assets/photo.jpg".into()));

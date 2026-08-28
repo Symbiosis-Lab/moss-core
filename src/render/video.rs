@@ -50,18 +50,45 @@
 //! the synthesizer is the single source of truth for the URL that ends up
 //! in `<video src=>`.
 //!
-//! # Multi-source HLS form (NOT emitted here)
+//! # Multi-source HLS form
 //!
-//! This synthesizer never emits `<video><source src=…></video>` (multi-
-//! source / adaptive-bitrate form). That shape is reserved for HLS / DASH
-//! streams that don't need transcode-pending hydration. The regex pass
-//! also skips it (`video_re` requires `src="…"` directly on `<video>`),
-//! and the `data-placeholder-src` / `poster` / `data-thumb-src` injection
-//! only applies to the single-src form by design. If a future callsite
-//! wants the multi-source form, it must NOT route through this
-//! synthesizer.
+//! This synthesizer emits `<video><source>…</video>` when — and only when —
+//! the snapshot says an HLS ladder is registered for the source. It was
+//! previously documented as never emitting that shape, with the note that a
+//! callsite wanting it "must NOT route through this synthesizer". Extending
+//! the contract here rather than adding a second emitter is the deliberate
+//! choice: `synthesize_image_html` already owns both the bare `<img>` and the
+//! multi-source `<picture>` form and picks between them on the same snapshot,
+//! and a second video emitter would mean two owners of `poster`, the sizing
+//! rules, the ambient-loop branch and the `.mov` swap — four things that have
+//! to agree and that nothing would force to.
+//!
+//! The two forms are exclusive by HTML's own rule: a `<video>` carrying `src`
+//! ignores its `<source>` children, so the ladder form drops `src` entirely.
+//! That is what makes the snapshot flag load-bearing rather than cosmetic.
+//!
+//! Consequences, both intended:
+//!
+//! - The surviving `add_video_placeholder_attributes` regex requires `src="…"`
+//!   on `<video>` and so no-ops on the ladder form. It was already a no-op for
+//!   synthesizer-emitted videos — its skip guard triggers on
+//!   `data-placeholder-src`, which this emits on both branches — so nothing is
+//!   lost that was being used.
+//! - The iframe-bridge's transcode-pending hydration swaps `src`, and the
+//!   ladder form has no `src` to swap. So the ladder form is emitted only once
+//!   the ladder is already **built and registered** — never merely planned.
+//!   moss renders HTML before the video worker runs, so a video's first build
+//!   ships the single-src form with live hydration and the ladder appears on
+//!   the next build, off the transform cache. That ordering is also what keeps
+//!   ADR-013's never-404 rule: `<video>` recovers from a failed `<source>` no
+//!   better than `<picture>` does, so a `.m3u8` URL is only offered when its
+//!   bytes exist.
+//!
+//! The progressive MP4 is always the last `<source>`, so a browser that
+//! understands neither HLS natively nor hls.js still plays the video. A plain
+//! download link follows the player for the case where it plays nothing at all.
 
-use crate::asset_paths::{to_mp4, to_thumb};
+use crate::asset_paths::{to_hls_master, to_mp4, to_thumb};
 use crate::asset_snapshot::AssetSnapshot;
 use crate::resolve::embed_renderer::html_escape_attr;
 use crate::resolve::title_params::TitleParams;
@@ -74,6 +101,17 @@ use std::path::PathBuf;
 /// this const directly, keep its literal with:
 /// `// keep in sync with render::video::AMBIENT_PLAYBACK_ATTRS (covers omit autoplay)`
 pub const AMBIENT_PLAYBACK_ATTRS: &str = r#"muted loop playsinline preload="metadata""#;
+
+/// The master playlist's type. Apple's `application/vnd.apple.mpegurl` rather
+/// than the `application/x-mpegURL` seen in older examples: Safari accepts both
+/// and the former is the registered one.
+const HLS_MIME: &str = "application/vnd.apple.mpegurl";
+
+/// Shown beside a ladder-form player. The player can fail for reasons the page
+/// cannot detect — a codec the device lacks, a corporate proxy that strips
+/// streaming — and on the slow links this ladder exists for, a file the viewer
+/// can start and leave running beats one that will not start at all.
+const DOWNLOAD_LABEL: &str = "Download video";
 
 /// Synthesize video embed HTML for `Tag::Link` with `moss:kind=video` title.
 ///
@@ -139,6 +177,24 @@ pub fn synthesize_video_html(
     } else {
         (r#"controls playsinline preload="metadata""#.to_string(), "")
     };
+
+    if assets.has_hls_for_source(&PathBuf::from(src)) {
+        // Ladder form. `src` is deliberately absent — a <video> carrying it
+        // ignores its <source> children — and the progressive MP4 is last so a
+        // browser with neither native HLS nor hls.js still plays something.
+        return format!(
+            r#"<video class="moss-embed moss-embed-video" data-type="video"{data_loop} data-placeholder-src="{orig}" poster="{thumb}" data-thumb-src="{thumb}" {playback}{w}{h}><source src="{hls}" type="{HLS_MIME}"><source src="{src}" type="video/mp4"></video><p class="moss-embed-video-download"><a href="{src}" download>{download}</a></p>"#,
+            data_loop = data_loop,
+            hls = html_escape_attr(&to_hls_master(src)),
+            src = html_escape_attr(&converted_src),
+            orig = html_escape_attr(src),
+            thumb = html_escape_attr(&thumb),
+            playback = playback,
+            w = width_attr,
+            h = height_attr,
+            download = DOWNLOAD_LABEL,
+        );
+    }
 
     format!(
         r#"<video class="moss-embed moss-embed-video" data-type="video"{data_loop} src="{src}" data-placeholder-src="{orig}" poster="{thumb}" data-thumb-src="{thumb}" {playback}{w}{h}></video>"#,
@@ -223,14 +279,79 @@ mod tests {
 
     #[test]
     fn video_single_src_no_nested_source() {
-        // Single src= on <video>, NOT a nested <source> child. Load-bearing:
-        // the surviving add_video_placeholder_attributes regex matches
-        // `<video\s+[^>]*?src="…">`. With a nested <source>, the regex
-        // no-ops and the entire post-pass silently drops. See pre-Phase-0
-        // VideoRenderer doc comment at embed_renderer.rs:519-545.
+        // Single src= on <video>, NOT a nested <source> child, whenever no HLS
+        // ladder is registered — which is every preview render and every video
+        // too narrow for a ladder. Load-bearing: the surviving
+        // add_video_placeholder_attributes regex matches `<video\s+[^>]*?src="…">`,
+        // and the iframe-bridge's transcode-pending hydration swaps that `src`.
+        // With a nested <source> and no `src`, both silently drop. See
+        // pre-Phase-0 VideoRenderer doc comment at embed_renderer.rs:519-545.
         let p = params_with(&[("kind", "video")]);
         let out = synthesize_video_html(&p, "clip.mp4", &empty_snapshot());
         assert!(!out.contains("<source"), "must not emit <source>: {}", out);
+    }
+
+    fn hls_snapshot(stem: &str) -> AssetSnapshot {
+        let mut s = AssetSnapshot::new();
+        s.variants.insert(
+            PathBuf::from(stem),
+            crate::asset_snapshot::VariantKindSet {
+                webp: false,
+                avif: false,
+                hls: true,
+            },
+        );
+        s
+    }
+
+    #[test]
+    fn video_with_a_registered_ladder_emits_sources_and_drops_src() {
+        // The two forms are exclusive by HTML's own rule: a <video> carrying
+        // `src` ignores its <source> children, so emitting both would silently
+        // serve the progressive MP4 to everyone and make the ladder dead bytes.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mov", &hls_snapshot("clip"));
+        assert!(
+            !out.contains(r#"<video class="moss-embed moss-embed-video" data-type="video" src="#),
+            "the ladder form must not carry src on <video>: {out}"
+        );
+        assert!(
+            out.contains(r#"<source src="clip.m3u8" type="application/vnd.apple.mpegurl">"#),
+            "got: {out}"
+        );
+    }
+
+    #[test]
+    fn the_progressive_mp4_is_the_last_source() {
+        // A browser with neither native HLS nor hls.js picks the last source it
+        // understands. If the MP4 were first, every Safari would take it and
+        // the ladder would never be used.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mov", &hls_snapshot("clip"));
+        let hls_at = out.find("clip.m3u8").expect("hls source");
+        let mp4_at = out.find(r#"<source src="clip.mp4""#).expect("mp4 source");
+        assert!(hls_at < mp4_at, "MP4 must come last: {out}");
+    }
+
+    #[test]
+    fn the_ladder_form_keeps_the_poster_and_offers_a_download() {
+        // The poster is what a viewer on the link this exists for sees during
+        // the seconds before the first segment lands; losing it would make the
+        // slow case look broken rather than slow.
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "clip.mov", &hls_snapshot("clip"));
+        assert!(out.contains(r#"poster="clip.thumb.jpg""#), "got: {out}");
+        assert!(
+            out.contains(r#"<a href="clip.mp4" download>"#),
+            "a player that fails entirely still leaves a way to watch: {out}"
+        );
+    }
+
+    #[test]
+    fn a_ladder_registered_for_another_video_does_not_leak() {
+        let p = params_with(&[("kind", "video")]);
+        let out = synthesize_video_html(&p, "other.mp4", &hls_snapshot("clip"));
+        assert!(!out.contains("<source"), "got: {out}");
     }
 
     // --- .mov → .mp4 source-extension swap ---

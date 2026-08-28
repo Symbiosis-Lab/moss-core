@@ -30,10 +30,7 @@ fn snapshot_with(
         let stem = crate::asset_snapshot::path_strip_extension(&key);
         s.variants.insert(
             stem,
-            VariantKindSet {
-                webp: true,
-                avif: false,
-            },
+            VariantKindSet { webp: true, avif: false, hls: false },
         );
     }
     s

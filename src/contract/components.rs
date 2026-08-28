@@ -1024,6 +1024,17 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         description: "Retired in Phase 1c — collapsed to `.moss-embed[data-type=video]`.",
     },
     ComponentEntry {
+        class: "moss-embed-video-download",
+        kind: "instance",
+        parent: "moss-embed",
+        data_attrs: &[],
+        example_html: r#"<p class="moss-embed-video-download"><a href="clip.mp4" download>Download video</a></p>"#,
+        example_markdown: "![[clip.mp4]]",
+        status: Status::Confirmed,
+        since: "0.11",
+        description: "Follows a video that ships an adaptive ladder. A player can fail for reasons the page cannot detect — a missing codec, a proxy that strips streaming — and on a slow link a file the viewer can start and leave running beats one that will not start. Absent when no ladder was built.",
+    },
+    ComponentEntry {
         class: "moss-embed-pdf",
         kind: "instance",
         parent: "moss-embed",
