@@ -25,6 +25,11 @@ const MOV_SUFFIXES: &[&str] = &[".mov", ".MOV", ".Mp4", ".MP4"];
 /// but still need thumbnail derivation).
 const ALL_VIDEO_SUFFIXES: &[&str] = &[
     ".mov", ".MOV", ".mp4", ".MP4", ".Mp4", ".webm", ".WEBM",
+    // Dispatched to video conversion by `media::pipeline` like the rest. They
+    // were missing here, so `video_stem` left their extension on while the
+    // build's own `Path::with_extension("")` stripped it — two derivations of
+    // one stem, disagreeing. Anything the converter accepts belongs here.
+    ".m4v", ".M4V", ".avi", ".AVI", ".mkv", ".MKV",
 ];
 
 /// Known image extensions that get re-encoded to .webp.
@@ -530,6 +535,24 @@ fn video_stem(source: &str) -> &str {
     video_stem_opt(source).unwrap_or(source)
 }
 
+/// The directory one video's HLS ladder lives in: `clip.mov` → `clip.hls`.
+///
+/// A directory, and constant filenames inside it, so that **a ladder is
+/// relocatable**. ffmpeg writes every cross-reference in these playlists by
+/// name — the master names its rung playlists, each rung playlist names its own
+/// segment in an `#EXT-X-MAP` — so bytes that embed the video's stem can only
+/// ever be served from that one stem. The transform cache is keyed by content,
+/// which means the same bytes legitimately arrive at a second path (a rename, or
+/// one video copied into two folders), and linking stem-bearing playlists there
+/// yields a master whose every child 404s. Constant names inside a
+/// per-video directory make that impossible rather than merely unlikely.
+///
+/// The `.hls` suffix rather than a bare stem so the directory cannot collide
+/// with a real folder sitting beside the video.
+pub fn to_hls_dir(source: &str) -> String {
+    format!("{}.hls", video_stem(source))
+}
+
 /// HLS master playlist URL — the ONE url the page links to.
 ///
 /// Every other HLS file is discovered by the player through this playlist, so
@@ -538,61 +561,72 @@ fn video_stem(source: &str) -> &str {
 /// # Examples
 /// ```
 /// # use moss_core::asset_paths::to_hls_master;
-/// assert_eq!(to_hls_master("clip.mov"), "clip.m3u8");
-/// assert_eq!(to_hls_master("videos/a.MP4"), "videos/a.m3u8");
+/// assert_eq!(to_hls_master("clip.mov"), "clip.hls/master.m3u8");
+/// assert_eq!(to_hls_master("videos/a.MP4"), "videos/a.hls/master.m3u8");
+/// // A dot in the filename is just a filename.
+/// assert_eq!(to_hls_master("2024.05.trip.mov"), "2024.05.trip.hls/master.m3u8");
 /// ```
 pub fn to_hls_master(source: &str) -> String {
-    format!("{}.m3u8", video_stem(source))
+    format!("{}/{}", to_hls_dir(source), HLS_MASTER_NAME)
 }
 
-/// Media playlist for one video rung: `clip.mov`, rung 0 → `clip.v0.m3u8`.
-pub fn to_hls_rung_playlist(source: &str, rung_index: usize) -> String {
-    format!("{}.v{}.m3u8", video_stem(source), rung_index)
-}
+/// The master playlist's name inside [`to_hls_dir`]. Constant, so recognising
+/// one is an exact match rather than a guess about the shape of a filename.
+pub const HLS_MASTER_NAME: &str = "master.m3u8";
 
-/// The single segment file for one video rung, byte-ranged by its playlist.
+/// Whether `url` is a ladder's master playlist, and if so the source stem it
+/// belongs to: `clip.hls/master.m3u8` → `Some("clip")`.
 ///
-/// One file per rung rather than one per segment: `-hls_flags single_file`
-/// with `#EXT-X-BYTERANGE`, which keeps 6 rungs at 6 files instead of dozens.
-pub fn to_hls_rung_segment(source: &str, rung_index: usize) -> String {
-    format!("{}.v{}.m4s", video_stem(source), rung_index)
+/// Exact, where asking "does this stem contain a dot?" was not: a video named
+/// `2024.05.trip.mov` reads as a rung playlist under that question and its
+/// ladder is silently never offered, leaving seventeen encoded files on every
+/// build that no page ever references.
+pub fn hls_master_stem(url: &str) -> Option<&str> {
+    let dir = url.strip_suffix(HLS_MASTER_NAME)?.strip_suffix('/')?;
+    dir.strip_suffix(".hls")
 }
 
-/// Media playlist for one audio rendition: `clip.mov`, Lean → `clip.alo.m3u8`.
-pub fn to_hls_audio_playlist(source: &str, group: AudioGroup) -> String {
-    format!("{}.{}.m3u8", video_stem(source), group.as_str())
-}
-
-/// The single segment file for one audio rendition.
-pub fn to_hls_audio_segment(source: &str, group: AudioGroup) -> String {
-    format!("{}.{}.m4s", video_stem(source), group.as_str())
-}
-
-/// Every file an HLS encode of `source` writes, master first.
+/// The names inside one ladder's directory, master first.
 ///
 /// One owner for the census. The image ladder re-derives its membership at
 /// five call sites and this module documents that as a fragile contract; video
 /// does not repeat it — the encoder writes this list and the registry promises
 /// it, both from here.
-pub fn hls_outputs(source: &str, rungs: &[VideoRung]) -> Vec<String> {
-    let mut out = vec![to_hls_master(source)];
+pub fn hls_members(rungs: &[VideoRung]) -> Vec<String> {
+    let mut out = vec![HLS_MASTER_NAME.to_string()];
     for i in 0..rungs.len() {
-        out.push(to_hls_rung_playlist(source, i));
-        out.push(to_hls_rung_segment(source, i));
+        out.push(format!("v{i}.m3u8"));
+        out.push(format!("v{i}.m4s"));
     }
-    // Groups, not rungs: several rungs share one rendition, and it is written
-    // once. Deduplicated in ladder order so the list is stable.
+    for g in audio_groups(rungs) {
+        out.push(format!("{}.m3u8", g.as_str()));
+        out.push(format!("{}.m4s", g.as_str()));
+    }
+    out
+}
+
+/// The distinct audio rendition groups a set of rungs needs, in ladder order.
+///
+/// Groups, not rungs: several rungs share one rendition and it is encoded once.
+/// The one owner — the census and the encoder's `-var_stream_map` must agree on
+/// how many renditions exist, and they did each dedup it separately.
+pub fn audio_groups(rungs: &[VideoRung]) -> Vec<AudioGroup> {
     let mut groups: Vec<AudioGroup> = Vec::new();
     for r in rungs {
         if !groups.contains(&r.audio_group()) {
             groups.push(r.audio_group());
         }
     }
-    for g in groups {
-        out.push(to_hls_audio_playlist(source, g));
-        out.push(to_hls_audio_segment(source, g));
-    }
-    out
+    groups
+}
+
+/// Every URL an HLS encode of `source` writes, master first.
+pub fn hls_outputs(source: &str, rungs: &[VideoRung]) -> Vec<String> {
+    let dir = to_hls_dir(source);
+    hls_members(rungs)
+        .into_iter()
+        .map(|name| format!("{dir}/{name}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -873,14 +907,14 @@ mod tests {
         // twice. Muxing per rung would store it six times and degrade it in
         // lockstep with the picture.
         let outs = hls_outputs("clip.mov", &VIDEO_LADDER);
-        assert_eq!(outs[0], "clip.m3u8", "master comes first");
+        assert_eq!(outs[0], "clip.hls/master.m3u8", "master comes first");
         assert_eq!(
             outs.len(),
             1 + VIDEO_LADDER.len() * 2 + 2 * 2,
             "master + playlist/segment per rung + playlist/segment per audio group"
         );
         assert_eq!(outs.len(), 17, "the measured file count for the full ladder");
-        let audio: Vec<_> = outs.iter().filter(|o| o.contains(".a")).collect();
+        let audio: Vec<_> = outs.iter().filter(|o| o.contains("/a")).collect();
         assert_eq!(audio.len(), 4, "two groups, a playlist and a segment each");
     }
 
@@ -901,11 +935,11 @@ mod tests {
         assert_eq!(rungs.len(), 1);
         let outs = hls_outputs("clip.mov", rungs);
         assert_eq!(outs, vec![
-            "clip.m3u8",
-            "clip.v0.m3u8",
-            "clip.v0.m4s",
-            "clip.alo.m3u8",
-            "clip.alo.m4s",
+            "clip.hls/master.m3u8",
+            "clip.hls/v0.m3u8",
+            "clip.hls/v0.m4s",
+            "clip.hls/alo.m3u8",
+            "clip.hls/alo.m4s",
         ]);
     }
 
@@ -922,13 +956,51 @@ mod tests {
 
     #[test]
     fn hls_urls_keep_the_directory_and_drop_the_source_extension() {
-        assert_eq!(to_hls_master("videos/a.MOV"), "videos/a.m3u8");
-        assert_eq!(to_hls_rung_playlist("videos/a.MOV", 3), "videos/a.v3.m3u8");
-        assert_eq!(to_hls_rung_segment("videos/a.MOV", 3), "videos/a.v3.m4s");
-        assert_eq!(
-            to_hls_audio_playlist("videos/a.MOV", AudioGroup::Clean),
-            "videos/a.ahi.m3u8"
-        );
+        assert_eq!(to_hls_master("videos/a.MOV"), "videos/a.hls/master.m3u8");
+        assert_eq!(to_hls_dir("videos/a.MOV"), "videos/a.hls");
+    }
+
+    /// The names inside the directory carry no trace of the video they came
+    /// from, which is what lets a cached ladder be linked under a second name.
+    /// A rename produces the same bytes at a new path; if these embedded the
+    /// stem, the master would name children that are not there.
+    #[test]
+    fn nothing_inside_a_ladder_directory_names_the_video() {
+        for name in hls_members(&VIDEO_LADDER) {
+            assert!(!name.contains('/'), "{name} is not a bare name");
+            assert!(!name.contains("clip"), "{name} embeds a source stem");
+        }
+        let a = hls_outputs("trips/holiday.mov", &VIDEO_LADDER);
+        let b = hls_outputs("trips/iceland.mov", &VIDEO_LADDER);
+        let strip = |v: Vec<String>| -> Vec<String> {
+            v.iter().map(|p| p.rsplit('/').next().unwrap().to_string()).collect()
+        };
+        assert_eq!(strip(a), strip(b), "two videos differ only by directory");
+    }
+
+    /// A dot in a video's own filename is just a filename. Asking whether the
+    /// stem contains a dot got this wrong and silently withheld the ladder.
+    #[test]
+    fn a_master_is_recognised_exactly_even_with_dots_in_the_name() {
+        assert_eq!(hls_master_stem("2024.05.trip.hls/master.m3u8"), Some("2024.05.trip"));
+        assert_eq!(hls_master_stem("a/b/clip.hls/master.m3u8"), Some("a/b/clip"));
+        assert_eq!(hls_master_stem("clip.hls/v0.m3u8"), None);
+        assert_eq!(hls_master_stem("clip.m3u8"), None);
+        assert_eq!(hls_master_stem("clip.mp4"), None);
+    }
+
+    /// Every extension the converter accepts must strip here, or the build's
+    /// own stem derivation and this one disagree and the ladder lands under a
+    /// directory no page references.
+    #[test]
+    fn every_converted_extension_strips_to_the_same_stem() {
+        for ext in ["mov", "mp4", "webm", "m4v", "avi", "mkv"] {
+            assert_eq!(
+                to_hls_dir(&format!("a/clip.{ext}")),
+                "a/clip.hls",
+                "{ext} did not strip"
+            );
+        }
     }
 
     #[test]

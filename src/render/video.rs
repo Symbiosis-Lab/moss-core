@@ -316,7 +316,9 @@ mod tests {
             "the ladder form must not carry src on <video>: {out}"
         );
         assert!(
-            out.contains(r#"<source src="clip.m3u8" type="application/vnd.apple.mpegurl">"#),
+            out.contains(
+                r#"<source src="clip.hls/master.m3u8" type="application/vnd.apple.mpegurl">"#
+            ),
             "got: {out}"
         );
     }
@@ -328,7 +330,7 @@ mod tests {
         // the ladder would never be used.
         let p = params_with(&[("kind", "video")]);
         let out = synthesize_video_html(&p, "clip.mov", &hls_snapshot("clip"));
-        let hls_at = out.find("clip.m3u8").expect("hls source");
+        let hls_at = out.find("clip.hls/master.m3u8").expect("hls source");
         let mp4_at = out.find(r#"<source src="clip.mp4""#).expect("mp4 source");
         assert!(hls_at < mp4_at, "MP4 must come last: {out}");
     }

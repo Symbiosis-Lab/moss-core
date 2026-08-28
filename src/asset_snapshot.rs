@@ -113,13 +113,13 @@ impl AssetSnapshot {
         self.variants.get(&stem).map_or(false, |v| v.webp)
     }
 
-    /// True if the source asset has a registered AVIF variant.
-    /// Whether an HLS ladder is registered for this video source.
+    /// True if the source video has a registered HLS ladder.
     pub fn has_hls_for_source(&self, src: &PathBuf) -> bool {
         let stem = path_strip_extension(src);
         self.variants.get(&stem).map_or(false, |v| v.hls)
     }
 
+    /// True if the source asset has a registered AVIF variant.
     pub fn has_avif_for_source(&self, src: &PathBuf) -> bool {
         let stem = path_strip_extension(src);
         self.variants.get(&stem).map_or(false, |v| v.avif)
