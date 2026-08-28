@@ -2155,26 +2155,26 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         parent: "",
         data_attrs: &[],
         example_html: r#"<div class="moss-colophon">
-  <a href="https://mosspub.com">
-    <svg class="moss-colophon-icon"></svg>
-    <span class="moss-colophon-label">Published with moss</span>
+  <a href="https://mosspub.com" aria-label="Published with moss">
+    <span class="moss-colophon-icon" aria-hidden="true"><svg viewBox="0 0 288 288"></svg></span>
+    <span class="moss-colophon-label">moss</span>
   </a>
 </div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Footer colophon credit appended by moss. Shows the moss mark alone at rest; the wording fades in beneath it on hover or keyboard focus, without moving the mark.",
+        description: "Footer colophon credit appended by moss. Shows the moss mark alone at rest; the name fades in beneath it on hover or keyboard focus, without moving the mark.",
     },
     ComponentEntry {
         class: "moss-colophon-icon",
         kind: "instance",
         parent: "moss-colophon",
         data_attrs: &[],
-        example_html: r#"<svg class="moss-colophon-icon"></svg>"#,
+        example_html: r#"<span class="moss-colophon-icon" aria-hidden="true"><svg viewBox="0 0 288 288"></svg></span>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "The moss mark inside `.moss-colophon`. Decorative (`aria-hidden`) — `.moss-colophon-label` carries the accessible name.",
+        description: "Wraps the moss mark inside `.moss-colophon` — the mark is substituted whole, so the class and `aria-hidden` sit on a wrapper rather than on the `<svg>`. Decorative; the link's `aria-label` carries the accessible name.",
     },
     ComponentEntry {
         class: "moss-colophon-label",
