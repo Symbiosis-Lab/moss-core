@@ -73,13 +73,9 @@ pub fn to_mp4(source: &str) -> String {
 /// assert_eq!(to_thumb("../clip.mp4"), "../clip.thumb.jpg");
 /// ```
 pub fn to_thumb(source: &str) -> String {
-    for suffix in ALL_VIDEO_SUFFIXES {
-        if let Some(stem) = source.strip_suffix(suffix) {
-            return format!("{stem}.thumb.jpg");
-        }
-    }
-    // Fallback: append .thumb.jpg (shouldn't happen with known video files)
-    format!("{source}.thumb.jpg")
+    // A non-video path keeps its full name and gains the suffix, which is the
+    // old explicit fallback — `video_stem` returns the input unchanged.
+    format!("{}.thumb.jpg", video_stem(source))
 }
 
 /// Like `to_thumb`, but returns `None` for non-video paths instead of
@@ -96,12 +92,7 @@ pub fn to_thumb(source: &str) -> String {
 /// assert_eq!(to_thumb_if_video("photo.jpg"), None);
 /// ```
 pub fn to_thumb_if_video(source: &str) -> Option<String> {
-    for suffix in ALL_VIDEO_SUFFIXES {
-        if let Some(stem) = source.strip_suffix(suffix) {
-            return Some(format!("{stem}.thumb.jpg"));
-        }
-    }
-    None
+    video_stem_opt(source).map(|stem| format!("{stem}.thumb.jpg"))
 }
 
 /// Converts an image source path to its WebP output path.
@@ -451,6 +442,17 @@ pub fn video_ladder_rungs(source_width: u32) -> &'static [VideoRung] {
     &VIDEO_LADDER[..n]
 }
 
+/// The rungs a ladder of `n` rungs was built from, or `None` if `n` is not a
+/// ladder this table can produce.
+///
+/// The inverse of [`video_ladder_rungs`], which truncates from the top only —
+/// so a ladder's length names its rungs. A cache holding a ladder knows how
+/// many files it holds but not the width of the source that produced them, and
+/// this is what lets it identify the ladder without re-reading that source.
+pub fn video_ladder_rungs_by_count(n: usize) -> Option<&'static [VideoRung]> {
+    (2..=VIDEO_LADDER.len()).contains(&n).then(|| &VIDEO_LADDER[..n])
+}
+
 /// The ladder flattened into a transform-cache key.
 ///
 /// Delivery policy is a const table, not configuration, so nothing in an
@@ -476,6 +478,121 @@ pub fn video_ladder_fingerprint() -> String {
 pub fn video_top_rung(source_width: u32) -> VideoRung {
     let rungs = video_ladder_rungs(source_width);
     rungs[rungs.len() - 1]
+}
+
+/// Which of the two audio renditions a rung is bound to.
+///
+/// Two, and exactly two, because `VIDEO_LADDER` holds two distinct audio
+/// settings. Each becomes one `#EXT-X-MEDIA:TYPE=AUDIO` group in the master
+/// playlist, and every rung names the one it can pay for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioGroup {
+    /// 32 kbps mono, for the rungs a starved link can actually reach. One
+    /// shared 192 kbps track would put the bottom rung at 237 kbps and make it
+    /// unreachable however small its picture got.
+    Lean,
+    /// 192 kbps stereo, for rungs whose viewer can afford transparent audio.
+    Clean,
+}
+
+impl AudioGroup {
+    /// The short token used both as the ffmpeg variant name and as the
+    /// filename infix, so a file on disk says which group it belongs to.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            AudioGroup::Lean => "alo",
+            AudioGroup::Clean => "ahi",
+        }
+    }
+}
+
+impl VideoRung {
+    /// The audio rendition this rung is delivered with.
+    pub const fn audio_group(&self) -> AudioGroup {
+        if self.audio_channels == 1 {
+            AudioGroup::Lean
+        } else {
+            AudioGroup::Clean
+        }
+    }
+}
+
+/// Strips a known video extension, or `None` when `source` is not a video.
+fn video_stem_opt(source: &str) -> Option<&str> {
+    ALL_VIDEO_SUFFIXES
+        .iter()
+        .find_map(|suffix| source.strip_suffix(suffix))
+}
+
+/// Strips any known video extension, leaving the path stem. A non-video path
+/// is returned unchanged.
+fn video_stem(source: &str) -> &str {
+    video_stem_opt(source).unwrap_or(source)
+}
+
+/// HLS master playlist URL — the ONE url the page links to.
+///
+/// Every other HLS file is discovered by the player through this playlist, so
+/// this is the only one an emitter needs to know.
+///
+/// # Examples
+/// ```
+/// # use moss_core::asset_paths::to_hls_master;
+/// assert_eq!(to_hls_master("clip.mov"), "clip.m3u8");
+/// assert_eq!(to_hls_master("videos/a.MP4"), "videos/a.m3u8");
+/// ```
+pub fn to_hls_master(source: &str) -> String {
+    format!("{}.m3u8", video_stem(source))
+}
+
+/// Media playlist for one video rung: `clip.mov`, rung 0 → `clip.v0.m3u8`.
+pub fn to_hls_rung_playlist(source: &str, rung_index: usize) -> String {
+    format!("{}.v{}.m3u8", video_stem(source), rung_index)
+}
+
+/// The single segment file for one video rung, byte-ranged by its playlist.
+///
+/// One file per rung rather than one per segment: `-hls_flags single_file`
+/// with `#EXT-X-BYTERANGE`, which keeps 6 rungs at 6 files instead of dozens.
+pub fn to_hls_rung_segment(source: &str, rung_index: usize) -> String {
+    format!("{}.v{}.m4s", video_stem(source), rung_index)
+}
+
+/// Media playlist for one audio rendition: `clip.mov`, Lean → `clip.alo.m3u8`.
+pub fn to_hls_audio_playlist(source: &str, group: AudioGroup) -> String {
+    format!("{}.{}.m3u8", video_stem(source), group.as_str())
+}
+
+/// The single segment file for one audio rendition.
+pub fn to_hls_audio_segment(source: &str, group: AudioGroup) -> String {
+    format!("{}.{}.m4s", video_stem(source), group.as_str())
+}
+
+/// Every file an HLS encode of `source` writes, master first.
+///
+/// One owner for the census. The image ladder re-derives its membership at
+/// five call sites and this module documents that as a fragile contract; video
+/// does not repeat it — the encoder writes this list and the registry promises
+/// it, both from here.
+pub fn hls_outputs(source: &str, rungs: &[VideoRung]) -> Vec<String> {
+    let mut out = vec![to_hls_master(source)];
+    for i in 0..rungs.len() {
+        out.push(to_hls_rung_playlist(source, i));
+        out.push(to_hls_rung_segment(source, i));
+    }
+    // Groups, not rungs: several rungs share one rendition, and it is written
+    // once. Deduplicated in ladder order so the list is stable.
+    let mut groups: Vec<AudioGroup> = Vec::new();
+    for r in rungs {
+        if !groups.contains(&r.audio_group()) {
+            groups.push(r.audio_group());
+        }
+    }
+    for g in groups {
+        out.push(to_hls_audio_playlist(source, g));
+        out.push(to_hls_audio_segment(source, g));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -750,6 +867,70 @@ mod tests {
     /// The floor is the table's invariant, not a separate policy: a rung that
     /// does not clear it is a rung that ships smear. This is what would fail if
     /// someone lowered a rung's bitrate or raised its resolution in isolation.
+    #[test]
+    fn hls_outputs_writes_one_audio_rendition_per_group_not_per_rung() {
+        // The whole point of rendition groups: six rungs, but audio stored
+        // twice. Muxing per rung would store it six times and degrade it in
+        // lockstep with the picture.
+        let outs = hls_outputs("clip.mov", &VIDEO_LADDER);
+        assert_eq!(outs[0], "clip.m3u8", "master comes first");
+        assert_eq!(
+            outs.len(),
+            1 + VIDEO_LADDER.len() * 2 + 2 * 2,
+            "master + playlist/segment per rung + playlist/segment per audio group"
+        );
+        assert_eq!(outs.len(), 17, "the measured file count for the full ladder");
+        let audio: Vec<_> = outs.iter().filter(|o| o.contains(".a")).collect();
+        assert_eq!(audio.len(), 4, "two groups, a playlist and a segment each");
+    }
+
+    #[test]
+    fn hls_outputs_are_unique_so_no_rung_overwrites_another() {
+        let outs = hls_outputs("clip.mov", &VIDEO_LADDER);
+        let mut sorted = outs.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), outs.len(), "every emitted path is distinct");
+    }
+
+    #[test]
+    fn hls_outputs_shrink_with_a_truncated_ladder() {
+        // A narrow source gets fewer rungs, and if every surviving rung shares
+        // one audio group only that group is written.
+        let rungs = video_ladder_rungs(320);
+        assert_eq!(rungs.len(), 1);
+        let outs = hls_outputs("clip.mov", rungs);
+        assert_eq!(outs, vec![
+            "clip.m3u8",
+            "clip.v0.m3u8",
+            "clip.v0.m4s",
+            "clip.alo.m3u8",
+            "clip.alo.m4s",
+        ]);
+    }
+
+    #[test]
+    fn the_two_lean_rungs_share_the_lean_audio_group() {
+        // Not "the bottom rung only": Apple's 416x234 @ 145k bound to the
+        // 192k track totals 370 kbps, which the measured link cannot carry.
+        assert_eq!(VIDEO_LADDER[0].audio_group(), AudioGroup::Lean);
+        assert_eq!(VIDEO_LADDER[1].audio_group(), AudioGroup::Lean);
+        for rung in &VIDEO_LADDER[2..] {
+            assert_eq!(rung.audio_group(), AudioGroup::Clean);
+        }
+    }
+
+    #[test]
+    fn hls_urls_keep_the_directory_and_drop_the_source_extension() {
+        assert_eq!(to_hls_master("videos/a.MOV"), "videos/a.m3u8");
+        assert_eq!(to_hls_rung_playlist("videos/a.MOV", 3), "videos/a.v3.m3u8");
+        assert_eq!(to_hls_rung_segment("videos/a.MOV", 3), "videos/a.v3.m4s");
+        assert_eq!(
+            to_hls_audio_playlist("videos/a.MOV", AudioGroup::Clean),
+            "videos/a.ahi.m3u8"
+        );
+    }
+
     #[test]
     fn video_ladder_rungs_clear_the_quality_floor() {
         for r in VIDEO_LADDER {
