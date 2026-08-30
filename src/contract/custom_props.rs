@@ -85,7 +85,7 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         name: "--moss-sidenote-reserve",
         owner: "body",
         default: "0px",
-        description: "Width of the right-hand gutter reserved for margin sidenotes. Core pads <body> by it so nav, article, comments and footer centre as one assembly; the sidenotes stylesheet (shipped only on sites with footnotes) sets it at wide viewports to a measured clamp. A theme can override that clamp to widen or narrow the note column; setting it on a site without footnotes just shifts the column left for no benefit.",
+        description: "Width of the right-hand gutter reserved for margin sidenotes. Core pads <body> by it so nav, article, comments and footer centre as one assembly, and `.moss-hero` adds it back to its own width so a full-bleed banner still reaches the viewport edge. The sidenotes stylesheet (shipped only on sites with footnotes) sets it at wide viewports to a measured clamp, on every page except the front page, full-width pages and sidebar pages — those keep the bottom-sheet presentation at any width. A theme can override the clamp to widen or narrow the note column; setting it on a site without footnotes just shifts the column left for no benefit.",
     },
     CustomProp {
         name: "--moss-hint-x",
