@@ -187,7 +187,7 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         name: "--moss-mark-paint",
         owner: "moss-mark",
         default: "var(--moss-mark-ink)",
-        description: "What the mark's black half is painted with. Unset, it takes the ink for the ground it is on — black on paper, white on dark — so a surface that wants the mark inked sets nothing. Set it to quiet the mark or give it a colour of its own; the colophon sets `currentColor`, which rests the mark in the credit's own grey and takes the ink back on hover. Set `--moss-mark-drop-paint` with it: a grey mark beside a green drop is a broken mark, not a quiet one.",
+        description: "What the mark's black half is painted with. Unset, it takes the ink for the ground it is on — black on paper, a held-back near-white on dark, where a solid mass at full white out-weighs the name beside it — so a surface that wants the mark inked sets nothing. Set it to quiet the mark or give it a colour of its own; the colophon sets `currentColor`, which rests the mark in the credit's own grey and takes the ink back on hover. Set `--moss-mark-drop-paint` with it: a grey mark beside a green drop is a broken mark, not a quiet one.",
     },
     CustomProp {
         name: "--moss-mark-drop-paint",

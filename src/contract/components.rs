@@ -2196,7 +2196,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Confirmed,
         since: "1",
-        description: "The moss mark wherever moss draws it: black or white ink with the green drop lifted on a dark ground, never the muted colour of wording beside it. Its rules live in `mark.css`, which the app's launcher shares; the colophon's `.moss-colophon-icon` is the one instance in a built site. Size is the surface's to set, and so is any quieting — a surface may repaint the mark by setting `--moss-mark-paint` / `--moss-mark-drop-paint`, and time the change with `--moss-mark-fade`.",
+        description: "The moss mark wherever moss draws it: black or near-white ink with the green drop lifted on a dark ground, never the muted colour of wording beside it. Its rules live in `mark.css`, which the app's launcher shares; the colophon's `.moss-colophon-icon` is the one instance in a built site. Size is the surface's to set, and so is any quieting — a surface may repaint the mark by setting `--moss-mark-paint` / `--moss-mark-drop-paint`, and time the change with `--moss-mark-fade`.",
     },
     ComponentEntry {
         class: "moss-wordmark",
