@@ -183,6 +183,24 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         default: "0.5rem",
         description: "Corner radius of the subscribe card. Set to `0` for a square-cornered form that matches a flat theme.",
     },
+    CustomProp {
+        name: "--moss-mark-paint",
+        owner: "moss-mark",
+        default: "var(--moss-mark-ink)",
+        description: "What the mark's black half is painted with. Unset, it takes the ink for the ground it is on — black on paper, white on dark — so a surface that wants the mark inked sets nothing. Set it to quiet the mark or give it a colour of its own; the colophon sets `currentColor`, which rests the mark in the credit's own grey and takes the ink back on hover. Set `--moss-mark-drop-paint` with it: a grey mark beside a green drop is a broken mark, not a quiet one.",
+    },
+    CustomProp {
+        name: "--moss-mark-drop-paint",
+        owner: "moss-mark",
+        default: "var(--moss-mark-drop)",
+        description: "The same for the mark's green drop, the satellite the eye weighs. Unset, it takes the ground's drop colour (`#6b8e4e` on paper, lifted to `#8aba6a` on dark). Reach for this pair rather than `opacity` whenever a surface wants the mark quieter: opacity bleaches the green to a sage grey while the black half merely fades, and the two-tone reading is the design.",
+    },
+    CustomProp {
+        name: "--moss-mark-fade",
+        owner: "moss-mark",
+        default: "0s",
+        description: "How long the mark takes to change colour. The default snaps, which is what a surface that never recolours it wants. Give it a duration where the paint changes on hover or focus, so the mark fades rather than snaps — the colophon sets 240ms, the duration its wording fades out on.",
+    },
 ];
 
 /// A `data-*` attribute moss emits on an element that carries no `moss-*` class.

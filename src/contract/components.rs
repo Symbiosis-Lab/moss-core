@@ -2156,36 +2156,58 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         data_attrs: &[],
         example_html: r#"<div class="moss-colophon">
   <a href="https://mosspub.com" aria-label="Published with moss">
-    <span class="moss-colophon-icon" aria-hidden="true"><svg viewBox="0 0 288 288"></svg></span>
-    <span class="moss-colophon-label">moss</span>
+    <span class="moss-colophon-icon moss-mark" aria-hidden="true"><svg viewBox="0 0 288 288"></svg></span>
+    <span class="moss-colophon-label moss-wordmark">moss</span>
   </a>
 </div>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Footer colophon credit appended by moss. Shows the moss mark alone at rest; the name fades in beneath it on hover or keyboard focus, without moving the mark.",
+        description: "Footer colophon credit appended by moss. Shows the moss mark alone at rest, quiet in the same muted grey as the footer above it; on hover or keyboard focus the mark takes its ink and the name fades in beneath it, without moving the mark.",
     },
     ComponentEntry {
         class: "moss-colophon-icon",
         kind: "instance",
         parent: "moss-colophon",
         data_attrs: &[],
-        example_html: r#"<span class="moss-colophon-icon" aria-hidden="true"><svg viewBox="0 0 288 288"></svg></span>"#,
+        example_html: r#"<span class="moss-colophon-icon moss-mark" aria-hidden="true"><svg viewBox="0 0 288 288"></svg></span>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Wraps the moss mark inside `.moss-colophon` — the mark is substituted whole, so the class and `aria-hidden` sit on a wrapper rather than on the `<svg>`. Decorative; the link's `aria-label` carries the accessible name.",
+        description: "Wraps the moss mark inside `.moss-colophon` — the mark is substituted whole, so the class and `aria-hidden` sit on a wrapper rather than on the `<svg>`. Owns the mark's size here (1.25rem) and its resting quiet — the mark inherits the link's muted colour until the credit is hovered or focused, when it takes the ink `.moss-mark` names for the ground. Decorative; the link's `aria-label` carries the accessible name.",
     },
     ComponentEntry {
         class: "moss-colophon-label",
         kind: "instance",
         parent: "moss-colophon",
         data_attrs: &[],
-        example_html: r#"<span class="moss-colophon-label">Published with moss</span>"#,
+        example_html: r#"<span class="moss-colophon-label moss-wordmark">moss</span>"#,
         example_markdown: "",
         status: Status::Confirmed,
         since: "0",
-        description: "Localized attribution wording inside `.moss-colophon`. Transparent at rest and faded in on hover/focus, positioned out of flow beneath the mark so the reveal shifts nothing — it stays in the DOM because it is the link's accessible name.",
+        description: "Localized attribution wording inside `.moss-colophon`. Transparent at rest and faded in on hover/focus, positioned out of flow beneath the mark so the reveal shifts nothing — it stays in the DOM because it is the link's accessible name. Carries `.moss-wordmark` for the face.",
+    },
+    ComponentEntry {
+        class: "moss-mark",
+        kind: "chrome",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-mark" aria-hidden="true"><svg viewBox="0 0 288 288"></svg></span>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "The moss mark wherever moss draws it: black or white ink with the green drop lifted on a dark ground, never the muted colour of wording beside it. Its rules live in `mark.css`, which the app's launcher shares; the colophon's `.moss-colophon-icon` is the one instance in a built site. Size is the surface's to set, and so is any quieting — a surface may repaint the mark by setting `--moss-mark-paint` / `--moss-mark-drop-paint`, and time the change with `--moss-mark-fade`.",
+    },
+    ComponentEntry {
+        class: "moss-wordmark",
+        kind: "chrome",
+        parent: "",
+        data_attrs: &[],
+        example_html: r#"<span class="moss-wordmark" lang="zh-Hans">青苔</span>"#,
+        example_markdown: "",
+        status: Status::Confirmed,
+        since: "1",
+        description: "moss's name beside or beneath the mark. In Chinese it is set in Long Cang, the running hand that matches the mark's real ink, keyed on the element's inherited `lang`; the Latin `moss` stays in the body face. Size is the surface's to set — the colophon's label is one instance.",
     },
     ComponentEntry {
         class: "moss-shell-frame",
