@@ -560,3 +560,151 @@ fn crlf_frontmatter_spans_are_exact() {
     assert_eq!(&src[s[0].value.clone()], "x.png");
     assert_eq!(&src[s[0].outer.clone()], "cover: x.png\r\n");
 }
+
+// ---------------------------------------------------------------------------
+// frontmatter_span — the one splitter, both dialects
+// ---------------------------------------------------------------------------
+
+/// `(label, content, expected)` where `expected` is
+/// `Some((kind, fields_text, body_text))` read straight off the span. Asserting
+/// the TEXT rather than the offsets is what makes this readable and what makes
+/// a CRLF byte-count slip visible.
+#[test]
+fn frontmatter_span_splits_both_dialects() {
+    type Case = (&'static str, &'static str, Option<(FrontmatterKind, &'static str, &'static str)>);
+    let cases: &[Case] = &[
+        (
+            "yaml",
+            "---\ntitle: Hello\n---\nBody.\n",
+            Some((FrontmatterKind::Yaml, "title: Hello\n", "Body.\n")),
+        ),
+        (
+            "yaml, CRLF — offsets must include the \\r",
+            "---\r\ntitle: Hello\r\n---\r\nBody.\r\n",
+            Some((FrontmatterKind::Yaml, "title: Hello\r\n", "Body.\r\n")),
+        ),
+        (
+            "yaml, empty block",
+            "---\n---\nBody.\n",
+            Some((FrontmatterKind::Yaml, "", "Body.\n")),
+        ),
+        (
+            "yaml, closing delimiter ends the file",
+            "---\ntitle: T\n---",
+            Some((FrontmatterKind::Yaml, "title: T\n", "")),
+        ),
+        (
+            "yaml, BOM before the opening delimiter",
+            "\u{feff}---\ntitle: T\n---\nBody.\n",
+            Some((FrontmatterKind::Yaml, "title: T\n", "Body.\n")),
+        ),
+        (
+            "simplified",
+            "nav\ntitle: Hi\n---\n\n# Body\n",
+            Some((FrontmatterKind::Simplified, "nav\ntitle: Hi\n", "\n# Body\n")),
+        ),
+        (
+            "simplified, CRLF",
+            "nav\r\ntitle: Hi\r\n---\r\n\r\n# Body\r\n",
+            Some((FrontmatterKind::Simplified, "nav\r\ntitle: Hi\r\n", "\r\n# Body\r\n")),
+        ),
+        (
+            // A BOM used to fail `is_frontmatter_field_line` outright (it is not
+            // a lowercase initial), so a BOM'd simplified file had no frontmatter.
+            "simplified, BOM before the first field",
+            "\u{feff}nav\ntitle: Hi\n---\nBody\n",
+            Some((FrontmatterKind::Simplified, "nav\ntitle: Hi\n", "Body\n")),
+        ),
+        (
+            "simplified, blank lines inside the prefix",
+            "nav\n\ntitle: Hi\n---\nBody\n",
+            Some((FrontmatterKind::Simplified, "nav\n\ntitle: Hi\n", "Body\n")),
+        ),
+        // --- the bail-outs, each of which is the SAFE answer ---
+        // `----` is a thematic break. `parse` used to read this as a block,
+        // fail to deserialize `prose` as a mapping, and `render_body()` then
+        // dropped everything above the `---`.
+        ("four dashes are a thematic break", "----\nprose\n---\nmore\n", None),
+        ("`---yaml` is not an opening delimiter", "---yaml\ntitle: T\n---\nBody\n", None),
+        // Three spaces is a legal CommonMark thematic break. Accepting it would
+        // re-open moss#932 one notch over: uid stamping writes its answer back
+        // to the author's file, so this would splice `uid:` into their prose.
+        ("an indented opening delimiter is a thematic break", "   ---\nprose\n---\nmore\n", None),
+        ("a leading blank line matches neither dialect", "\n---\ntitle: T\n---\nBody\n", None),
+        ("unclosed yaml block", "---\ntitle: T\nBody\n", None),
+        ("setext heading", "Introduction\n---\n\nText.\n", None),
+        ("a sentence with a colon", "Note: this matters\n\n---\n", None),
+        ("a bare URL above a setext underline", "https://example.com/x\n---\n\nText.\n", None),
+        ("a thematic break after a closed fence", "# Notes\n\n```sh\nmoss build\n```\n\n---\n\n## 0.1\n", None),
+        ("no frontmatter at all", "# Just content\n\nNo frontmatter here.\n", None),
+    ];
+
+    for (label, content, expected) in cases {
+        let got = frontmatter_span(content).map(|span| {
+            (span.kind, &content[span.fields.clone()], &content[span.body..])
+        });
+        assert_eq!(got, *expected, "{label}");
+    }
+}
+
+/// The span PARTITIONS the document: everything outside `fields` and `body` is
+/// delimiter bytes, and concatenating the three pieces reproduces the input
+/// byte-for-byte. This is what lets every caller splice rather than re-emit.
+#[test]
+fn frontmatter_span_partitions_the_document_byte_for_byte() {
+    let corpus = [
+        "---\n# comment\ntitle: 'Ada'   # note\ntags:\n  - a\n---\nBody **here**.\n",
+        "---\r\ntitle: T\r\n---\r\nBody\r\n",
+        "nav\ntitle: Hi\n---\n\n# Body\n",
+        "nav\r\ntitle: Hi\r\n---\r\n\r\n# Body\r\n",
+        "---\n---\n",
+        "\u{feff}---\ntitle: T\n---\nBody\n",
+    ];
+    for content in corpus {
+        let span = frontmatter_span(content).expect("frontmatter");
+        let rebuilt = format!(
+            "{}{}{}{}",
+            &content[..span.fields.start],
+            &content[span.fields.clone()],
+            &content[span.fields.end..span.body],
+            &content[span.body..],
+        );
+        assert_eq!(rebuilt, content, "span must partition {content:?}");
+        // The delimiter slice really is delimiters, not stray content.
+        assert!(
+            content[span.fields.end..span.body].trim() == "---",
+            "closing slice must be the delimiter line: {:?}",
+            &content[span.fields.end..span.body]
+        );
+    }
+}
+
+/// `parse` no longer swallows the top of a document that merely opens with a
+/// thematic break. It used to: `----` passed `starts_with("---")`, `prose`
+/// failed to deserialize as a mapping, and `render_body()` returned everything
+/// after the `---`.
+#[test]
+fn parse_does_not_claim_a_thematic_break_as_frontmatter() {
+    let doc = "----\nA real opening paragraph.\n\n---\n\nMore prose.\n";
+    let parsed = parse(doc);
+    assert!(parsed.frontmatter_range.is_none());
+    assert!(parsed.frontmatter_error.is_none());
+    assert_eq!(parsed.body, doc);
+    assert_eq!(parsed.render_body(), doc);
+}
+
+/// `frontmatter_map` is the untyped read for EITHER dialect; `parse` answers
+/// the YAML one only. A simplified block used to come back empty from every
+/// caller that reached for `parse` — the file tree's date and `home:` probe
+/// among them (moss#937).
+#[test]
+fn frontmatter_map_reads_both_dialects() {
+    let yaml = frontmatter_map("---\ndate: 2025-11-15\nhome: true\n---\nbody\n");
+    let simplified = frontmatter_map("date: 2025-11-15\nhome\ntitle: Hi\n---\nbody\n");
+    for (label, fm) in [("yaml", &yaml), ("simplified", &simplified)] {
+        assert_eq!(fm.get("date").and_then(|v| v.as_str()), Some("2025-11-15"), "{label}");
+        assert_eq!(fm.get("home").and_then(|v| v.as_bool()), Some(true), "{label}");
+    }
+    assert_eq!(simplified.get("title").and_then(|v| v.as_str()), Some("Hi"));
+    assert!(parse("date: 2025-11-15\nhome\n---\nbody\n").frontmatter.is_empty());
+}

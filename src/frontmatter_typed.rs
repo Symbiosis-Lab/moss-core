@@ -658,46 +658,25 @@ pub fn apply_sidebar_alias(fm: &mut FrontMatter) -> Vec<String> {
     warnings
 }
 
-/// Whether content opens with simplified frontmatter (no leading `---`).
+/// Whether content opens with simplified frontmatter (no leading `---`) — the
+/// one splitter's answer ([`crate::frontmatter::frontmatter_span`]), never a
+/// second scan.
 pub fn is_simplified_frontmatter(content: &str) -> bool {
-    simplified_frontmatter_delimiter(content).is_some()
+    simplified_fields(content).is_some()
 }
 
-/// Byte offset of the `---` line that closes simplified frontmatter, or `None`
-/// when the file has none. `content[..offset]` is then the frontmatter and
-/// `content[offset..]` begins with the `---`.
-///
-/// Single source of truth for that judgement — yes/no callers, field-parsing
-/// callers and the caller that rewrites the file (uid stamping) share this one
-/// scan, so they cannot disagree about where, or whether, frontmatter ends.
-///
-/// **Frontmatter is a prefix**: a run of `key` / `key: value` lines starting at
-/// byte 0 and closed by a standalone `---`. The first non-field line ends the
-/// search, so a later `---` is a thematic break, a `:::grid` cell separator or
-/// a line of a quoted YAML example — never a delimiter. Asking the weaker
-/// question ("is there a `---` anywhere?") is what made this dangerous: uid
-/// stamping writes its answer back to the author's file, so a false positive
-/// splices `uid:` into the middle of their prose.
-pub fn simplified_frontmatter_delimiter(content: &str) -> Option<usize> {
-    // If starts with ---, it's traditional YAML frontmatter
-    if content.trim_start().starts_with("---") {
+/// The simplified field text and the body, or `None` in any other dialect. Every
+/// simplified reader in this module reads it, so none can disagree about where
+/// the frontmatter ends.
+fn simplified_fields(content: &str) -> Option<(&str, &str)> {
+    let span = crate::frontmatter::frontmatter_span(content)?;
+    if span.kind != crate::frontmatter::FrontmatterKind::Simplified {
         return None;
     }
-    let mut offset = 0;
-    // `split_inclusive` keeps the terminator, so offsets stay exact under both
-    // `\n` and `\r\n`; `lines()` would silently drop the `\r` from the count.
-    for raw in content.split_inclusive('\n') {
-        let line_start = offset;
-        offset += raw.len();
-        let trimmed = raw.trim();
-        if trimmed == "---" {
-            return Some(line_start);
-        }
-        if !is_frontmatter_field_line(trimmed) {
-            return None;
-        }
-    }
-    None
+    // Char-aligned: `fields` and `body` are line-boundary offsets from
+    // `frontmatter_span`, which splits on the ASCII `\n`.
+    #[allow(clippy::string_slice)]
+    Some((&content[span.fields], &content[span.body..]))
 }
 
 /// One line of simplified frontmatter: blank, a known bare flag, or `key: value`.
@@ -717,7 +696,7 @@ pub fn simplified_frontmatter_delimiter(content: &str) -> Option<usize> {
 /// underneath it reads as the delimiter, so uid stamping splices `uid:` between
 /// an author's link and its own heading underline. The same rule covers
 /// `mailto:`, `tel:` and every other scheme for free.
-fn is_frontmatter_field_line(trimmed: &str) -> bool {
+pub(crate) fn is_frontmatter_field_line(trimmed: &str) -> bool {
     match trimmed.split_once(':') {
         None => trimmed.is_empty() || SIMPLIFIED_BARE_FLAGS.contains(&trimmed),
         // Only the key is judged; the value is unconstrained. Lowercase initial
@@ -748,10 +727,19 @@ pub(crate) const SIMPLIFIED_BARE_FLAGS: [&str; 8] = [
 /// free by moss-core's no-I/O rule; the caller owns the path and the decision
 /// to warn (`foreign_frontmatter_warnings` in `build/markdown/pipeline.rs`).
 pub fn simplified_frontmatter_keys(content: &str) -> Vec<String> {
-    let Some(delimiter) = simplified_frontmatter_delimiter(content) else {
+    simplified_field_pairs(content).into_iter().map(|(key, _)| key).collect()
+}
+
+/// Every simplified field as `(key, value)`, in source order; `None` marks a
+/// bare flag. The one owner of "which lines are fields and what are their keys",
+/// shared by [`simplified_frontmatter_keys`] and
+/// [`crate::frontmatter::frontmatter_map`]. What a VALUE means is deliberately
+/// NOT settled here — this hands back raw text, and the typed parser below
+/// applies the per-field coercions (comma lists, wikilink refs) it has no schema for.
+pub(crate) fn simplified_field_pairs(content: &str) -> Vec<(String, Option<&str>)> {
+    let Some((fields, _body)) = simplified_fields(content) else {
         return Vec::new();
     };
-    let (fields, _) = content.split_at(delimiter);
     fields
         .lines()
         .filter_map(|line| {
@@ -760,8 +748,8 @@ pub fn simplified_frontmatter_keys(content: &str) -> Vec<String> {
                 return None;
             }
             match trimmed.split_once(':') {
-                Some((key, _)) => Some(key.trim().to_string()),
-                None => Some(trimmed.to_string()),
+                Some((key, value)) => Some((key.trim().to_string(), Some(value.trim()))),
+                None => Some((trimmed.to_string(), None)),
             }
         })
         .collect()
@@ -774,16 +762,12 @@ pub fn simplified_frontmatter_keys(content: &str) -> Vec<String> {
 /// - Comma lists: `key: a, b, c`
 pub fn parse_simplified_frontmatter(content: &str) -> (FrontMatter, String) {
     let mut frontmatter = FrontMatter::default();
-    // WHERE the frontmatter ends is `simplified_frontmatter_delimiter`'s call —
-    // the same one the caller's `is_simplified_frontmatter` gate already made.
-    // Re-deriving it here (scan for the first `---`) asked a different question,
-    // and the two drifted. Cutting the body at the newline after that line is
-    // also exact under `\r\n`, where summing `lines()` lengths lost a byte each.
-    let Some(delimiter) = simplified_frontmatter_delimiter(content) else {
+    // WHERE the frontmatter ends is `frontmatter_span`'s call — the same one the
+    // caller's `is_simplified_frontmatter` gate made. Re-deriving it here asked a
+    // different question, and the two drifted.
+    let Some((fields, body)) = simplified_fields(content) else {
         return (frontmatter, content.to_string());
     };
-    let (fields, rest) = content.split_at(delimiter);
-    let body = rest.split_once('\n').map_or("", |(_, after)| after);
 
     for line in fields.lines() {
         let trimmed = line.trim();
@@ -1588,10 +1572,10 @@ mod url_path_tests {
         // `Introduction\n---` is CommonMark for `<h2>Introduction</h2>`, and
         // Obsidian vaults are full of them. Reading it as a bare flag closed by
         // a delimiter would let uid stamping rewrite the heading on disk.
-        assert_eq!(simplified_frontmatter_delimiter("Introduction\n---\n\nText.\n"), None);
-        assert_eq!(simplified_frontmatter_delimiter("Note: this matters\n\n---\n"), None);
+        assert_eq!(simplified_fields("Introduction\n---\n\nText.\n"), None);
+        assert_eq!(simplified_fields("Note: this matters\n\n---\n"), None);
         // A known flag in the same position IS frontmatter.
-        assert_eq!(simplified_frontmatter_delimiter("draft\n---\n\nText.\n"), Some(6));
+        assert_eq!(simplified_fields("draft\n---\n\nText.\n"), Some(("draft\n", "\nText.\n")));
     }
 
     #[test]
@@ -1601,10 +1585,10 @@ mod url_path_tests {
         // stamping wrote `uid:` between an author's link and its own heading
         // underline. YAML says a mapping needs a space after the colon; a URL
         // scheme has none, and neither does `mailto:` or `tel:`.
-        assert_eq!(simplified_frontmatter_delimiter("https://example.com/x\n---\n\nText.\n"), None);
-        assert_eq!(simplified_frontmatter_delimiter("mailto:hi@example.com\n---\n"), None);
+        assert_eq!(simplified_fields("https://example.com/x\n---\n\nText.\n"), None);
+        assert_eq!(simplified_fields("mailto:hi@example.com\n---\n"), None);
         // A key with nothing after the colon is still a field (`title:`).
-        assert_eq!(simplified_frontmatter_delimiter("title:\n---\nBody\n"), Some(7));
+        assert_eq!(simplified_fields("title:\n---\nBody\n"), Some(("title:\n", "Body\n")));
     }
 
     #[test]
@@ -1631,7 +1615,7 @@ mod url_path_tests {
         // The shape that made this urgent: uid stamping writes its answer back
         // to disk, and nine of moss's own docs pages look exactly like this.
         let release_notes = "# Release notes\n\n```sh\nmoss build\n```\n\nOlder:\n\n---\n\n## 0.1\n";
-        assert_eq!(simplified_frontmatter_delimiter(release_notes), None);
+        assert_eq!(simplified_fields(release_notes), None);
     }
 
     #[test]
@@ -1641,17 +1625,6 @@ mod url_path_tests {
         let (fm, body) = parse_simplified_frontmatter("nav\r\ntitle: Hi\r\n---\r\n\r\n# Body\r\n");
         assert_eq!(fm.title.as_deref(), Some("Hi"));
         assert_eq!(body, "\r\n# Body\r\n");
-    }
-
-    #[test]
-    fn parse_and_detect_agree_on_where_the_body_starts() {
-        // The two used to derive the split point separately. Same scan now, so
-        // the body the parser hands back always begins after the same `---`.
-        let content = "title: T\nnav\n---\nBody line\n";
-        let delimiter = simplified_frontmatter_delimiter(content).expect("frontmatter");
-        let (_, body) = parse_simplified_frontmatter(content);
-        assert_eq!(content.len() - body.len(), delimiter + "---\n".len());
-        assert_eq!(body, "Body line\n");
     }
 
     #[test]

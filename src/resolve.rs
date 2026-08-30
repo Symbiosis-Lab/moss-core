@@ -594,29 +594,6 @@ fn find_closing_brackets(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-/// Scan `content` starting from byte offset `scan_start` for the first
-/// standalone `---` line.  Returns the byte position just past the
-/// delimiter (including its trailing newline, if present).
-fn find_delimiter(content: &str, scan_start: usize) -> Option<usize> {
-    // Char-aligned: callers pass either 0 or `pos + 1` where `pos = content.find('\n')`
-    // (an ASCII byte). Both values land on a UTF-8 char boundary.
-    #[allow(clippy::string_slice)]
-    let rest = &content[scan_start..];
-    let mut offset = 0;
-    for line in rest.lines() {
-        if line.trim() == "---" {
-            let close_abs = scan_start + offset + line.len();
-            return if close_abs < content.len() && content.as_bytes()[close_abs] == b'\n' {
-                Some(close_abs + 1)
-            } else {
-                Some(close_abs)
-            };
-        }
-        offset += line.len() + 1; // +1 for '\n'
-    }
-    None
-}
-
 /// Split content into (frontmatter_including_delimiters, body).
 ///
 /// Supports two frontmatter formats:
@@ -643,48 +620,15 @@ fn find_delimiter(content: &str, scan_start: usize) -> Option<usize> {
 /// any trailing newline after the closing `---`.  Returns
 /// `(None, full_content)` when no frontmatter is detected.
 fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
-    // Literal prefix, not `trim_start()`: everything below indexes from byte 0
-    // on the assumption that the opening `---` IS the first line. The simplified
-    // branch's own bail-out is deliberately wider (`trim_start()`), so a file
-    // that opens with a blank line and then `---` matches neither and comes back
-    // as "no frontmatter" — the safe answer. Narrowing it to match here instead
-    // would hand that file to the arithmetic below, which reads the opening
-    // `---` as the closing one and splits the frontmatter in half.
-    if content.starts_with("---") {
-        // --- Standard YAML frontmatter ---
-
-        // Find end of the opening `---` line.
-        let after_opening = match content.find('\n') {
-            Some(pos) => pos + 1,
-            None => return (None, content),
-        };
-
-        // Search for a closing `---` line in the remainder.
-        // Char-aligned: `split_pos` is computed by `find_delimiter` from
-        // `scan_start + line.len() + (line.len() + 1)*N + (0 or 1)`. All
-        // components are either char-aligned (`scan_start`, slices from `lines()`)
-        // or single ASCII bytes (`'\n'`), so `split_pos` is on a char boundary.
+    // WHERE the frontmatter ends is `frontmatter_span`'s call, for both
+    // dialects — never a local scan. A `---` inside a fenced code block or a
+    // `:::` directive is a code sample or a grid-cell separator, and only that
+    // one function knows it.
+    match crate::frontmatter::frontmatter_span(content) {
+        // Char-aligned: `body` is a line-boundary offset from the splitter.
         #[allow(clippy::string_slice)]
-        match find_delimiter(content, after_opening) {
-            Some(split_pos) => (Some(&content[..split_pos]), &content[split_pos..]),
-            None => (None, content), // No closing delimiter — treat entire content as body.
-        }
-    } else {
-        // --- Simplified frontmatter ---
-        // Everything up to and including the closing `---` line (plus its
-        // trailing newline) is frontmatter; everything after is body.
-        // WHICH `---` closes it is `simplified_frontmatter_delimiter`'s call,
-        // not a local scan: a `---` inside a fenced code block or a `:::`
-        // directive is a code sample or a grid-cell separator. It returns the
-        // start of that line; `find_delimiter` then walks past the line itself.
-        // Same char-alignment rationale as above.
-        #[allow(clippy::string_slice)]
-        match crate::frontmatter_typed::simplified_frontmatter_delimiter(content)
-            .and_then(|line_start| find_delimiter(content, line_start))
-        {
-            Some(split_pos) => (Some(&content[..split_pos]), &content[split_pos..]),
-            None => (None, content), // No `---` found at all — no frontmatter.
-        }
+        Some(span) => (Some(&content[..span.body]), &content[span.body..]),
+        None => (None, content),
     }
 }
 

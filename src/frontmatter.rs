@@ -1,7 +1,15 @@
-//! YAML frontmatter parsing with body preservation.
+//! Frontmatter: where it ends, and (for the YAML dialect) what it says.
 //!
-//! Uses `serde_yaml` directly (NOT `gray_matter`, whose `Pod` type
-//! doesn't properly deserialize YAML arrays — see ADR-008).
+//! [`frontmatter_span`] is the ONE answer to "where does this file's
+//! frontmatter end?", for both dialects moss supports. Every other splitter in
+//! the tree is built on it; none re-derives the boundary. See its doc comment
+//! for the rule.
+//!
+//! [`parse`] then deserializes the YAML dialect with `serde_yaml` directly
+//! (NOT `gray_matter`, whose `Pod` type doesn't properly deserialize YAML
+//! arrays — see ADR-008). The simplified dialect is typed by
+//! [`crate::frontmatter_typed::parse_simplified_frontmatter`], which reads the
+//! same span.
 //!
 //! The body is preserved byte-for-byte via boundary-aware splitting.
 //! `frontmatter_range` records the byte offsets of the `---` delimiters
@@ -9,6 +17,194 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ops::Range;
+
+/// Which frontmatter dialect a document opens with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FrontmatterKind {
+    /// Opens with a `---` line and closes with one. The field text is YAML.
+    Yaml,
+    /// No opening delimiter: a prefix of `key` / `key: value` lines starting at
+    /// byte 0, closed by a standalone `---`.
+    Simplified,
+}
+
+/// Byte offsets of a document's frontmatter, in the ORIGINAL string's
+/// coordinates — no CRLF normalization, no BOM rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontmatterSpan {
+    pub kind: FrontmatterKind,
+    /// Field text only — no delimiters. `content[span.fields]` is the YAML for
+    /// [`FrontmatterKind::Yaml`], the simplified field lines otherwise.
+    pub fields: Range<usize>,
+    /// Byte offset where the body starts: just past the closing `---` line and
+    /// its newline. `content[span.body..]` is the body, byte-for-byte.
+    pub body: usize,
+}
+
+/// Where this document's frontmatter ends — the single splitter, for both
+/// dialects.
+///
+/// Returns `None` when the document has no frontmatter, which is also the
+/// answer for every shape that is *ambiguous*; see the bail-outs below.
+///
+/// ## The rule
+///
+/// **Frontmatter is a prefix.** Optionally a BOM, then either
+///
+/// - **YAML** — a first line that trims to exactly `---`, closed by a later
+///   line that trims to `---`; or
+/// - **Simplified** — a run of `key` / `key: value` lines (see
+///   [`crate::frontmatter_typed::is_frontmatter_field_line`]) starting at byte
+///   0, closed by a standalone `---`.
+///
+/// The first non-field line ends the simplified search, so a later `---` is a
+/// thematic break, a `:::grid` cell separator, or a line of a quoted YAML
+/// example — never a delimiter. Asking the weaker question ("is there a `---`
+/// at the top level?") is what made the original bug destructive: uid stamping
+/// **writes its answer back to the author's file**, so a false positive splices
+/// `uid:` into the middle of their prose (moss#932).
+///
+/// ## Bail-outs, and why each is the safe answer
+///
+/// - A first line that starts with `---` but is not exactly `---` — `----`
+///   (a thematic break) or `---yaml` — is NOT an opening delimiter, and the
+///   document does not fall through to the simplified branch either. It used to:
+///   [`parse`] read `----\nprose\n---\n` as a frontmatter block, failed to
+///   deserialize `prose` as a mapping, and `render_body()` then dropped
+///   everything above the `---`.
+/// - Content whose first *non-whitespace* is `---` but which does not open on
+///   `---` — a leading blank line, or an indented `   ---` (a legal CommonMark
+///   thematic break) — matches neither dialect. Treating it as YAML
+///   would read the opening delimiter as the closing one and split the
+///   frontmatter in half.
+/// - An unclosed block is no frontmatter at all, in both dialects.
+///
+/// ## CRLF
+///
+/// Offsets are exact under `\r\n`: the scan uses `split_inclusive('\n')`,
+/// which keeps the terminator. `lines()` drops the `\r` and the byte count
+/// goes wrong — callers that normalize CRLF first must index the normalized
+/// string, not the original.
+pub fn frontmatter_span(content: &str) -> Option<FrontmatterSpan> {
+    // A BOM before the opening delimiter is invisible to authors and to every
+    // editor; it must not decide whether a file has frontmatter.
+    let start = if content.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8()
+    } else {
+        0
+    };
+    // Char-aligned: `start` is 0 or the length of the leading BOM char.
+    #[allow(clippy::string_slice)]
+    let rest = &content[start..];
+
+    if rest.trim_start().starts_with("---") {
+        // Claimed by the YAML dialect — including the shapes it then rejects.
+        // Falling through to `simplified_span` here is what would read an
+        // opening delimiter as a closing one.
+        return yaml_span(content, start);
+    }
+    simplified_span(content, start)
+}
+
+fn yaml_span(content: &str, start: usize) -> Option<FrontmatterSpan> {
+    // Char-aligned: `start` is 0 or the length of the leading BOM char.
+    #[allow(clippy::string_slice)]
+    let mut lines = content[start..].split_inclusive('\n');
+    let opening = lines.next()?;
+    // `trim_end`, not `trim`: three leading spaces is a legal CommonMark thematic
+    // break, and accepting it as an opening delimiter re-opens moss#932's failure
+    // one notch over — uid stamping would splice `uid:` into the author's prose
+    // and save it. The CLOSING test stays `trim()`, matching every prior
+    // implementation.
+    if opening.trim_end() != "---" {
+        return None;
+    }
+    let mut offset = start + opening.len();
+    let fields_start = offset;
+    for raw in lines {
+        let line_start = offset;
+        offset += raw.len();
+        if raw.trim() == "---" {
+            return Some(FrontmatterSpan {
+                kind: FrontmatterKind::Yaml,
+                fields: fields_start..line_start,
+                body: offset,
+            });
+        }
+    }
+    None
+}
+
+fn simplified_span(content: &str, start: usize) -> Option<FrontmatterSpan> {
+    let mut offset = start;
+    // Char-aligned: `start` is 0 or the length of the leading BOM char.
+    #[allow(clippy::string_slice)]
+    for raw in content[start..].split_inclusive('\n') {
+        let line_start = offset;
+        offset += raw.len();
+        let trimmed = raw.trim();
+        if trimmed == "---" {
+            return Some(FrontmatterSpan {
+                kind: FrontmatterKind::Simplified,
+                fields: start..line_start,
+                body: offset,
+            });
+        }
+        if !crate::frontmatter_typed::is_frontmatter_field_line(trimmed) {
+            return None;
+        }
+    }
+    None
+}
+
+/// Frontmatter as an untyped map, for EITHER dialect.
+///
+/// [`parse`] answers the YAML dialect only, because its `ParsedDocument` also
+/// carries a byte-for-byte body and a delimiter range that only the YAML shape
+/// has. A caller that just wants to read a field — the file tree's `date:` and
+/// `home:` probe, for one — wants this instead: a simplified-frontmatter file
+/// used to come back empty from `parse`, so its page showed no date in the tree
+/// and its `home: true` never flagged (moss#937).
+///
+/// A bare flag (`nav`) is `true`. A simplified value is coerced only when YAML
+/// reads it as a SCALAR — so `date: 2025-11-15` and `home: true` mean the same
+/// thing in both dialects, while `children: [[News]]` stays the string the author
+/// typed instead of becoming a nested sequence. Anything else stays a string.
+///
+/// The boundary this does NOT claim: the typed
+/// [`crate::frontmatter_typed::parse_simplified_frontmatter`] applies its own
+/// per-field coercions (comma lists, wikilink refs) that this untyped view has no
+/// schema to apply. The two agree on which lines are fields and what their KEYS
+/// are — `simplified_field_pairs` is the one owner of that — and deliberately not
+/// on what a value means. Read fields here; read the typed struct for semantics.
+pub fn frontmatter_map(content: &str) -> HashMap<String, serde_yaml::Value> {
+    match frontmatter_span(content).map(|s| s.kind) {
+        Some(FrontmatterKind::Yaml) => parse(content).frontmatter,
+        Some(FrontmatterKind::Simplified) => {
+            crate::frontmatter_typed::simplified_field_pairs(content)
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = match value {
+                        None => serde_yaml::Value::Bool(true),
+                        Some(raw) => match serde_yaml::from_str(raw) {
+                            // Scalars only. A simplified value is one line of
+                            // moss's own dialect, not YAML: reading `[[News]]`
+                            // as a nested sequence would be a second, wrong
+                            // interpretation of a wikilink.
+                            Ok(v @ (serde_yaml::Value::Bool(_)
+                                | serde_yaml::Value::Number(_)
+                                | serde_yaml::Value::String(_))) => v,
+                            _ => serde_yaml::Value::String(raw.to_string()),
+                        },
+                    };
+                    (key, value)
+                })
+                .collect()
+        }
+        None => HashMap::new(),
+    }
+}
 
 /// A parsed markdown document with frontmatter separated from body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +256,9 @@ impl ParsedDocument {
 ///
 /// If no frontmatter is found, returns an empty map with the full content as body.
 pub fn parse(content: &str) -> ParsedDocument {
-    // Normalize CRLF → LF so byte-offset arithmetic can assume single-byte newlines.
+    // Normalize CRLF → LF so `frontmatter_range` and `body` agree with each
+    // other; the span is computed on the SAME normalized string, so its offsets
+    // index what the caller gets back.
     let owned;
     let content = if content.contains("\r\n") {
         owned = content.replace("\r\n", "\n");
@@ -69,102 +267,55 @@ pub fn parse(content: &str) -> ParsedDocument {
         content
     };
 
-    // Must start with `---` followed by newline (or just `---` at end of content).
-    if !content.starts_with("---") {
-        return ParsedDocument {
-            frontmatter: HashMap::new(),
-            body: content.to_string(),
-            frontmatter_range: None,
-            frontmatter_error: None,
-        };
+    let none = || ParsedDocument {
+        frontmatter: HashMap::new(),
+        body: content.to_string(),
+        frontmatter_range: None,
+        frontmatter_error: None,
+    };
+
+    // Where the block ends is `frontmatter_span`'s call. The simplified dialect
+    // is not YAML, so it is not this function's business — `frontmatter_map`
+    // (untyped) and `frontmatter_typed::parse_simplified_frontmatter` (typed)
+    // read it, off the same span.
+    let Some(span) = frontmatter_span(content) else {
+        return none();
+    };
+    if span.kind != FrontmatterKind::Yaml {
+        return none();
     }
 
-    // Find end of opening `---` line.
-    let after_opening = match content.find('\n') {
-        Some(pos) => pos + 1,
-        None => {
-            // Content is just "---" with no newline — no valid frontmatter.
+    // Char-aligned: `fields` and `body` are line-boundary offsets from the
+    // splitter, which splits on the ASCII '\n'.
+    #[allow(clippy::string_slice)]
+    let yaml_text = &content[span.fields.clone()];
+
+    let frontmatter: HashMap<String, serde_yaml::Value> = match serde_yaml::from_str(yaml_text) {
+        Ok(map) => map,
+        Err(e) => {
+            // Invalid YAML. Record the block range + surface the error instead
+            // of silently swallowing it (which used to dump the raw `---...---`
+            // block into `body`, leaking it verbatim into rendered HTML with no
+            // warning — the "Europe - A Prophecy.md" bug). `body` stays the
+            // WHOLE document so the editor can still show/repair the block and a
+            // re-serialize save preserves the file; the build renders
+            // `render_body()` (block-excluded) so nothing leaks. See ADR-020.
             return ParsedDocument {
                 frontmatter: HashMap::new(),
                 body: content.to_string(),
-                frontmatter_range: None,
-                frontmatter_error: None,
+                frontmatter_range: Some((0, span.body)),
+                frontmatter_error: Some(e.to_string()),
             };
         }
     };
 
-    // Search for closing `---` line in the remainder.
-    // Char-aligned: `after_opening = pos + 1` where `pos = content.find('\n')`,
-    // and '\n' is a single ASCII byte, so the index lands on a char boundary.
     #[allow(clippy::string_slice)]
-    let rest = &content[after_opening..];
-    let mut offset = 0;
-    for line in rest.lines() {
-        if line.trim() == "---" {
-            // Found closing delimiter.
-            let close_line_start = after_opening + offset;
-            let close_line_end = close_line_start + line.len();
+    let body = &content[span.body..];
 
-            // Include the newline after the closing `---` if present.
-            let fm_end = if close_line_end < content.len()
-                && content.as_bytes()[close_line_end] == b'\n'
-            {
-                close_line_end + 1
-            } else {
-                close_line_end
-            };
-
-            // The YAML text is between the opening and closing delimiters.
-            // Char-aligned: `after_opening` follows '\n' (ASCII), and
-            // `close_line_start = after_opening + offset` where `offset`
-            // accumulates `line.len() + 1` per line returned by `lines()`
-            // (each line is a complete-char slice and '\n' is one byte).
-            #[allow(clippy::string_slice)]
-            let yaml_text = &content[after_opening..close_line_start];
-
-            // Parse the YAML.
-            let frontmatter: HashMap<String, serde_yaml::Value> =
-                match serde_yaml::from_str(yaml_text) {
-                    Ok(map) => map,
-                    Err(e) => {
-                        // Invalid YAML. Record the block range + surface the
-                        // error instead of silently swallowing it (which used to
-                        // dump the raw `---...---` block into `body`, leaking it
-                        // verbatim into rendered HTML with no warning — the
-                        // "Europe - A Prophecy.md" bug). `body` stays the WHOLE
-                        // document so the editor can still show/repair the block
-                        // and a re-serialize save preserves the file; the build
-                        // renders `render_body()` (block-excluded) so nothing
-                        // leaks. See ADR-020.
-                        return ParsedDocument {
-                            frontmatter: HashMap::new(),
-                            body: content.to_string(),
-                            frontmatter_range: Some((0, fm_end)),
-                            frontmatter_error: Some(e.to_string()),
-                        };
-                    }
-                };
-
-            // Char-aligned: `fm_end` is `close_line_end` (= line-aligned via `lines()`
-            // + ASCII '---') optionally + 1 for an ASCII '\n'.
-            #[allow(clippy::string_slice)]
-            let body = &content[fm_end..];
-
-            return ParsedDocument {
-                frontmatter,
-                body: body.to_string(),
-                frontmatter_range: Some((0, fm_end)),
-                frontmatter_error: None,
-            };
-        }
-        offset += line.len() + 1; // +1 for '\n'
-    }
-
-    // No closing delimiter found — no valid frontmatter.
     ParsedDocument {
-        frontmatter: HashMap::new(),
-        body: content.to_string(),
-        frontmatter_range: None,
+        frontmatter,
+        body: body.to_string(),
+        frontmatter_range: Some((0, span.body)),
         frontmatter_error: None,
     }
 }
@@ -315,11 +466,12 @@ pub fn value_as_string(value: &serde_yaml::Value) -> Option<String> {
 /// # Why this does not use `parse`
 ///
 /// [`parse`] CRLF-normalizes before computing `frontmatter_range`, so those
-/// offsets index a COPY and are unsafe for rewriting a CRLF source. This
-/// locates the block on its own raw line table instead. It agrees with
-/// `parse` on what a block is (any content starting with `---`, ending at
-/// the next line that trims to `---`), so it adds no false-positive surface
-/// relative to the parser that already reads these files.
+/// offsets index a COPY and are unsafe for rewriting a CRLF source.
+/// [`frontmatter_span`] does not normalize — its offsets index the raw source
+/// this is about to rewrite — so the boundary is its call here too, and both
+/// dialects are covered: a simplified-frontmatter page's `cover:` used to get no
+/// span at all and go un-rewritten on publish (moss#937). Only the LINE TABLE is
+/// local, because the fields have to be walked as YAML mapping lines.
 ///
 /// # Why this does not use the inert mask
 ///
@@ -333,20 +485,15 @@ pub fn frontmatter_asset_spans(source: &str) -> Vec<crate::resolve::md_extract::
     use crate::resolve::md_extract::{AssetPathSpan, PathContainer};
 
     let mut out = Vec::new();
+    let Some(span) = frontmatter_span(source) else {
+        return out;
+    };
     let table = crate::resolve::md_extract::line_table(source);
     let line_at = |k: usize| -> &str {
         let (base, content, _) = table[k];
         #[allow(clippy::string_slice)]
         // Line boundaries from `line_table`, which splits on ASCII '\n'/'\r'.
         &source[base..base + content]
-    };
-
-    // The block must open on line 0 and close on a later `---` line.
-    if table.is_empty() || line_at(0).trim() != "---" {
-        return out;
-    }
-    let Some(close) = (1..table.len()).find(|&k| line_at(k).trim() == "---") else {
-        return out;
     };
 
     let keys: Vec<&str> = crate::schema_fields::asset_field_names().collect();
@@ -356,8 +503,15 @@ pub fn frontmatter_asset_spans(source: &str) -> Vec<crate::resolve::md_extract::
     // from being rewritten.
     let mut block_scalar_indent: Option<usize> = None;
 
-    for k in 1..close {
+    // Field lines only: the rows the splitter's `fields` range covers.
+    for k in 0..table.len() {
         let (base, content_len, term_len) = table[k];
+        if base < span.fields.start {
+            continue;
+        }
+        if base >= span.fields.end {
+            break;
+        }
         let line = line_at(k);
         let indent = line.len() - line.trim_start().len();
 

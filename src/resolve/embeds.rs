@@ -245,53 +245,18 @@ fn split_target(target: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Strip YAML frontmatter from file content.
+/// Strip frontmatter from file content, in either dialect.
 ///
-/// Frontmatter is delimited by `---` at the very start of the file and a
-/// subsequent `---` line.  Everything between (and including) the delimiters
-/// is removed.
+/// A transcluded page whose frontmatter is simplified used to have its field
+/// lines rendered as prose inside the embedding page — this saw a YAML block or
+/// nothing (moss#937).
 fn strip_frontmatter(content: &str) -> &str {
-    // Must start with `---` on the first line.
-    if !content.starts_with("---") {
-        return content;
-    }
-
-    // Find the end of the first line (the opening `---`).
-    // `split_once('\n')` keeps both halves on char boundaries — `\n` is ASCII.
-    let (_opening_line, after_opening) = match content.split_once('\n') {
-        Some(pair) => pair,
-        None => return content, // Only "---" with no closing delimiter.
-    };
-
-    // Find the closing `---` line.
-    if let Some(close_pos) = find_closing_frontmatter(after_opening) {
-        // `close_pos` is a sum of `line.len() + 1` over `.lines()`, so it lands
-        // on a `\n` boundary in `after_opening` — char-aligned by construction.
+    match crate::frontmatter::frontmatter_span(content) {
+        // Char-aligned: `body` is a line-boundary offset from the splitter.
         #[allow(clippy::string_slice)]
-        // Char-aligned: close_pos is built from line lengths in find_closing_frontmatter,
-        // each terminated by an ASCII '\n'; always on a UTF-8 char boundary.
-        let after_close = &after_opening[close_pos..];
-        // Skip past the closing `---\n`.
-        match after_close.split_once('\n') {
-            Some((_closing_line, rest)) => rest,
-            None => "", // File ends right at the closing `---`.
-        }
-    } else {
-        // No closing delimiter found — treat entire content as body.
-        content
+        Some(span) => &content[span.body..],
+        None => content,
     }
-}
-
-/// Find the position of the closing `---` line within a string (relative offset).
-fn find_closing_frontmatter(s: &str) -> Option<usize> {
-    let mut offset = 0;
-    for line in s.lines() {
-        if line.trim() == "---" {
-            return Some(offset);
-        }
-        offset += line.len() + 1; // +1 for the '\n'
-    }
-    None
 }
 
 /// Extract the section under a specific heading, identified by its anchor.
