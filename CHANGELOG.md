@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-30
+
 ### Added
 
 - **`asset_paths::VIDEO_LADDER` and friends — the video delivery ladder, alongside the image `LADDER`.** `VideoRung { width, height, fps, video_kbps, audio_kbps, audio_channels }`, the six-rung table, `video_ladder_rungs(source_width)` (truncated from the top only, by the same `take_while` shape the image ladder uses, and never to nothing), `video_top_rung`, `video_ladder_fingerprint` for cache keying, and `MIN_BITS_PER_PIXEL_PER_FRAME`. One table states the floor, the rungs and the ceiling together, so they cannot drift apart: the top rung *is* the delivery ceiling, and a test rejects any rung that falls under the floor. The bottom rung sits below Apple's published bottom and runs at 15 fps — an iPhone on a link delivering 118–232 kbps could not start Apple's leanest arm, and halving the frame rate is what buys enough bits per frame for 45 kbps at 320x180 to be a picture rather than a smear. Audio is a rung property rather than a separate setting, because pairing a lean rung with a 192 kbps track makes it unreachable however small the picture gets.
