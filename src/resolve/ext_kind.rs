@@ -28,6 +28,20 @@ pub fn reference_kind_for_ext(ext: &str) -> ExtKind {
         .unwrap_or(ExtKind::Other)
 }
 
+/// The diagnostic an *unresolvable* reference to this extension deserves.
+///
+/// Media the browser would have rendered in place leaves a visible hole when
+/// the file is absent — which is what `missing_media::refuse_publish` exists
+/// to catch, so it blocks. A markdown transclusion or an unknown extension
+/// degrades to an ordinary link instead, so it stays advisory.
+pub fn missing_reference_kind(ext: Option<&str>) -> crate::resolve::DiagnosticKind {
+    use crate::resolve::DiagnosticKind;
+    match ext.map(reference_kind_for_ext) {
+        Some(ExtKind::Transclusion | ExtKind::Other) | None => DiagnosticKind::Other,
+        Some(_) => DiagnosticKind::MissingAsset,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -44,6 +58,21 @@ mod tests {
         assert_eq!(reference_kind_for_ext("ipynb"), ExtKind::Notebook);
         assert_eq!(reference_kind_for_ext("csv"), ExtKind::Table);
         assert_eq!(reference_kind_for_ext("xyz"), ExtKind::Other);
+    }
+
+    #[test]
+    fn only_media_blocks_a_publish_when_it_is_missing() {
+        use crate::resolve::DiagnosticKind;
+        for ext in ["png", "mp4", "m4a", "pdf", "glb", "html", "ipynb", "csv"] {
+            assert_eq!(
+                missing_reference_kind(Some(ext)),
+                DiagnosticKind::MissingAsset,
+                "a missing .{ext} is a hole in the page"
+            );
+        }
+        for ext in [Some("md"), Some("xyz"), None] {
+            assert_eq!(missing_reference_kind(ext), DiagnosticKind::Other, "{ext:?}");
+        }
     }
 
     #[test]

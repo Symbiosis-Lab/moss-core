@@ -655,7 +655,7 @@ fn dispatch_embed_form(
                 message: format!("Unresolved embed: ![[{}]]", split.file),
                 source_path: from_path.to_string(),
                 reference: split.file.to_string(),
-                kind: DiagnosticKind::Other,
+                kind: crate::resolve::ext_kind::missing_reference_kind(path_extension(split.file).as_deref()),
             });
 
             WikilinkEmit {
