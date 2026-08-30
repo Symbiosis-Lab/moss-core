@@ -79,7 +79,7 @@ pub const CUSTOM_PROPS: &[CustomProp] = &[
         name: "--moss-nav-island-display",
         owner: "moss-nav-island",
         default: "block",
-        description: "Set to `none` to turn the floating nav island off site-wide — the page then behaves as it did before ADR-049: the masthead scrolls away and nothing replaces it. This is the island's whole tuning surface on purpose; its measure already tracks `--moss-nav-width`/`--moss-content-width`, so widening the nav widens the island with it.",
+        description: "Forces the floating nav island off from CSS, media queries included — the page then behaves as it did before ADR-049: the masthead scrolls away and nothing replaces it. Not the main switch: the island is opt-in and ships off, so `[site].floating_nav = true` (the Settings → Services toggle) is what turns it on in the first place, and this property is for a theme that wants it off at some widths and not others. Appearance is otherwise tuned through the island's contract-registered classes; its measure already tracks `--moss-nav-width`/`--moss-content-width`, so widening the nav widens the island with it.",
     },
     CustomProp {
         name: "--moss-sidenote-reserve",

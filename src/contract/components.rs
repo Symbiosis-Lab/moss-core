@@ -2538,7 +2538,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Emerging,
         since: "0",
-        description: "Floating navigation island: a one-line bar, aligned to the text column, revealed on scroll-up once the masthead has left the screen. Emitted on any page with a breadcrumb trail, but it only ever shows where it can take the reader somewhere — a trail of three or more crumbs (down the tree) or a page with headings (the sections panel). On a top-level page with neither, the markup stays dormant (ADR-049 §10). Turn it off site-wide with `[site].floating_nav = false` or `--moss-nav-island-display: none`.",
+        description: "Floating navigation island: a one-line bar, aligned to the text column, revealed on scroll-up once the masthead has left the screen. Opt-in — a site gets none until it sets `[site].floating_nav = true` (the Services-tab toggle writes that key). On a site that opted in, the markup is emitted on every page with a breadcrumb trail but only ever shows where the page has a contents table to offer: two or more section headings (ADR-049 §10). `--moss-nav-island-display: none` forces it off from CSS, media query included.",
     },
     ComponentEntry {
         class: "moss-nav-island-bar",
@@ -2604,7 +2604,7 @@ pub const COMPONENTS: &[ComponentEntry] = &[
         example_markdown: "",
         status: Status::Emerging,
         since: "0",
-        description: "Opens this page's section list. Ships `hidden` and is unhidden only once headings have been found, so a page with no headings shows no dead glyph.",
+        description: "Opens this page's section list. Always present in an emitted island, because an island only ever shows on a page with two or more sections — so the button always has something to open.",
     },
     ComponentEntry {
         class: "moss-nav-island-menu",
