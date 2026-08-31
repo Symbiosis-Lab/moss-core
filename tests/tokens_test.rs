@@ -37,18 +37,22 @@ fn entries_are_sorted_alphabetically_within_group() {
 
 #[test]
 fn token_value_preserves_var_references() {
-    // A token whose $value is a var() reference must round-trip verbatim
-    // (no resolution/inlining at load time). moss-reading-size aliases the base
-    // size the same way; it replaced moss-nav-width as the example here when
-    // nav-width became an opt-in (unset-by-default) escape hatch — see the
-    // .main-nav fallback in site.css.
+    // A token whose $value references others must round-trip verbatim (no
+    // resolution/inlining at load time). moss-reading-size is the example: it
+    // is the base size times the per-script multiplier, and both var() names
+    // have to survive the loader for the CSS to mean anything. It replaced
+    // moss-nav-width here when nav-width became an opt-in (unset-by-default)
+    // escape hatch — see the .main-nav fallback in site.css.
     let tokens = load_tokens().expect("tokens.json must parse");
     let typography = tokens.groups.iter().find(|g| g.name == "typography")
         .expect("typography group must exist");
 
     let reading_size = typography.entries.iter().find(|t| t.name == "moss-reading-size")
         .expect("moss-reading-size must exist");
-    assert_eq!(reading_size.value, "var(--moss-reading-size-base)");
+    assert_eq!(
+        reading_size.value,
+        "calc(var(--moss-reading-size-base) * var(--moss-reading-script-scale))"
+    );
 }
 
 // Error-path tests using parse_tokens helper

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The reading scale — `--moss-read-title`, `--moss-read-h1`..`--moss-read-h6`, `--moss-read-caption`, and `--moss-reading-script-scale`.** Prose typography is now expressed as ratios of `--moss-reading-size` instead of as absolute sizes, so headings, body and captions move together when a reader uses the font-size control or when a Chinese page takes the +6% CJK size bump. Before this, three different bases were in play — absolute `rem` for headings, `--moss-reading-size-base` for `h4`, `--moss-reading-size × 1.06` for CJK body — and only one of them moved, which is why `h4` rendered below body text on every Chinese page and `###` shrank below body as soon as a reader enlarged the type. `--moss-reading-script-scale` is the per-script multiplier (1, and 1.06 under `html[lang^="zh"]`), folded into `--moss-reading-size` so everything built on that size inherits it. A theme retunes prose by overriding a ratio. `--moss-size-*` keeps its desktop values and stays chrome geometry, with one consequence worth naming: the mobile `:root` block no longer lowers `--moss-size-2xl` and `--moss-size-3xl`, because prose no longer reads them. `--moss-size-2xl` therefore resolves to 26px under 48rem where it previously resolved to 24px. Nothing in moss's own output consumes it at that width — every `<h1>` moss emits is claimed by a more specific rule — but a theme that reads `--moss-size-2xl` directly will see the change.
+
+### Removed
+
+- **`--moss-size-3xl`.** Declared, overridden once for mobile, and referenced by nothing. A theme reading it now gets the property's inherited or initial value rather than 32px; `--moss-size-2xl` (26px) is the largest remaining step of that scale, and prose titles use `--moss-read-title`.
+
 ## [0.12.0] - 2026-08-30
 
 ### Added

@@ -454,7 +454,6 @@ mod tests {
             "moss-size-lg",   // was moss-font-lg
             "moss-size-xl",   // was moss-font-xl
             "moss-size-2xl",  // was moss-font-2xl
-            "moss-size-3xl",  // was moss-font-3xl
             // font weight (renamed)
             "moss-font-weight-body",  // was moss-font-weight
             "moss-font-heading-weight",
