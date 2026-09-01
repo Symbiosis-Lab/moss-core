@@ -5,7 +5,7 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] - 2026-09-01
 
 ### Added
 
@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- **`--moss-size-3xl`.** Declared, overridden once for mobile, and referenced by nothing. A theme reading it now gets the property's inherited or initial value rather than 32px; `--moss-size-2xl` (26px) is the largest remaining step of that scale, and prose titles use `--moss-read-title`.
+- **BREAKING:** **`--moss-size-3xl`.** Declared, overridden once for mobile, and referenced by nothing. A theme reading it now gets the property's inherited or initial value rather than 32px; `--moss-size-2xl` (26px) is the largest remaining step of that scale, and prose titles use `--moss-read-title`.
 
 ## [0.12.0] - 2026-08-30
 
