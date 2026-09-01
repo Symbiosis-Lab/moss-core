@@ -5,6 +5,12 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-09-01
+
+### Changed
+
+- **`--moss-sidenote-reserve`'s contract description now matches what core does with it.** The property is the note gutter's width; core no longer pads `<body>` by the whole of it. It derives `--moss-sidenote-inset` — `clamp(0px, calc(2 * reserve + content-width - 100vw), reserve)` — and pads by that, so a page gives up only the width the window is short of fitting the gutter: nothing from about 1316px up, and every centred block moves half of whatever is given up. A theme overriding the reserve to widen or narrow the note column still works unchanged; the inset follows it. `--moss-sidenote-inset` is internal plumbing and deliberately carries no `CUSTOM_PROPS` row — it is read without a fallback, which is what keeps it out of the theme-hook catalogue.
+
 ## [0.13.0] - 2026-09-01
 
 ### Added
