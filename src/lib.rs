@@ -118,6 +118,7 @@ pub use resolved::{Resolved, ResolvedOrigin};
 pub mod schema;
 pub mod schema_fields;
 pub mod slug;
+pub mod untrusted_text;
 pub mod sort;
 pub mod shortcode_tokens;
 pub mod validation;
