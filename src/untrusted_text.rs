@@ -13,13 +13,11 @@
 //!   lays tiles out from the text they carry, and `aria-label` has no layout to
 //!   push back.
 //!
-//! It lives here, in the crate with no I/O, on the expectation that two sides
-//! need it: the registry client in `src-tauri`, which calls it today, and the
-//! plugin contribution parser in `moss-build`, which does not yet exist.
-//! Until that second caller lands this placement is a bet, not a fact — if it
-//! is still the only caller when the registry work finishes, this belongs in
-//! `src-tauri/src/plugins/` and the `children_per_dir` waiver that paid for it
-//! should be reverted.
+//! It lives here, in the crate with no I/O, because both sides call it: the
+//! registry client in `src-tauri`, and in `moss-build` the settings-field
+//! parser, the setup-verdict deserializer and `Verb::normalized`. The
+//! placement was a bet when it was written and the second caller has since
+//! landed, which is what the `children_per_dir` waiver bought.
 
 /// A name: it names a thing, it does not explain one.
 pub const MAX_NAME: usize = 64;
@@ -27,14 +25,13 @@ pub const MAX_NAME: usize = 64;
 /// A sentence: long enough for a real advisory, short of a paragraph.
 pub const MAX_SENTENCE: usize = 280;
 
-/// Strip what cannot be seen, then cut to `max` characters.
+/// Drop every character that occupies no space and can move the ones around it.
 ///
-/// Truncation is on a CHARACTER boundary: byte slicing panics on the first
-/// author whose 64th byte lands mid-codepoint, and plenty of real plugin names
-/// are not ASCII. Control and format characters are dropped BEFORE the count,
-/// because they are not length.
-pub fn bounded(value: &str, max: usize) -> String {
-    let visible: String = value
+/// Split out of [`bounded`] for the caller that needs the strip WITHOUT the
+/// cut: a job verb carries its own 24-character clamp and would otherwise
+/// grow a second copy of this set, which is how the two drift.
+pub fn stripped(value: &str) -> String {
+    value
         .chars()
         .filter(|c| {
             !c.is_control()
@@ -45,7 +42,17 @@ pub fn bounded(value: &str, max: usize) -> String {
                     | '\u{202a}'..='\u{202e}'
                     | '\u{2066}'..='\u{2069}')
         })
-        .collect();
+        .collect()
+}
+
+/// Strip what cannot be seen, then cut to `max` characters.
+///
+/// Truncation is on a CHARACTER boundary: byte slicing panics on the first
+/// author whose 64th byte lands mid-codepoint, and plenty of real plugin names
+/// are not ASCII. Control and format characters are dropped BEFORE the count,
+/// because they are not length.
+pub fn bounded(value: &str, max: usize) -> String {
+    let visible = stripped(value);
     if visible.chars().count() <= max {
         return visible;
     }
