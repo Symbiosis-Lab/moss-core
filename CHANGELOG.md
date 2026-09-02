@@ -5,6 +5,14 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-09-02
+
+### Added
+
+- **`terms` module — the single owner of term identity** for the new author/tag term pages. `term_fold` (trim + lowercase equality), `term_slug` (URL segment; dots become hyphens so the slug survives the render side's path slugger), `term_folder_key` (`author/<slug>` / `tags/<slug>`), and `TermClaim` (the resolved form of `author_page:`/`tag_page:` — `UseTitle` or an explicit `Name`). `merge_tag_lists` moved here from moss-build's markdown pipeline; same behavior (frontmatter first, inline tags appended case-insensitively, both-absent stays `None`).
+- **`FrontMatter.author` is now `Option<Vec<String>>`** (was `Option<String>`), deserialized leniently: a single string stays one verbatim entry ("A and B" is not split), a YAML list gives one entry per item. A single entry serializes back to the plain-string form, so round-trips don't rewrite existing files.
+- **`FrontMatter.author_page` / `FrontMatter.tag_page`** (`Option<TermClaim>`) with matching `BUILTIN_FIELDS` entries (OneOf boolean|string, like `children`), and `frontmatter_union::normalize_name_list` / `normalize_term_claim` as their shared editor/build normalizers.
+
 ## [0.13.1] - 2026-09-01
 
 ### Changed

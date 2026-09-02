@@ -163,6 +163,88 @@ pub fn normalize_credit_rows(v: &Value) -> Result<Vec<String>, String> {
     Ok(rows)
 }
 
+/// Normalize an authored term-claim value (`author_page:` / `tag_page:`).
+///
+/// | Input value                          | Output                          |
+/// |--------------------------------------|---------------------------------|
+/// | `Bool(true)` / `String("true")`      | `Some(TermClaim::UseTitle)`     |
+/// | `Bool(false)` / `String("false"/"")` | `None` (no claim)               |
+/// | `String(s)` non-empty, non-bool      | `Some(TermClaim::Name(s))`      |
+/// | `Null`                               | `None`                          |
+/// | other shapes                         | `Err(_)`                        |
+pub fn normalize_term_claim(v: &Value) -> Result<Option<crate::terms::TermClaim>, String> {
+    use crate::terms::TermClaim;
+    match v {
+        Value::Null => Ok(None),
+        Value::Bool(true) => Ok(Some(TermClaim::UseTitle)),
+        Value::Bool(false) => Ok(None),
+        Value::String(s) => {
+            let t = s.trim();
+            match t {
+                "true" => Ok(Some(TermClaim::UseTitle)),
+                "false" | "" => Ok(None),
+                _ => Ok(Some(TermClaim::Name(t.to_string()))),
+            }
+        }
+        other => Err(format!(
+            "expected true, or the claimed name as a string, found {}",
+            shape_name(other)
+        )),
+    }
+}
+
+/// Normalize an authored `author` value into a list of names.
+///
+/// A single string is ONE name, kept verbatim — `author: "方六、常籮"` and
+/// `author: "A and B"` are one pre-formatted entry, because splitting on
+/// prose separators would guess. A YAML list is one name per item; the list
+/// form is how co-authors are stated structurally. Unlike
+/// [`normalize_credit_rows`], a multi-line string does NOT split: a name is
+/// not a credit block.
+///
+/// | Input value                       | Output               |
+/// |-----------------------------------|----------------------|
+/// | `String("馬欣宜")`                 | `["馬欣宜"]`          |
+/// | `Sequence(["方六", "常籮"])`        | `["方六", "常籮"]`     |
+/// | `String("")` / blank / empty seq  | `[]`                 |
+/// | `Null`                            | `[]`                 |
+/// | `Bool` / `Number` / `Mapping`     | `Err(_)`             |
+/// | sequence holding a non-string     | `Err(_)`             |
+pub fn normalize_name_list(v: &Value) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    let mut push = |raw: &str| {
+        let t = raw.trim();
+        if !t.is_empty() {
+            names.push(t.to_string());
+        }
+    };
+    match v {
+        Value::Null => {}
+        Value::String(s) => push(s),
+        Value::Sequence(items) => {
+            for it in items {
+                match it {
+                    Value::String(s) => push(s),
+                    Value::Null => {}
+                    other => {
+                        return Err(format!(
+                            "expected a name or a list of names, found a list holding {}",
+                            shape_name(other)
+                        ))
+                    }
+                }
+            }
+        }
+        other => {
+            return Err(format!(
+                "expected a name or a list of names, found {}",
+                shape_name(other)
+            ))
+        }
+    }
+    Ok(names)
+}
+
 /// Author-facing name for a YAML value's shape, used in `normalize_credit_rows`
 /// errors. Deliberately plain words, not serde type names.
 fn shape_name(v: &Value) -> &'static str {
@@ -359,6 +441,39 @@ mod tests {
         let err = normalize_credit_rows(&Value::Mapping(Default::default())).unwrap_err();
         assert!(err.contains("key/value"), "message names the shape: {err}");
         let err = normalize_credit_rows(&Value::Sequence(vec![s("作者 X"), Value::Bool(true)])).unwrap_err();
+        assert!(err.contains("list holding"), "message names the offending item: {err}");
+    }
+
+    // --- normalize_name_list: one assertion per decision-table row ---
+
+    #[test]
+    fn author_single_string_is_one_name_verbatim() {
+        assert_eq!(normalize_name_list(&s("馬欣宜")).unwrap(), vec!["馬欣宜"]);
+        // A pre-formatted co-author string is ONE entry: moss never splits prose.
+        assert_eq!(normalize_name_list(&s("方六、常籮")).unwrap(), vec!["方六、常籮"]);
+        // Unlike credit rows, a multi-line string does not split into entries.
+        assert_eq!(normalize_name_list(&s("A\nB")).unwrap(), vec!["A\nB"]);
+    }
+
+    #[test]
+    fn author_list_is_one_name_per_item() {
+        let seq = Value::Sequence(vec![s(" 方六 "), s("常籮")]);
+        assert_eq!(normalize_name_list(&seq).unwrap(), vec!["方六", "常籮"]);
+    }
+
+    #[test]
+    fn author_empty_shapes_yield_no_names() {
+        assert!(normalize_name_list(&s("")).unwrap().is_empty());
+        assert!(normalize_name_list(&s("   ")).unwrap().is_empty());
+        assert!(normalize_name_list(&Value::Sequence(vec![])).unwrap().is_empty());
+        assert!(normalize_name_list(&Value::Null).unwrap().is_empty());
+    }
+
+    #[test]
+    fn author_wrong_shapes_report_what_was_found() {
+        let err = normalize_name_list(&Value::Number(1.into())).unwrap_err();
+        assert!(err.contains("a number"), "message names the shape: {err}");
+        let err = normalize_name_list(&Value::Sequence(vec![Value::Bool(true)])).unwrap_err();
         assert!(err.contains("list holding"), "message names the offending item: {err}");
     }
 }

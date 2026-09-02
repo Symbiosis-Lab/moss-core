@@ -210,6 +210,43 @@ const CREDIT_ROW_MEMBERS: &[BuiltinField] = &[
     },
 ];
 
+/// Union members for `author_page` / `tag_page`: a boolean toggle (claim the
+/// page's own title as the term name) OR the claimed name as a string. Shared
+/// rule: `frontmatter_union::normalize_term_claim`.
+const TERM_CLAIM_MEMBERS: &[BuiltinField] = &[
+    BuiltinField {
+        name: "",
+        field_type: FieldType::Boolean,
+        widget: Widget::Checkbox,
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        ..FIELD_DEFAULTS
+    },
+];
+
+/// Union members for `author`: one name string OR a list of names. Unlike
+/// `CREDIT_ROW_MEMBERS` the string form is a single verbatim name (no
+/// line-splitting) — see `frontmatter_union::normalize_name_list`.
+const NAME_LIST_MEMBERS: &[BuiltinField] = &[
+    BuiltinField {
+        name: "",
+        field_type: FieldType::String,
+        widget: Widget::TextInput,
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "",
+        field_type: FieldType::Array,
+        widget: Widget::TagInput,
+        items_type: Some(FieldType::String),
+        ..FIELD_DEFAULTS
+    },
+];
+
 /// All builtin frontmatter fields recognized by moss.
 ///
 /// This table drives the editor schema (via `builtin_schema()`). The `FrontMatter`
@@ -264,11 +301,16 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
     },
     BuiltinField {
         name: "author",
-        field_type: FieldType::String,
+        // OneOf like `byline` (see the note there): a name string OR a list of
+        // names for co-authors. Widget stays a plain text input — the string
+        // form is the dominant authored shape; the list form exists so
+        // co-authors are structural, not prose to split.
+        field_type: FieldType::OneOf,
         widget: Widget::TextInput,
+        one_of_members: Some(NAME_LIST_MEMBERS),
         // Frequency=3, Importance=3 → score = 100 - (3*6 + 3*4) = 100 - 30 = 70
         score: 70,
-        description: "Author name (or 'A and B' / 'A, B, and C' for co-authors). Captured by moss import from JSON-LD / OpenGraph.",
+        description: "Author name, or a list of names for co-authors. A single string is kept verbatim ('A and B' stays one entry). Each name gets a generated /author/<slug>/ page listing their works (claimable with author_page:), and names repeated in byline: become links to it. Turn the pages off with [terms].author = false. Captured by moss import from JSON-LD / OpenGraph.",
         label_key: "chip.author.label",
         group: "This Page",
         ..FIELD_DEFAULTS
@@ -342,8 +384,36 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         items_type: Some(FieldType::String),
         // Frequency=4, Importance=3 → score = 100 - (4*6 + 3*4) = 100 - 36 = 64
         score: 64,
-        description: "Content tags. Inline #hashtags written in the body are merged into this set. Emitted only as article:tag metadata and JSON-LD keywords - moss generates no tag archive pages and no /tags/ routes, so a link to /tags/<name>/ will 404. To group pages by topic, use folders or also_in.",
+        description: "Content tags. Every frontmatter tag gets a generated /tags/<slug>/ page listing the pages that carry it (a page anywhere can claim the tag with tag_page: and replace the generated one); turn the pages off with [terms].tags = false. Inline #hashtags written in the body merge into the emitted article:tag metadata and JSON-LD keywords but derive no pages - they are prose, not cataloguing.",
         label_key: "chip.tags.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "author_page",
+        // OneOf like `children`: `true` (claim the name equal to this page's
+        // title) OR the claimed name as a string. Widget is the bool-branch
+        // toggle; the union chip editor offers both forms.
+        field_type: FieldType::OneOf,
+        widget: Widget::Checkbox,
+        one_of_members: Some(TERM_CLAIM_MEMBERS),
+        // Frequency=0, Importance=2 → score = 100 - (0*6 + 2*4) = 92
+        score: 92,
+        description: "This page IS the author page for a name: true claims the page's own title, a string claims that name. It hosts the author's works listing, replaces the generated /author/<slug>/ page, and author mentions site-wide link here.",
+        label_key: "chip.author_page.label",
+        group: "This Page",
+        ..FIELD_DEFAULTS
+    },
+    BuiltinField {
+        name: "tag_page",
+        // Same union as `author_page`, in the tags/ namespace.
+        field_type: FieldType::OneOf,
+        widget: Widget::Checkbox,
+        one_of_members: Some(TERM_CLAIM_MEMBERS),
+        // Frequency=0, Importance=2 → score = 92; +1 keeps scores unique (author_page tier)
+        score: 93,
+        description: "This page IS the tag page for a tag: true claims the page's own title, a string claims that tag. It hosts the tag's listing, replaces the generated /tags/<slug>/ page, and tag links site-wide point here.",
+        label_key: "chip.tag_page.label",
         group: "This Page",
         ..FIELD_DEFAULTS
     },

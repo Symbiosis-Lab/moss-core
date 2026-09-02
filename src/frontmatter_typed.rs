@@ -151,9 +151,38 @@ pub struct FrontMatter {
     /// title in their own language, then pin `url:` here (隐私.md + url: privacy -> /privacy).
     /// Takes priority over filename-based slug generation.
     pub url: Option<String>,
-    /// Author name. Single name or pre-formatted list ("A and B", "A, B, and C").
-    /// Captured automatically by `moss import` from JSON-LD / OpenGraph metadata.
-    pub author: Option<String>,
+    /// Author name(s). A single string is one name kept verbatim (including
+    /// pre-formatted forms like "A and B"); a YAML list is one name per entry
+    /// for co-authors. Normalized by
+    /// [`crate::frontmatter_union::normalize_name_list`]; serialized back as a
+    /// plain string when there is exactly one name, so the dominant
+    /// single-author form round-trips unchanged. Captured automatically by
+    /// `moss import` from JSON-LD / OpenGraph metadata.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_name_list",
+        serialize_with = "serialize_name_list"
+    )]
+    pub author: Option<Vec<String>>,
+    /// Term-page claim: this page IS the term page for an author name.
+    /// `true` claims the name equal to the page's own title; a string claims
+    /// that name explicitly. The claiming page hosts the author's works
+    /// listing and replaces the generated `/author/<slug>/` page; term links
+    /// site-wide point here. See `moss_core::terms`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_term_claim",
+        serialize_with = "serialize_term_claim"
+    )]
+    pub author_page: Option<crate::terms::TermClaim>,
+    /// Term-page claim for a tag — same shapes and behaviour as
+    /// `author_page`, in the `tags/` namespace.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_term_claim",
+        serialize_with = "serialize_term_claim"
+    )]
+    pub tag_page: Option<crate::terms::TermClaim>,
     /// Byline shown under the article title: the credit lines a reader sees,
     /// as the author wrote them. One row per list entry, or per line of a
     /// block scalar:
@@ -424,6 +453,65 @@ where
     let value = Value::deserialize(deserializer)?;
     let rows = crate::frontmatter_union::normalize_credit_rows(&value).map_err(D::Error::custom)?;
     Ok(if rows.is_empty() { None } else { Some(rows) })
+}
+
+/// Deserialize the `author` union: one name string, or a list of names.
+/// Same hand-rolled-over-untagged rationale as [`deserialize_credit_rows`];
+/// the shape rules live in [`crate::frontmatter_union::normalize_name_list`].
+pub fn deserialize_name_list<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = Value::deserialize(deserializer)?;
+    let names = crate::frontmatter_union::normalize_name_list(&value).map_err(D::Error::custom)?;
+    Ok(if names.is_empty() { None } else { Some(names) })
+}
+
+/// Deserialize a term-claim union (`author_page`, `tag_page`): `true`, or the
+/// claimed name as a string. Shape rules live in
+/// [`crate::frontmatter_union::normalize_term_claim`].
+pub fn deserialize_term_claim<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::terms::TermClaim>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = Value::deserialize(deserializer)?;
+    crate::frontmatter_union::normalize_term_claim(&value).map_err(D::Error::custom)
+}
+
+/// Serialize a term claim back to its authored form: `UseTitle` → `true`,
+/// `Name(s)` → the string.
+pub fn serialize_term_claim<S>(
+    v: &Option<crate::terms::TermClaim>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use crate::terms::TermClaim;
+    use serde::Serialize;
+    match v {
+        Some(TermClaim::UseTitle) => true.serialize(serializer),
+        Some(TermClaim::Name(n)) => n.serialize(serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// Serialize `author` back to its dominant authored form: exactly one name
+/// emits a plain string (`author: 馬欣宜`), several emit a list. Keeps the
+/// single-author round-trip byte-shape stable for every existing file.
+pub fn serialize_name_list<S>(v: &Option<Vec<String>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::Serialize;
+    match v.as_deref() {
+        Some([one]) => one.serialize(serializer),
+        other => other.serialize(serializer),
+    }
 }
 
 /// Deserialize a bool that may be a YAML string ("true"/"false") or a native bool.

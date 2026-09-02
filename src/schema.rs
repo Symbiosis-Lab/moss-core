@@ -334,7 +334,9 @@ mod tests {
         // hid it from the editor chip bar despite being a real per-page control.)
         // (`byline`/`colophon` added 2026-08 — authored credit rows rendered at
         // the head and the foot of an article.)
-        assert_eq!(schema.frontmatter.fields.len(), 38);
+        // (`author_page`/`tag_page` added 2026-09 — term-page claims; see
+        // moss_core::terms.)
+        assert_eq!(schema.frontmatter.fields.len(), 40);
     }
 
     #[test]

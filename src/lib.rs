@@ -120,5 +120,6 @@ pub mod schema_fields;
 pub mod slug;
 pub mod untrusted_text;
 pub mod sort;
+pub mod terms;
 pub mod shortcode_tokens;
 pub mod validation;
