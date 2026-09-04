@@ -29,6 +29,10 @@ pub enum ReferenceKind {
     Anchor,
     Ambiguous,
     NotFound,
+    /// An internal link whose URL no longer exists: the page it named now
+    /// lives at `canonical` (a claimed term's generated URL). `url` on the
+    /// resolved reference carries `canonical` so following it lands there.
+    Moved { canonical: String },
 }
 
 /// Index handles a classify call needs. Bundled so the signature stays small
@@ -155,28 +159,24 @@ pub fn classify_reference(
     // below short-circuits there.
     if !is_embed {
         use crate::resolve::link_class::{classify_link, LinkClass};
+        let with_anchor = |url: &str| match &anchor {
+            Some(a) => format!("{}#{}", url, a),
+            None => url.to_string(),
+        };
         return match classify_link(path_no_anchor, from_source, ctx.urls) {
             LinkClass::Resolved { url } => {
-                let full = match &anchor {
-                    Some(a) => format!("{}#{}", url, a),
-                    None => url,
-                };
                 let mut r = ResolvedReference::not_found();
                 r.kind = ReferenceKind::Link { anchor: anchor.clone() };
-                r.url = Some(full);
+                r.url = Some(with_anchor(&url));
                 r
             }
             LinkClass::Mismatch { canonical } => {
                 // A page exists but the link won't hit its canonical URL
                 // (case/slug). Surface it as a Link pointing at the canonical
                 // URL, with a note explaining the redirect.
-                let full = match &anchor {
-                    Some(a) => format!("{}#{}", canonical, a),
-                    None => canonical.clone(),
-                };
                 let mut r = ResolvedReference::not_found();
                 r.kind = ReferenceKind::Link { anchor: anchor.clone() };
-                r.url = Some(full);
+                r.url = Some(with_anchor(&canonical));
                 r.message = Some(format!("resolves to canonical URL {}", canonical));
                 r
             }
@@ -188,6 +188,16 @@ pub fn classify_reference(
             LinkClass::Anchor => {
                 let mut r = ResolvedReference::not_found();
                 r.kind = ReferenceKind::Anchor;
+                r
+            }
+            LinkClass::Moved { canonical } => {
+                // The URL is gone for good and the page lives elsewhere — a
+                // certain 404, unlike Mismatch. Carry the canonical as `url`
+                // so the follow path opens the page that replaced it.
+                let mut r = ResolvedReference::not_found();
+                r.url = Some(with_anchor(&canonical));
+                r.message = Some(format!("no page at this URL any more — it lives at {}", canonical));
+                r.kind = ReferenceKind::Moved { canonical };
                 r
             }
             // Broken: no deployed page for this internal reference.

@@ -9,6 +9,10 @@ pub enum LinkClass {
     Resolved { url: String },
     /// A page exists, but this link won't hit its canonical URL (case/slug).
     Mismatch { canonical: String },
+    /// No page at this URL any more; the page it named lives at `canonical`.
+    /// Today: a generated term page (`/author/<slug>/`) after a real page
+    /// claimed the term. A certain 404, unlike `Mismatch`.
+    Moved { canonical: String },
     /// Internal reference/absolute path with no deployed page (best-effort).
     Broken,
     /// http(s)/protocol-relative/mailto/tel/data — not checked.
@@ -29,7 +33,11 @@ pub fn classify_link(target: &str, from_source: &str, index: &dyn UrlIndex) -> L
         return LinkClass::Anchor;
     }
 
-    let path = crate::resolve::fuzzy_path::split_url_path(target).0;
+    // An href copied from the rendered site arrives percent-encoded
+    // (`/author/%E9%A6%AC.../`); the deployed URL space is keyed by the
+    // decoded form. No-op when there is no `%`.
+    let decoded = crate::resolve::fuzzy_path::percent_decode_path(target);
+    let path = crate::resolve::fuzzy_path::split_url_path(&decoded).0;
     if path.is_empty() {
         return LinkClass::Anchor; // pure ?query/#frag on current page
     }
@@ -46,6 +54,9 @@ pub fn classify_link(target: &str, from_source: &str, index: &dyn UrlIndex) -> L
         }
         if let Some(canonical) = index.lookup_normalized(path) {
             return LinkClass::Mismatch { canonical };
+        }
+        if let Some(canonical) = index.lookup_moved(path) {
+            return LinkClass::Moved { canonical };
         }
         if asset_shaped {
             return LinkClass::External; // silent
@@ -73,6 +84,12 @@ pub trait UrlIndex {
     fn lookup_normalized(&self, url_path: &str) -> Option<String>;
     /// Resolve a wikilink/relative reference to its canonical URL path.
     fn resolve_reference_to_url(&self, reference: &str, from_source: &str) -> Option<String>;
+    /// A URL that no longer exists because its page moved → the canonical URL
+    /// it lives at now (a claimed term's generated URL → the claiming page).
+    /// Consulted only after exact and normalized both miss.
+    fn lookup_moved(&self, _url_path: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Cross-module test fake for `UrlIndex`. `new()` returns the empty/negative
@@ -160,6 +177,34 @@ mod tests {
     #[test] fn absolute_mismatch_keeps_fragment_out_of_lookup() {
         assert_eq!(classify_link("/Research/#theme-1", "a.md", &idx()),
                    LinkClass::Mismatch { canonical: "/research/".into() });
+    }
+    /// `Moved` is consulted only after exact and normalized both miss, and a
+    /// default index (no `lookup_moved`) never produces it.
+    /// An href copied from the rendered site is percent-encoded; the URL
+    /// space is keyed by the decoded form, so the two must classify alike.
+    #[test] fn percent_encoded_absolute_matches_its_decoded_page() {
+        assert_eq!(classify_link("/re%73earch/", "a.md", &idx()),
+                   LinkClass::Resolved { url: "/research/".into() });
+        assert_eq!(classify_link("/re%73earch/", "a.md", &idx()),
+                   classify_link("/research/", "a.md", &idx()));
+    }
+
+    #[test] fn absolute_moved_after_exact_and_normalized_miss() {
+        struct Moved;
+        impl UrlIndex for Moved {
+            fn lookup_exact(&self, u: &str) -> bool { u.trim_matches('/') == "research" }
+            fn lookup_normalized(&self, _u: &str) -> Option<String> { None }
+            fn resolve_reference_to_url(&self, _r: &str, _f: &str) -> Option<String> { None }
+            fn lookup_moved(&self, u: &str) -> Option<String> {
+                (u.trim_matches('/') == "author/ma").then(|| "/about/ma/".to_string())
+            }
+        }
+        assert_eq!(classify_link("/author/ma/", "a.md", &Moved),
+                   LinkClass::Moved { canonical: "/about/ma/".into() });
+        assert_eq!(classify_link("/research/", "a.md", &Moved),
+                   LinkClass::Resolved { url: "/research/".into() });
+        assert_eq!(classify_link("/author/ma/", "a.md", &idx()), LinkClass::Broken,
+                   "an index without lookup_moved never reports Moved");
     }
     #[test] fn reference_resolved() {
         assert_eq!(classify_link("Research", "a.md", &idx()),
