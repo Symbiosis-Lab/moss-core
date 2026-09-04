@@ -40,18 +40,37 @@ pub const INDEX_STEMS: &[&str] = &["index", "readme", "_index", "main"];
 /// (`zh-hans`); the normalization from `zh` → `zh-hans` happens in the i18n
 /// layer (`Language::from_code`), not here. This list only governs which codes
 /// are recognized as languages at all.
-const KNOWN_LANG_SUFFIXES: &[&str] = &[
+const KNOWN_LANGUAGES: &[(&str, &str)] = &[
+    // (code, endonym). The endonym is what a language switcher shows for a
+    // language moss has no interface for: a reader who wants the German
+    // edition is looking for "Deutsch", not "DE". The three moss DOES
+    // translate its interface into keep their own short chips (`i18n`'s
+    // `Language::display_name`), so this column is only consulted for the rest.
+    //
+    // One table, not a list plus a lookup: a code with no endonym would render
+    // a blank chip, and the two could only drift apart.
+
     // ISO-639-1 two-letter codes (most common languages)
-    "en", "zh", "ja", "ko", "de", "fr", "es", "it", "pt", "ru", "ar", "hi", "tr", "pl", "nl", "sv",
-    "da", "fi", "no", "cs", "hu", "ro", "el", "vi", "th", "id", "he", "uk", "bg", "hr", "sr", "sk",
-    "sl", "et", "lv", "lt",
+    ("en", "English"), ("zh", "中文"), ("ja", "日本語"), ("ko", "한국어"),
+    ("de", "Deutsch"), ("fr", "Français"), ("es", "Español"), ("it", "Italiano"),
+    ("pt", "Português"), ("ru", "Русский"), ("ar", "العربية"), ("hi", "हिन्दी"),
+    ("tr", "Türkçe"), ("pl", "Polski"), ("nl", "Nederlands"), ("sv", "Svenska"),
+    ("da", "Dansk"), ("fi", "Suomi"), ("no", "Norsk"), ("cs", "Čeština"),
+    ("hu", "Magyar"), ("ro", "Română"), ("el", "Ελληνικά"), ("vi", "Tiếng Việt"),
+    ("th", "ไทย"), ("id", "Bahasa Indonesia"), ("he", "עברית"), ("uk", "Українська"),
+    ("bg", "Български"), ("hr", "Hrvatski"), ("sr", "Српски"), ("sk", "Slovenčina"),
+    ("sl", "Slovenščina"), ("et", "Eesti"), ("lv", "Latviešu"), ("lt", "Lietuvių"),
     // Less common but real-use language codes (Welsh, Maori, Tibetan, Scots
     // Gaelic, Basque, Catalan, Galician, Swahili) — keeps the long-tail
     // surprise rate low without expanding to all of ISO-639.
-    "cy", "mi", "bo", "gd", "eu", "ca", "gl", "sw",
+    ("cy", "Cymraeg"), ("mi", "Māori"), ("bo", "བོད་སྐད་"), ("gd", "Gàidhlig"),
+    ("eu", "Euskara"), ("ca", "Català"), ("gl", "Galego"), ("sw", "Kiswahili"),
     // Region/script-tagged variants seen in practice.
-    "zh-hans", "zh-hant", "zh-cn", "zh-tw", "pt-br", "en-us", "en-gb",
+    ("zh-hans", "简体中文"), ("zh-hant", "繁體中文"), ("zh-cn", "简体中文"),
+    ("zh-tw", "繁體中文"), ("pt-br", "Português (Brasil)"),
+    ("en-us", "English (US)"), ("en-gb", "English (UK)"),
 ];
+
 
 /// Every language code moss recognizes as a language tree or filename suffix.
 ///
@@ -62,8 +81,8 @@ const KNOWN_LANG_SUFFIXES: &[&str] = &[
 /// lang>`, and no error. Inventing `english/` is the documented failure. This
 /// list is the only allowlist, so publishing it is what makes the guidance
 /// ("use one of these") checkable rather than a claim the agent has to trust.
-pub fn known_language_codes() -> &'static [&'static str] {
-    KNOWN_LANG_SUFFIXES
+pub fn known_language_codes() -> Vec<&'static str> {
+    KNOWN_LANGUAGES.iter().map(|(code, _)| *code).collect()
 }
 
 /// If `path` is rooted under a known language-tree directory (e.g.
@@ -90,7 +109,7 @@ pub fn lang_tree_prefix(path: &str) -> Option<&str> {
     if first.len() == path.len() {
         return None;
     }
-    if KNOWN_LANG_SUFFIXES.contains(&first.to_lowercase().as_str()) {
+    if is_known_language_code(first) {
         Some(first)
     } else {
         None
@@ -109,7 +128,7 @@ pub fn lang_tree_prefix(path: &str) -> Option<&str> {
 /// ```
 pub fn strip_lang_suffix(stem: &str) -> Option<&str> {
     let (head, suffix) = stem.rsplit_once('.')?;
-    if KNOWN_LANG_SUFFIXES.contains(&suffix.to_lowercase().as_str()) {
+    if is_known_language_code(suffix) {
         Some(head)
     } else {
         None
@@ -124,7 +143,7 @@ pub fn strip_lang_suffix(stem: &str) -> Option<&str> {
 /// ```
 pub fn lang_suffix(stem: &str) -> Option<&str> {
     let (_, suffix) = stem.rsplit_once('.')?;
-    if KNOWN_LANG_SUFFIXES.contains(&suffix.to_lowercase().as_str()) {
+    if is_known_language_code(suffix) {
         Some(suffix)
     } else {
         None
@@ -147,7 +166,18 @@ pub fn lang_suffix(stem: &str) -> Option<&str> {
 /// assert!(!moss_core::home::is_known_language_code("english"));
 /// ```
 pub fn is_known_language_code(code: &str) -> bool {
-    KNOWN_LANG_SUFFIXES.contains(&code.to_lowercase().as_str())
+    let code = code.to_lowercase();
+    KNOWN_LANGUAGES.iter().any(|(c, _)| *c == code)
+}
+
+/// The language's name in ITSELF — `Deutsch`, not `German` and not `DE`.
+///
+/// `None` only for a code outside the allowlist, which the callers on the
+/// switcher path have already rejected. Case-insensitive, because a tag
+/// arrives here canonicalized (`en-GB`) while the table is keyed lowercase.
+pub fn endonym(code: &str) -> Option<&'static str> {
+    let code = code.to_lowercase();
+    KNOWN_LANGUAGES.iter().find(|(c, _)| *c == code).map(|(_, name)| *name)
 }
 
 /// Check if a filename stem (without extension) is a recognized home file.

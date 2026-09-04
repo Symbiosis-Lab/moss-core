@@ -42,7 +42,7 @@ pub struct DescribePayload<'a> {
     /// succeeds, a page that publishes, and no switcher, with nothing
     /// anywhere saying why. The allowlist has to be readable *before* the
     /// directory is created, and this is the only place it is published.
-    pub languages: &'static [&'static str],
+    pub languages: Vec<&'static str>,
     /// Plugin hook contract: each capability moss supports, with arity and context type.
     pub plugin_hooks: Vec<PluginHookInfo>,
     /// Plugin manifest fields: each field in PluginManifest, with type and required flag.
