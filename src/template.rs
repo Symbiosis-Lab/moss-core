@@ -28,12 +28,18 @@ pub enum TemplateKind {
 }
 
 /// Reset a template's frontmatter for a new instance: `title` is cleared
-/// (the untitled-first flow fills it in when the user commits the H1), `date`
-/// is stamped to `now`, and `uid` is dropped — it is moss's per-page identity
-/// (the join key for comments and redirects), so an instance must mint its
-/// own rather than collide with the page it was captured from. Every other
-/// field — layout, tags, cascade, and anything else the template carries — is
-/// copied verbatim, since that's the point of templating them.
+/// (the untitled-first flow fills it in when the user commits the H1), a
+/// `date` the template carries is re-stamped to `now`, and `uid` is dropped —
+/// it is moss's per-page identity (the join key for comments and redirects),
+/// so an instance must mint its own rather than collide with the page it was
+/// captured from. Every other field — layout, tags, cascade, and anything else
+/// the template carries — is copied verbatim, since that's the point of
+/// templating them.
+///
+/// A template without a `date` produces an instance without one (2026-09-05,
+/// user report): the captured page's author chose not to date it, and a
+/// dateless page is how moss renders an undated section or note; inventing
+/// the field would put a date line on every page made from that template.
 ///
 /// `now` is a caller-supplied `YYYY-MM-DD` string (moss-core has no `chrono`
 /// dependency by convention — see `date.rs`) so this stays pure and
@@ -44,7 +50,9 @@ pub fn instantiate_template_frontmatter(
 ) -> HashMap<String, Value> {
     frontmatter.remove("title");
     frontmatter.remove("uid");
-    frontmatter.insert("date".to_string(), Value::String(now.to_string()));
+    if frontmatter.contains_key("date") {
+        frontmatter.insert("date".to_string(), Value::String(now.to_string()));
+    }
     frontmatter
 }
 
@@ -86,9 +94,10 @@ mod tests {
     }
 
     #[test]
-    fn instantiate_stamps_date_even_when_absent() {
-        let fm = HashMap::new();
+    fn instantiate_adds_no_date_when_the_template_has_none() {
+        let mut fm = HashMap::new();
+        fm.insert("layout".to_string(), Value::String("page".to_string()));
         let out = instantiate_template_frontmatter(fm, "2026-09-03");
-        assert_eq!(out.get("date"), Some(&Value::String("2026-09-03".to_string())));
+        assert_eq!(out.get("date"), None);
     }
 }
