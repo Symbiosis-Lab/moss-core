@@ -29,10 +29,10 @@ pub enum TemplateKind {
 
 /// Reset a template's frontmatter for a new instance: `title` is cleared
 /// (the untitled-first flow fills it in when the user commits the H1), a
-/// `date` the template carries is re-stamped to `now`, and `uid` is dropped —
-/// it is moss's per-page identity (the join key for comments and redirects),
-/// so an instance must mint its own rather than collide with the page it was
-/// captured from. Every other field — layout, tags, cascade, and anything else
+/// `date` the template carries is re-stamped to `now`, and `uid` and `url` are
+/// dropped — both are per-page identity (the comments/redirects join key, and
+/// the pinned address), so an instance must get its own rather than collide
+/// with the page it was captured from. Every other field — layout, tags, cascade, and anything else
 /// the template carries — is copied verbatim, since that's the point of
 /// templating them.
 ///
@@ -50,6 +50,11 @@ pub fn instantiate_template_frontmatter(
 ) -> HashMap<String, Value> {
     frontmatter.remove("title");
     frontmatter.remove("uid");
+    // `url:` pins the captured page's slug. Copied, the instance publishes to
+    // the SAME address, the build's slug dedup moves it to `<slug>-2/`, and
+    // the preview waits on the path-derived URL that never arrives (seen in
+    // the 2026-09-05 log: `測試獎.md` sent to /awards/writing-2/).
+    frontmatter.remove("url");
     if frontmatter.contains_key("date") {
         frontmatter.insert("date".to_string(), Value::String(now.to_string()));
     }
@@ -61,16 +66,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn instantiate_clears_title_and_uid_and_stamps_date() {
+    fn instantiate_clears_title_uid_and_url_and_stamps_date() {
         let mut fm = HashMap::new();
         fm.insert("title".to_string(), Value::String("Old Title".to_string()));
         fm.insert("uid".to_string(), Value::String("abc123".to_string()));
+        fm.insert("url".to_string(), Value::String("writing".to_string()));
         fm.insert("date".to_string(), Value::String("2020-01-01".to_string()));
 
         let out = instantiate_template_frontmatter(fm, "2026-09-03");
 
         assert_eq!(out.get("title"), None);
         assert_eq!(out.get("uid"), None);
+        assert_eq!(out.get("url"), None, "a pinned slug is the captured page's address, not the instance's");
         assert_eq!(out.get("date"), Some(&Value::String("2026-09-03".to_string())));
     }
 
