@@ -29,11 +29,15 @@ pub enum TemplateKind {
 
 /// Reset a template's frontmatter for a new instance: `title` is cleared
 /// (the untitled-first flow fills it in when the user commits the H1), a
-/// `date` the template carries is re-stamped to `now`, and `uid` and `url` are
-/// dropped — both are per-page identity (the comments/redirects join key, and
-/// the pinned address), so an instance must get its own rather than collide
-/// with the page it was captured from. Every other field — layout, tags, cascade, and anything else
-/// the template carries — is copied verbatim, since that's the point of
+/// `date` the template carries is re-stamped to `now`, and every field that
+/// names THIS page rather than describes it is dropped — `uid` (the
+/// comments/redirects join key), `url` (the pinned address), `author_page` /
+/// `tag_page` (a term claim; two claimants resolve to the first `url_path`,
+/// so a copy could steal the original's term page), `translationKey` (a copy
+/// makes the pair "one page's translations" and links them), and
+/// `syndicated` (where the captured page was published, written by the
+/// matters plugin). Every other field — layout, tags, cascade, and anything
+/// else the template carries — is copied verbatim, since that's the point of
 /// templating them.
 ///
 /// A template without a `date` produces an instance without one (2026-09-05,
@@ -55,6 +59,9 @@ pub fn instantiate_template_frontmatter(
     // the preview waits on the path-derived URL that never arrives (seen in
     // the 2026-09-05 log: `測試獎.md` sent to /awards/writing-2/).
     frontmatter.remove("url");
+    for claim in ["author_page", "tag_page", "translationKey", "syndicated"] {
+        frontmatter.remove(claim);
+    }
     if frontmatter.contains_key("date") {
         frontmatter.insert("date".to_string(), Value::String(now.to_string()));
     }
@@ -66,18 +73,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn instantiate_clears_title_uid_and_url_and_stamps_date() {
+    fn instantiate_clears_identity_fields_and_stamps_date() {
         let mut fm = HashMap::new();
-        fm.insert("title".to_string(), Value::String("Old Title".to_string()));
-        fm.insert("uid".to_string(), Value::String("abc123".to_string()));
-        fm.insert("url".to_string(), Value::String("writing".to_string()));
-        fm.insert("date".to_string(), Value::String("2020-01-01".to_string()));
+        for (k, v) in [
+            ("title", "Old Title"),
+            ("uid", "abc123"),
+            ("url", "writing"),
+            ("author_page", "guo"),
+            ("tag_page", "essays"),
+            ("translationKey", "about"),
+            ("date", "2020-01-01"),
+        ] {
+            fm.insert(k.to_string(), Value::String(v.to_string()));
+        }
+        fm.insert("syndicated".to_string(), Value::Sequence(vec![Value::String("https://m/x".to_string())]));
 
         let out = instantiate_template_frontmatter(fm, "2026-09-03");
 
-        assert_eq!(out.get("title"), None);
-        assert_eq!(out.get("uid"), None);
-        assert_eq!(out.get("url"), None, "a pinned slug is the captured page's address, not the instance's");
+        for identity in ["title", "uid", "url", "author_page", "tag_page", "translationKey", "syndicated"] {
+            assert_eq!(out.get(identity), None, "`{identity}` names the captured page, not the instance");
+        }
         assert_eq!(out.get("date"), Some(&Value::String("2026-09-03".to_string())));
     }
 
