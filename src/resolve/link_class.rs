@@ -10,7 +10,7 @@ pub enum LinkClass {
     /// A page exists, but this link won't hit its canonical URL (case/slug).
     Mismatch { canonical: String },
     /// No page at this URL any more; the page it named lives at `canonical`.
-    /// Today: a generated term page (`/author/<slug>/`) after a real page
+    /// Today: a generated term page (`/authors/<slug>/`) after a real page
     /// claimed the term. A certain 404, unlike `Mismatch`.
     Moved { canonical: String },
     /// Internal reference/absolute path with no deployed page (best-effort).
@@ -34,7 +34,7 @@ pub fn classify_link(target: &str, from_source: &str, index: &dyn UrlIndex) -> L
     }
 
     // An href copied from the rendered site arrives percent-encoded
-    // (`/author/%E9%A6%AC.../`); the deployed URL space is keyed by the
+    // (`/authors/%E9%A6%AC.../`); the deployed URL space is keyed by the
     // decoded form. No-op when there is no `%`.
     let decoded = crate::resolve::fuzzy_path::percent_decode_path(target);
     let path = crate::resolve::fuzzy_path::split_url_path(&decoded).0;
@@ -196,14 +196,14 @@ mod tests {
             fn lookup_normalized(&self, _u: &str) -> Option<String> { None }
             fn resolve_reference_to_url(&self, _r: &str, _f: &str) -> Option<String> { None }
             fn lookup_moved(&self, u: &str) -> Option<String> {
-                (u.trim_matches('/') == "author/ma").then(|| "/about/ma/".to_string())
+                (u.trim_matches('/') == "authors/ma").then(|| "/about/ma/".to_string())
             }
         }
-        assert_eq!(classify_link("/author/ma/", "a.md", &Moved),
+        assert_eq!(classify_link("/authors/ma/", "a.md", &Moved),
                    LinkClass::Moved { canonical: "/about/ma/".into() });
         assert_eq!(classify_link("/research/", "a.md", &Moved),
                    LinkClass::Resolved { url: "/research/".into() });
-        assert_eq!(classify_link("/author/ma/", "a.md", &idx()), LinkClass::Broken,
+        assert_eq!(classify_link("/authors/ma/", "a.md", &idx()), LinkClass::Broken,
                    "an index without lookup_moved never reports Moved");
     }
     #[test] fn reference_resolved() {

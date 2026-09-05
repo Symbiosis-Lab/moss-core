@@ -167,7 +167,7 @@ pub struct FrontMatter {
     /// Term-page claim: this page IS the term page for an author name.
     /// `true` claims the name equal to the page's own title; a string claims
     /// that name explicitly. The claiming page hosts the author's works
-    /// listing and replaces the generated `/author/<slug>/` page; term links
+    /// listing and replaces the generated `/authors/<slug>/` page; term links
     /// site-wide point here. See `moss_core::terms`.
     #[serde(
         default,

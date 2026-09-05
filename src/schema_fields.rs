@@ -310,7 +310,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         one_of_members: Some(NAME_LIST_MEMBERS),
         // Frequency=3, Importance=3 → score = 100 - (3*6 + 3*4) = 100 - 30 = 70
         score: 70,
-        description: "Author name, or a list of names for co-authors. A single string is kept verbatim ('A and B' stays one entry). Each name gets a generated /author/<slug>/ page listing their works (claimable with author_page:), and names repeated in byline: become links to it. Turn the pages off with [terms].author = false. Captured by moss import from JSON-LD / OpenGraph.",
+        description: "Author name, or a list of names for co-authors. A single string is kept verbatim ('A and B' stays one entry). Each name gets a generated /authors/<slug>/ page listing their works (claimable with author_page:), and names repeated in byline: become links to it. Turn the pages off with [terms].author = false. Captured by moss import from JSON-LD / OpenGraph.",
         label_key: "chip.author.label",
         group: "This Page",
         ..FIELD_DEFAULTS
@@ -399,7 +399,7 @@ pub const BUILTIN_FIELDS: &[BuiltinField] = &[
         one_of_members: Some(TERM_CLAIM_MEMBERS),
         // Frequency=0, Importance=2 → score = 100 - (0*6 + 2*4) = 92
         score: 92,
-        description: "This page IS the author page for a name: true claims the page's own title, a string claims that name. It hosts the author's works listing, replaces the generated /author/<slug>/ page, and author mentions site-wide link here.",
+        description: "This page IS the author page for a name: true claims the page's own title, a string claims that name. It hosts the author's works listing, replaces the generated /authors/<slug>/ page, and author mentions site-wide link here.",
         label_key: "chip.author_page.label",
         group: "This Page",
         ..FIELD_DEFAULTS

@@ -5,6 +5,12 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`terms::AUTHOR_NS` is `authors`** (was `author`), so generated author pages serve at `/authors/<slug>/` and `term_folder_key` yields `authors/<slug>`, matching `tags/`. The schema descriptions for `author` and `author_page` name the new path. A site that published the old URL gets no redirect: a generated page has no uid for the redirect machinery to key on.
+
 ## [0.14.0] - 2026-09-02
 
 ### Added

@@ -29,7 +29,7 @@ pub enum Target {
     /// A directory, project-relative, no trailing slash. Accepting one
     /// descends: the insert ends in `/` so the list reopens inside it.
     Folder { source: String },
-    /// A page the build synthesizes (`/tags/design/`, `/author/馬欣宜/`). It
+    /// A page the build synthesizes (`/tags/design/`, `/authors/馬欣宜/`). It
     /// has no source, so the URL is its only address.
     Generated { url: String, display: String },
     /// A heading in the target page. `slug` is the anchor the build emits.

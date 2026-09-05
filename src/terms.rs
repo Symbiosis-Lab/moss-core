@@ -3,7 +3,7 @@
 //! A *term* is a value of a term dimension — an author name from `author:`,
 //! or a tag from `tags:`/inline `#tags`. Terms group pages the way folders
 //! do: at build time each page's term values derive membership claims into
-//! pseudo-folders (`author/<slug>`, `tags/<slug>`), the same slot `also_in`
+//! pseudo-folders (`authors/<slug>`, `tags/<slug>`), the same slot `also_in`
 //! occupies, so the canonical listing selector and the synthetic folder-index
 //! machinery serve term pages with zero new modes. Design:
 //! `docs/archive/2026-09-01-tags-and-authors-design.md`.
@@ -15,8 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// URL namespace for author term pages (`/author/<slug>/`).
-pub const AUTHOR_NS: &str = "author";
+/// URL namespace for author term pages (`/authors/<slug>/`).
+pub const AUTHOR_NS: &str = "authors";
 /// URL namespace for tag term pages (`/tags/<slug>/`).
 pub const TAGS_NS: &str = "tags";
 
@@ -40,7 +40,7 @@ pub fn term_slug(name: &str) -> String {
     crate::slug::generate_slug(&name.trim().replace('.', "-"))
 }
 
-/// Pseudo-folder key for a term: `author/<slug>` or `tags/<slug>`. This is
+/// Pseudo-folder key for a term: `authors/<slug>` or `tags/<slug>`. This is
 /// simultaneously the membership-claim string pushed beside `also_in` and the
 /// URL directory of the generated term page.
 pub fn term_folder_key(ns: &str, name: &str) -> String {
@@ -109,7 +109,7 @@ mod tests {
         assert_eq!(term_slug("馬欣宜"), "馬欣宜");
         assert_eq!(term_slug("David Yang"), "david-yang");
         assert_eq!(term_slug("Web 2.0"), "web-2-0");
-        assert_eq!(term_folder_key(AUTHOR_NS, "David Yang"), "author/david-yang");
+        assert_eq!(term_folder_key(AUTHOR_NS, "David Yang"), "authors/david-yang");
         assert_eq!(term_folder_key(TAGS_NS, "城市"), "tags/城市");
     }
 
