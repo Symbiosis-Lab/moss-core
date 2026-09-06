@@ -273,7 +273,7 @@ fn is_key_continue(c: char) -> bool {
 /// `EmptyValue`, and every caller's `.unwrap_or_default()` silently dropped
 /// the ENTIRE attribute block — not just the offending value, so `image=`
 /// disappeared along with `width`/`classes`/`mobile` and the hero rendered
-/// with no image at all. `required_quote` in src-tauri's `ref_rewrite.rs`
+/// with no image at all. `required_quote` in moss-build's `editor/ref_rewrite.rs`
 /// must accept exactly this same set — it calls this function rather than
 /// keeping its own copy, so the two can't drift apart again.
 pub fn is_bareword(c: char) -> bool {
