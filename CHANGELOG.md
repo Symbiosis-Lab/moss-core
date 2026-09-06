@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A language-suffixed index is titled by its folder.** `heading::filename_text_with_root` applies the one home-file rule, so `essays/index.zh-hans.md` reads "essays" in `<title>` and chrome like its bare twin, instead of "index.zh hans".
+
 ### Changed
 
 - **`terms::AUTHOR_NS` is `authors`** (was `author`), so generated author pages serve at `/authors/<slug>/` and `term_folder_key` yields `authors/<slug>`, matching `tags/`. The schema descriptions for `author` and `author_page` name the new path. A site that published the old URL gets no redirect: a generated page has no uid for the redirect machinery to key on.

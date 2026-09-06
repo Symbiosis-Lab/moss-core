@@ -125,8 +125,11 @@ pub fn filename_text_with_root(file_path: &str, root_folder_name: Option<&str>) 
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
         .or(root_folder_name);
-    let is_folder_note = home::is_index_stem(stem)
-        || parent_name.is_some_and(|p| p.eq_ignore_ascii_case(stem));
+    // The one home-file rule (`is_home_file`), so the text answer agrees with
+    // the visibility answer in [`compute`]: until 2026-09-06 this arm knew the
+    // bare index stems only, and `essays/index.zh-hans.md` was titled
+    // "index.zh hans" while its bare twin read "essays".
+    let is_folder_note = home::is_home_file(stem, parent_name.unwrap_or(""));
     let source_name = if is_folder_note {
         parent_name.unwrap_or(stem)
     } else {
@@ -293,6 +296,12 @@ mod tests {
     #[test]
     fn text_cjk_index_uses_parent() {
         assert_eq!(filename_text("文字/index.md"), "文字");
+    }
+
+    #[test]
+    fn a_language_suffixed_index_is_titled_by_its_folder() {
+        assert_eq!(filename_text_with_root("essays/index.zh-hans.md", None), "essays");
+        assert_eq!(filename_text_with_root("index.zh-hans.md", Some("My Site")), "My Site");
     }
 
     // ── filename_text_with_root: root-aware home title (#775) ─────────
