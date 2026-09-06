@@ -302,6 +302,37 @@ pub trait SortableLabel {
     fn label(&self) -> &str;
 }
 
+/// The one comparator for ordering two user-visible listing labels by title.
+///
+/// All four alphabetical orderings of user-visible labels route here: the
+/// `SortAxis::Title` arm below, the dateless tiebreak in each of
+/// `folder_embed::generate_children`'s two branches, and the same-date
+/// tiebreak in `year_group`. (The `SortAxis::Weight` arm below does not — it
+/// breaks ties on `clean_stem`, a filename, which is not a label.)
+///
+/// Case is a tiebreak, not a primary key. Comparing codepoints put `mao`
+/// after every capitalised name on the reference vault's roster, which is a
+/// machine's order, not a reader's; folding first sorts it between `Kayla`
+/// and `Scarly`. The unfolded comparison still runs second, so the order
+/// stays total and stable for labels differing only in case.
+///
+/// Two things a reader of Chinese expects are still missing, and both need
+/// something this function does not have. `黃` sorts after `馬` by codepoint,
+/// where a Traditional-Chinese site expects 姓氏筆畫 (surname stroke count) —
+/// that needs either an `icu_collator` dependency (not in the tree; only
+/// `icu_normalizer`/`icu_properties` are, transitively) or an embedded Unihan
+/// `kTotalStrokes` table. And bucketing Han ahead of Latin is only right on a
+/// site whose resident script is Han, so it needs the site language, which is
+/// not a parameter here. Both ship together as their own reviewed change;
+/// this function exists so that change lands in one place.
+/// Provenance: docs/archive/2026-09-06-authors-index-design-decision.md
+pub fn cmp_labels(a: &str, b: &str) -> std::cmp::Ordering {
+    fn folded(s: &str) -> impl Iterator<Item = char> + '_ {
+        s.chars().flat_map(char::to_lowercase)
+    }
+    folded(a).cmp(folded(b)).then_with(|| a.cmp(b))
+}
+
 pub fn sort_by_resolved<'a, D>(
     docs: &[&'a D],
     resolved: &ResolvedSort,
@@ -322,7 +353,7 @@ where
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => a.clean_stem().cmp(b.clean_stem()),
             },
-            SortAxis::Title => a.label().cmp(b.label()),
+            SortAxis::Title => cmp_labels(a.label(), b.label()),
         }
     };
 
@@ -463,5 +494,38 @@ mod sort_dispatch_tests {
         assert_eq!(sorted[0].clean_stem(), "intro");  // listed first
         assert_eq!(sorted[1].clean_stem(), "a");      // newest in tail
         assert_eq!(sorted[2].clean_stem(), "b");
+    }
+}
+
+#[cfg(test)]
+mod cmp_labels_tests {
+    use super::cmp_labels;
+    use std::cmp::Ordering;
+
+    /// The reference vault's roster: codepoint order exiled the one lowercase
+    /// name past every capitalised one.
+    #[test]
+    fn a_lowercase_name_sorts_among_its_peers() {
+        let mut names = vec!["Scarly", "mao", "Kayla"];
+        names.sort_by(|a, b| cmp_labels(a, b));
+        assert_eq!(names, vec!["Kayla", "mao", "Scarly"]);
+    }
+
+    /// Case is a tiebreak, not a primary key — so the order stays total and
+    /// two labels differing only in case never compare Equal.
+    #[test]
+    fn case_only_differences_stay_ordered_and_never_equal() {
+        assert_eq!(cmp_labels("Ada", "ada"), Ordering::Less);
+        assert_eq!(cmp_labels("ada", "Ada"), Ordering::Greater);
+        assert_eq!(cmp_labels("Ada", "Ada"), Ordering::Equal);
+    }
+
+    /// Han is still codepoint-ordered. Pinned so the pending 姓氏筆畫 change
+    /// has to come here and say so, rather than landing beside a test that
+    /// never noticed. The two surnames disagree: 于 is 3 strokes and 丘 is 5,
+    /// so 姓氏筆畫 puts 于 first, and U+4E18 < U+4E8E puts 丘 first.
+    #[test]
+    fn han_is_not_yet_collated_by_stroke_count() {
+        assert_eq!(cmp_labels("丘", "于"), Ordering::Less);
     }
 }
