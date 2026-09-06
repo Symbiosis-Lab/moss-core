@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`sort::cmp_labels`** — the one comparator for ordering user-visible listing labels by title. Case is a tiebreak, not a primary key, so `mao` now sorts between `Kayla` and `Scarly` instead of after every capitalised name. All title-axis and dateless-tiebreak label sorts now route through it.
+
 ## [0.15.0] - 2026-09-06
 
 ### Fixed
